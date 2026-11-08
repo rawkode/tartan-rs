@@ -11,12 +11,9 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 
-# Extensions: the Issues package, built from TARTAN_ISSUES_SRC (an extension crate) unless
-# TARTAN_ISSUES_PACKAGE already names a package directory.
-if [[ -z "${TARTAN_ISSUES_PACKAGE:-}" ]]; then
-	: "${TARTAN_ISSUES_SRC:?set TARTAN_ISSUES_SRC to the Issues extension crate, or TARTAN_ISSUES_PACKAGE}"
-	TARTAN_ISSUES_PACKAGE="$("$root/scripts/build-extension.sh" "$TARTAN_ISSUES_SRC" "$root/.dev/packages/issues")"
-fi
+# Extensions: their own tests, then their packages for the host's tests.
+(cd "$root/extensions/issues" && cargo test --quiet)
+TARTAN_ISSUES_PACKAGE="$("$root/scripts/build-extension.sh" "$root/extensions/issues" "$root/.dev/packages/issues")"
 export TARTAN_ISSUES_PACKAGE
 TARTAN_FIXTURE_PACKAGE="$("$root/scripts/build-extension.sh" "$root/extensions/fixture" "$root/.dev/packages/fixture")"
 export TARTAN_FIXTURE_PACKAGE

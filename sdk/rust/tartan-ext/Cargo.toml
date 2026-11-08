@@ -1,0 +1,18 @@
+[package]
+name = "tartan-ext"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Rust SDK for Tartan extensions: the tartan:ext@0.1.0 WIT world, defaults, UI builders and an SQL helper"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Exact pins: the generated bindings and the component encoding follow them.
+wit-bindgen = { version = "=0.57.1", default-features = false, features = ["macros", "realloc", "std"] }
+serde_json = "=1.0.151"
+
+# Built for wasm32-unknown-unknown, outside the host workspace.
+[workspace]

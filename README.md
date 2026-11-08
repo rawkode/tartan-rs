@@ -85,8 +85,9 @@ WALGIT_BIN=/path/to/walgit scripts/e2e.sh   # fmt, clippy and every test, git in
 WALGIT_BIN=/path/to/walgit scripts/dev.sh   # RustFS, the Rivet engine, walgit and the gateway
 ```
 
-`e2e.sh` also needs `TARTAN_ISSUES_SRC` (the Issues extension crate) and `wasm-tools`: `scripts/build-extension.sh`
-packages an extension crate as `component.wasm`, `tartan.json` and its migrations.
+`e2e.sh` also needs `wasm-tools` and the `wasm32-unknown-unknown` target: `scripts/build-extension.sh` packages an
+extension crate (`extensions/*`, built on `sdk/rust/tartan-ext`) as `component.wasm`, `tartan.json` and its
+migrations.
 
 `scripts/rivet-engine.sh` downloads the Rivet engine matching the `rivetkit` crate and verifies its checksum.
 

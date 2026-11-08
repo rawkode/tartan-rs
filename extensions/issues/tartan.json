@@ -1,0 +1,1029 @@
+{
+	"schema": 1,
+	"id": "rawkode.issues",
+	"name": "Issues",
+	"description": "Per-repository issues, optionally filed against a project; every write emits the issue as x.rawkode.issues.issue.created or .updated, so other extensions can build on them",
+	"version": "0.5.0",
+	"api": "tartan:ext@0.1.0",
+	"runtime": "wasm",
+	"storage": {
+		"scope": "repo",
+		"migrations": [
+			"migrations/0001_init.sql",
+			"migrations/0002_project.sql",
+			"migrations/0003_fields.sql"
+		]
+	},
+	"permissions": {},
+	"contributes": {
+		"slots": [
+			{
+				"slot": "repo.tab",
+				"id": "issues",
+				"label": "Issues",
+				"route": "issues",
+				"when": "node.kind == 'repo'",
+				"role": 20
+			}
+		],
+		"tools": [
+			{
+				"name": "list",
+				"description": "List the repository's issues, newest first, without their bodies; with project, only that project's.",
+				"input": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"state": {
+							"type": "string",
+							"enum": [
+								"open",
+								"closed",
+								"all"
+							],
+							"default": "open",
+							"description": "Which issues to list (default open)"
+						},
+						"limit": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 100,
+							"default": 30
+						},
+						"project": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 512,
+							"description": "Only this project's issues: a root path (crates/lsp), as the kernel passes it"
+						},
+						"before": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 2147483647,
+							"description": "Only issues numbered below this: the previous page's nextBefore"
+						}
+					}
+				},
+				"role": 20,
+				"export": "issues@1",
+				"access": "read",
+				"output": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"state",
+						"project",
+						"issues",
+						"open",
+						"closed",
+						"fields",
+						"nextBefore"
+					],
+					"properties": {
+						"state": {
+							"enum": [
+								"open",
+								"closed",
+								"all"
+							]
+						},
+						"project": {
+							"type": [
+								"string",
+								"null"
+							]
+						},
+						"issues": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": [
+									"number",
+									"title",
+									"project",
+									"state",
+									"author",
+									"createdAt",
+									"updatedAt",
+									"closedAt",
+									"fields",
+									"version"
+								],
+								"properties": {
+									"number": {
+										"type": "integer"
+									},
+									"title": {
+										"type": "string"
+									},
+									"project": {
+										"type": [
+											"string",
+											"null"
+										]
+									},
+									"state": {
+										"enum": [
+											"open",
+											"closed"
+										]
+									},
+									"author": {
+										"type": "object",
+										"additionalProperties": false,
+										"required": [
+											"kind",
+											"id"
+										],
+										"properties": {
+											"kind": {
+												"type": "string"
+											},
+											"id": {
+												"type": "string"
+											},
+											"onBehalfOf": {
+												"type": "string"
+											}
+										}
+									},
+									"createdAt": {
+										"type": "integer"
+									},
+									"updatedAt": {
+										"type": "integer"
+									},
+									"closedAt": {
+										"type": [
+											"integer",
+											"null"
+										]
+									},
+									"fields": {
+										"type": "object",
+										"additionalProperties": {
+											"type": [
+												"string",
+												"number",
+												"boolean",
+												"array",
+												"null"
+											],
+											"items": {
+												"type": "string"
+											}
+										}
+									},
+									"version": {
+										"type": "integer"
+									}
+								}
+							}
+						},
+						"open": {
+							"type": "integer"
+						},
+						"closed": {
+							"type": "integer"
+						},
+						"fields": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": [
+									"name",
+									"type"
+								],
+								"properties": {
+									"name": {
+										"type": "string"
+									},
+									"type": {
+										"enum": [
+											"text",
+											"number",
+											"select",
+											"multiselect",
+											"monetary",
+											"date",
+											"boolean"
+										]
+									},
+									"label": {
+										"type": "string"
+									},
+									"options": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									"default": {
+										"type": [
+											"string",
+											"number",
+											"boolean",
+											"array"
+										],
+										"items": {
+											"type": "string"
+										}
+									},
+									"min": {
+										"type": "number"
+									},
+									"max": {
+										"type": "number"
+									},
+									"maxLength": {
+										"type": "integer"
+									},
+									"currency": {
+										"type": "string"
+									}
+								}
+							}
+						},
+						"nextBefore": {
+							"type": [
+								"integer",
+								"null"
+							]
+						}
+					}
+				}
+			},
+			{
+				"name": "get",
+				"description": "One issue by its number, with its body; with project, not found unless it is that project's.",
+				"input": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"number"
+					],
+					"properties": {
+						"number": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 2147483647
+						},
+						"project": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 512,
+							"description": "The project it must belong to: a root path (crates/lsp), as the kernel passes it"
+						}
+					}
+				},
+				"role": 20,
+				"export": "issues@1",
+				"access": "read",
+				"output": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"issue"
+					],
+					"properties": {
+						"issue": {
+							"type": "object",
+							"additionalProperties": false,
+							"required": [
+								"number",
+								"title",
+								"project",
+								"state",
+								"author",
+								"createdAt",
+								"updatedAt",
+								"closedAt",
+								"fields",
+								"version",
+								"body"
+							],
+							"properties": {
+								"number": {
+									"type": "integer"
+								},
+								"title": {
+									"type": "string"
+								},
+								"project": {
+									"type": [
+										"string",
+										"null"
+									]
+								},
+								"state": {
+									"enum": [
+										"open",
+										"closed"
+									]
+								},
+								"author": {
+									"type": "object",
+									"additionalProperties": false,
+									"required": [
+										"kind",
+										"id"
+									],
+									"properties": {
+										"kind": {
+											"type": "string"
+										},
+										"id": {
+											"type": "string"
+										},
+										"onBehalfOf": {
+											"type": "string"
+										}
+									}
+								},
+								"createdAt": {
+									"type": "integer"
+								},
+								"updatedAt": {
+									"type": "integer"
+								},
+								"closedAt": {
+									"type": [
+										"integer",
+										"null"
+									]
+								},
+								"fields": {
+									"type": "object",
+									"additionalProperties": {
+										"type": [
+											"string",
+											"number",
+											"boolean",
+											"array",
+											"null"
+										],
+										"items": {
+											"type": "string"
+										}
+									}
+								},
+								"version": {
+									"type": "integer"
+								},
+								"body": {
+									"type": "string"
+								}
+							}
+						}
+					}
+				}
+			},
+			{
+				"name": "create",
+				"description": "Open an issue in the repository, in a project when given. The caller is its author.",
+				"input": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"title"
+					],
+					"properties": {
+						"title": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 200
+						},
+						"body": {
+							"type": "string",
+							"maxLength": 20000,
+							"description": "Markdown"
+						},
+						"project": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 512,
+							"description": "The project to file it against: a root path (crates/lsp), as the kernel passes it"
+						},
+						"fields": {
+							"type": "object",
+							"additionalProperties": {
+								"type": [
+									"string",
+									"number",
+									"boolean",
+									"array",
+									"null"
+								],
+								"items": {
+									"type": "string"
+								}
+							},
+							"description": "Values of the fields in the repository's tartan.cue"
+						}
+					}
+				},
+				"role": 20,
+				"export": "issues@1",
+				"access": "write",
+				"output": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"issue"
+					],
+					"properties": {
+						"issue": {
+							"type": "object",
+							"additionalProperties": false,
+							"required": [
+								"number",
+								"title",
+								"project",
+								"state",
+								"author",
+								"createdAt",
+								"updatedAt",
+								"closedAt",
+								"fields",
+								"version",
+								"body"
+							],
+							"properties": {
+								"number": {
+									"type": "integer"
+								},
+								"title": {
+									"type": "string"
+								},
+								"project": {
+									"type": [
+										"string",
+										"null"
+									]
+								},
+								"state": {
+									"enum": [
+										"open",
+										"closed"
+									]
+								},
+								"author": {
+									"type": "object",
+									"additionalProperties": false,
+									"required": [
+										"kind",
+										"id"
+									],
+									"properties": {
+										"kind": {
+											"type": "string"
+										},
+										"id": {
+											"type": "string"
+										},
+										"onBehalfOf": {
+											"type": "string"
+										}
+									}
+								},
+								"createdAt": {
+									"type": "integer"
+								},
+								"updatedAt": {
+									"type": "integer"
+								},
+								"closedAt": {
+									"type": [
+										"integer",
+										"null"
+									]
+								},
+								"fields": {
+									"type": "object",
+									"additionalProperties": {
+										"type": [
+											"string",
+											"number",
+											"boolean",
+											"array",
+											"null"
+										],
+										"items": {
+											"type": "string"
+										}
+									}
+								},
+								"version": {
+									"type": "integer"
+								},
+								"body": {
+									"type": "string"
+								}
+							}
+						}
+					}
+				}
+			},
+			{
+				"name": "close",
+				"description": "Close an issue by its number (idempotent); with project, not found unless it is that project's.",
+				"input": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"number"
+					],
+					"properties": {
+						"number": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 2147483647
+						},
+						"project": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 512,
+							"description": "The project it must belong to: a root path (crates/lsp), as the kernel passes it"
+						}
+					}
+				},
+				"role": 30,
+				"export": "issues@1",
+				"access": "write",
+				"output": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"issue",
+						"changed"
+					],
+					"properties": {
+						"issue": {
+							"type": "object",
+							"additionalProperties": false,
+							"required": [
+								"number",
+								"title",
+								"project",
+								"state",
+								"author",
+								"createdAt",
+								"updatedAt",
+								"closedAt",
+								"fields",
+								"version"
+							],
+							"properties": {
+								"number": {
+									"type": "integer"
+								},
+								"title": {
+									"type": "string"
+								},
+								"project": {
+									"type": [
+										"string",
+										"null"
+									]
+								},
+								"state": {
+									"enum": [
+										"open",
+										"closed"
+									]
+								},
+								"author": {
+									"type": "object",
+									"additionalProperties": false,
+									"required": [
+										"kind",
+										"id"
+									],
+									"properties": {
+										"kind": {
+											"type": "string"
+										},
+										"id": {
+											"type": "string"
+										},
+										"onBehalfOf": {
+											"type": "string"
+										}
+									}
+								},
+								"createdAt": {
+									"type": "integer"
+								},
+								"updatedAt": {
+									"type": "integer"
+								},
+								"closedAt": {
+									"type": [
+										"integer",
+										"null"
+									]
+								},
+								"fields": {
+									"type": "object",
+									"additionalProperties": {
+										"type": [
+											"string",
+											"number",
+											"boolean",
+											"array",
+											"null"
+										],
+										"items": {
+											"type": "string"
+										}
+									}
+								},
+								"version": {
+									"type": "integer"
+								}
+							}
+						},
+						"changed": {
+							"type": "boolean"
+						}
+					}
+				}
+			},
+			{
+				"name": "reopen",
+				"description": "Reopen a closed issue by its number (idempotent); with project, not found unless it is that project's.",
+				"input": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"number"
+					],
+					"properties": {
+						"number": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 2147483647
+						},
+						"project": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 512,
+							"description": "The project it must belong to: a root path (crates/lsp), as the kernel passes it"
+						}
+					}
+				},
+				"role": 30,
+				"export": "issues@1",
+				"access": "write",
+				"output": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"issue",
+						"changed"
+					],
+					"properties": {
+						"issue": {
+							"type": "object",
+							"additionalProperties": false,
+							"required": [
+								"number",
+								"title",
+								"project",
+								"state",
+								"author",
+								"createdAt",
+								"updatedAt",
+								"closedAt",
+								"fields",
+								"version"
+							],
+							"properties": {
+								"number": {
+									"type": "integer"
+								},
+								"title": {
+									"type": "string"
+								},
+								"project": {
+									"type": [
+										"string",
+										"null"
+									]
+								},
+								"state": {
+									"enum": [
+										"open",
+										"closed"
+									]
+								},
+								"author": {
+									"type": "object",
+									"additionalProperties": false,
+									"required": [
+										"kind",
+										"id"
+									],
+									"properties": {
+										"kind": {
+											"type": "string"
+										},
+										"id": {
+											"type": "string"
+										},
+										"onBehalfOf": {
+											"type": "string"
+										}
+									}
+								},
+								"createdAt": {
+									"type": "integer"
+								},
+								"updatedAt": {
+									"type": "integer"
+								},
+								"closedAt": {
+									"type": [
+										"integer",
+										"null"
+									]
+								},
+								"fields": {
+									"type": "object",
+									"additionalProperties": {
+										"type": [
+											"string",
+											"number",
+											"boolean",
+											"array",
+											"null"
+										],
+										"items": {
+											"type": "string"
+										}
+									}
+								},
+								"version": {
+									"type": "integer"
+								}
+							}
+						},
+						"changed": {
+							"type": "boolean"
+						}
+					}
+				}
+			},
+			{
+				"name": "update",
+				"description": "Change an issue's title, body, fields or state in one write. With expectedVersion, it fails if the issue changed since that version.",
+				"input": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"number"
+					],
+					"properties": {
+						"number": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 2147483647
+						},
+						"title": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 200
+						},
+						"body": {
+							"type": "string",
+							"maxLength": 20000
+						},
+						"fields": {
+							"type": "object",
+							"additionalProperties": {
+								"type": [
+									"string",
+									"number",
+									"boolean",
+									"array",
+									"null"
+								],
+								"items": {
+									"type": "string"
+								}
+							}
+						},
+						"state": {
+							"enum": [
+								"open",
+								"closed"
+							]
+						},
+						"expectedVersion": {
+							"type": "integer",
+							"minimum": 1
+						},
+						"project": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 512
+						}
+					}
+				},
+				"role": 30,
+				"access": "write",
+				"export": "issues@1",
+				"output": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"issue",
+						"changed"
+					],
+					"properties": {
+						"issue": {
+							"type": "object",
+							"additionalProperties": false,
+							"required": [
+								"number",
+								"title",
+								"project",
+								"state",
+								"author",
+								"createdAt",
+								"updatedAt",
+								"closedAt",
+								"fields",
+								"version"
+							],
+							"properties": {
+								"number": {
+									"type": "integer"
+								},
+								"title": {
+									"type": "string"
+								},
+								"project": {
+									"type": [
+										"string",
+										"null"
+									]
+								},
+								"state": {
+									"enum": [
+										"open",
+										"closed"
+									]
+								},
+								"author": {
+									"type": "object",
+									"additionalProperties": false,
+									"required": [
+										"kind",
+										"id"
+									],
+									"properties": {
+										"kind": {
+											"type": "string"
+										},
+										"id": {
+											"type": "string"
+										},
+										"onBehalfOf": {
+											"type": "string"
+										}
+									}
+								},
+								"createdAt": {
+									"type": "integer"
+								},
+								"updatedAt": {
+									"type": "integer"
+								},
+								"closedAt": {
+									"type": [
+										"integer",
+										"null"
+									]
+								},
+								"fields": {
+									"type": "object",
+									"additionalProperties": {
+										"type": [
+											"string",
+											"number",
+											"boolean",
+											"array",
+											"null"
+										],
+										"items": {
+											"type": "string"
+										}
+									}
+								},
+								"version": {
+									"type": "integer"
+								}
+							}
+						},
+						"changed": {
+							"type": "boolean"
+						}
+					}
+				}
+			},
+			{
+				"name": "fields",
+				"description": "The issue fields this repository's tartan.cue defines.",
+				"input": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {}
+				},
+				"role": 20,
+				"access": "read",
+				"export": "issues@1",
+				"output": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"fields"
+					],
+					"properties": {
+						"fields": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": [
+									"name",
+									"type"
+								],
+								"properties": {
+									"name": {
+										"type": "string"
+									},
+									"type": {
+										"enum": [
+											"text",
+											"number",
+											"select",
+											"multiselect",
+											"monetary",
+											"date",
+											"boolean"
+										]
+									},
+									"label": {
+										"type": "string"
+									},
+									"options": {
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									},
+									"default": {
+										"type": [
+											"string",
+											"number",
+											"boolean",
+											"array"
+										],
+										"items": {
+											"type": "string"
+										}
+									},
+									"min": {
+										"type": "number"
+									},
+									"max": {
+										"type": "number"
+									},
+									"maxLength": {
+										"type": "integer"
+									},
+									"currency": {
+										"type": "string"
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		],
+		"protocol": "protocol.md"
+	},
+	"limits": {
+		"render_cpu_ms": 100,
+		"action_cpu_ms": 200,
+		"tool_cpu_ms": 200
+	},
+	"config": {
+		"default": {},
+		"cue": "config/settings.cue"
+	}
+}

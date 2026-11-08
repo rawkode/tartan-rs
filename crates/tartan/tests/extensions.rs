@@ -214,8 +214,13 @@ async fn issues_installs_on_a_repository_and_answers_over_http() {
             .iter()
             .filter_map(|r| r["event"]["type"].as_str().map(str::to_owned))
             .collect();
+        let created = kinds
+            .iter()
+            .filter(|k| *k == "x.rawkode.issues.issue.created")
+            .count();
         if kinds.iter().any(|k| k == "package.published")
             && kinds.iter().any(|k| k == "extension.installed")
+            && created == 2
         {
             break;
         }
