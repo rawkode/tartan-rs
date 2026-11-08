@@ -53,6 +53,8 @@ const SCHEMA: &str = "
 pub struct RepoStatus {
     /// The repository actor's id.
     pub id: String,
+    /// The org actor's id.
+    pub org_id: String,
     /// The org's slug.
     pub org_slug: Slug,
     /// The repository's slug.
@@ -290,6 +292,7 @@ impl Handler<RepoStatusQuery> for Repo {
         let (org_slug, slug) = self.path(&ctx).await?;
         Ok(RepoStatus {
             id: self.id.clone(),
+            org_id: self.org_id(&ctx).await?,
             org_slug,
             slug,
             pool: ctx.inner().client_pool_name().map(str::to_owned),

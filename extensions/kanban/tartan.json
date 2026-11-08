@@ -1,0 +1,17 @@
+{
+	"schema": 1,
+	"id": "rawkode.kanban",
+	"name": "Kanban",
+	"description": "Boards over the org's issues: one for the org, for a repository or for a project, each with its own columns. Cards follow Issues' events; moving one updates the issue.",
+	"version": "0.1.0",
+	"api": "tartan:ext@0.1.0",
+	"runtime": "wasm",
+	"storage": {
+		"scope": "org",
+		"migrations": ["migrations/0001_boards.sql"]
+	},
+	"subscribe": [{ "event": "x.rawkode.issues.issue.*" }],
+	"permissions": {
+		"calls": { "rawkode.issues": ["update"] }
+	}
+}

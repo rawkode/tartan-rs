@@ -37,6 +37,21 @@ pub trait SqlBackend: Send + Sync {
     async fn exec_script(&self, script: &str) -> Result<()>;
 }
 
+/// Calls a tool of another extension's installation for the `calls` import.
+#[async_trait]
+pub trait ToolCaller: Send + Sync {
+    /// Calls `tool` of `extension` (in repository `repo`, for a repository's installation)
+    /// with JSON `args`. `Ok(Err(_))` is the callee's or the permission check's refusal; `Err`
+    /// is a failure to reach it.
+    async fn call(
+        &self,
+        extension: &str,
+        repo: Option<&str>,
+        tool: &str,
+        args: &str,
+    ) -> Result<Result<String, crate::ExtensionError>>;
+}
+
 /// The prefix of every table the host keeps in an installation's database.
 pub(crate) const HOST_TABLE_PREFIX: &str = "_tartan_";
 

@@ -13,13 +13,17 @@ cargo test
 
 # Extensions: their own tests, then their packages for the host's tests.
 (cd "$root/extensions/issues" && cargo test --quiet)
+(cd "$root/extensions/kanban" && cargo test --quiet)
 TARTAN_ISSUES_PACKAGE="$("$root/scripts/build-extension.sh" "$root/extensions/issues" "$root/.dev/packages/issues")"
 export TARTAN_ISSUES_PACKAGE
+TARTAN_KANBAN_PACKAGE="$("$root/scripts/build-extension.sh" "$root/extensions/kanban" "$root/.dev/packages/kanban")"
+export TARTAN_KANBAN_PACKAGE
 TARTAN_FIXTURE_PACKAGE="$("$root/scripts/build-extension.sh" "$root/extensions/fixture" "$root/.dev/packages/fixture")"
 export TARTAN_FIXTURE_PACKAGE
 cargo test -p tartan-extensions -- --include-ignored
 cargo test -p tartan --test extensions -- --include-ignored
 cargo test -p tartan --test subscriptions -- --include-ignored
+cargo test -p tartan --test kanban -- --include-ignored
 
 # The full stack: RustFS, walgit and the git CLI. WALGIT_BIN names a walgit binary.
 if [[ -n "${WALGIT_BIN:-}" ]]; then

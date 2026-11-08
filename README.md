@@ -59,8 +59,22 @@ such as Issues run unchanged.
    fails is kept as a dead letter and does not block the next; what it emits (`x.<extension>.<type>`) reaches the
    forge's subscribers. `extensions/fixture` is the test extension.
 
+4. Org installations and calls between extensions. **Done:** a package's storage scope (`org` or `repo`) decides
+   where it installs; an org installation receives matching events from the whole org, replayed from the start
+   when it subscribes. The `calls` import reaches another installation's tool as the same principal, if the
+   manifest's `permissions.calls` names it and the target is in the same org (and, for a repository's
+   installation, the same repository).
+
 Not yet: gates (walgit has no pre-receive hook to call them from), `notify` and why-notes (refused as
-`unavailable`), org-scoped installations, and identities beyond `admin`.
+`unavailable`), and identities beyond `admin`.
+
+### First-party extensions
+
+| Extension | Installs on | Does |
+| --- | --- | --- |
+| `extensions/issues` (`rawkode.issues`) | a repository | numbered issues with configured fields; emits `x.rawkode.issues.issue.created` and `.updated` snapshots |
+| `extensions/kanban` (`rawkode.kanban`) | an org | boards for the org, a repository or a project, each with its own field and columns; cards follow Issues' snapshots, and moving one calls Issues' `update` |
+| `extensions/fixture` (`tartan.fixture`) | a repository | test extension for event delivery |
 
 ### Goal 3: the web frontend
 

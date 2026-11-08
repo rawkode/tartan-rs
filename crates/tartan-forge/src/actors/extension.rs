@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tartan_extensions::{
     Actor as ExtensionActor, ActorKind, CallEnvironment, CallLimits, CallOutcome, Effect,
-    ExtensionError, InstallMode, SlotContext, SqlBackend, SqlRows, SqlValue, apply_migrations,
+    ExtensionError, InstallMode, SlotContext, SqlBackend, SqlRows, SqlValue, ToolCaller,
+    apply_migrations,
 };
 use tokio::sync::Mutex;
 
@@ -265,13 +266,35 @@ impl Extension {
         Ok((spec, loaded))
     }
 
-    fn environment(&self, ctx: &Ctx<Self>, spec: &InstallationSpec) -> CallEnvironment {
+    /// The environment of a call acting for `viewer`.
+    fn environment(
+        &self,
+        ctx: &Ctx<Self>,
+        spec: &InstallationSpec,
+        loaded: &Loaded,
+        viewer: &str,
+    ) -> CallEnvironment {
+        let caller = ctx.client().ok().map(|client| {
+            Arc::new(InstallationCaller {
+                client,
+                org_id: spec.org_id.clone(),
+                repo_id: spec.repo_id.clone(),
+                allowed: loaded.package.manifest.raw["permissions"]["calls"].clone(),
+                viewer: viewer.to_owned(),
+            }) as Arc<dyn ToolCaller>
+        });
         CallEnvironment {
             sql: Arc::new(ActorSql(ctx.sql().clone())),
             config: spec.config.clone(),
             limits: CallLimits::default(),
             label: format!("{}@{}", spec.extension_id, self.id),
+            caller,
         }
+    }
+
+    /// The principal an installation acts as when no person does: for events and timers.
+    fn own_principal(&self) -> String {
+        format!("extension:{}", self.id)
     }
 
     /// Applies a successful call's effects and turns its result into a reply.
@@ -320,6 +343,7 @@ impl Extension {
                             "installation_id": self.id,
                             "org_id": spec.org_id,
                             "repo_id": spec.repo_id,
+                            "path": spec.path,
                             "subject": subject,
                             "data": serde_json::from_str::<Value>(&data)?,
                         }),
@@ -381,7 +405,11 @@ impl Handler<Init> for Extension {
         self.outbox.set_org(spec.org_id.clone());
         let sql = ActorSql(ctx.sql().clone());
         apply_migrations(&sql, &loaded.package.migrations).await?;
-        let outcome = loaded.component.init(self.environment(&ctx, &spec)).await?;
+        let principal = self.own_principal();
+        let outcome = loaded
+            .component
+            .init(self.environment(&ctx, &spec, &loaded, &principal))
+            .await?;
         if let Err(error) = outcome.result {
             let CallReply::Failed { kind, message } = failed(error) else {
                 unreachable!("failed() returns Failed");
@@ -418,7 +446,7 @@ impl Handler<CallTool> for Extension {
         let outcome = loaded
             .component
             .call_tool(
-                self.environment(&ctx, &spec),
+                self.environment(&ctx, &spec, &loaded, &action.viewer),
                 &action.tool,
                 &action.args.to_string(),
                 &context,
@@ -436,7 +464,7 @@ impl Handler<Render> for Extension {
         let outcome = loaded
             .component
             .render(
-                self.environment(&ctx, &spec),
+                self.environment(&ctx, &spec, &loaded, &action.viewer),
                 &action.slot,
                 &context,
                 &action.props.to_string(),
@@ -454,7 +482,7 @@ impl Handler<Act> for Extension {
         let outcome = loaded
             .component
             .on_action(
-                self.environment(&ctx, &spec),
+                self.environment(&ctx, &spec, &loaded, &action.viewer),
                 &action.action,
                 &action.payload.to_string(),
                 &context,
@@ -481,7 +509,10 @@ impl Handler<DeliverEvents> for Extension {
             let event = to_extension_event(&envelope, &spec);
             let failure = match loaded
                 .component
-                .on_event(self.environment(&ctx, &spec), &event)
+                .on_event(
+                    self.environment(&ctx, &spec, &loaded, &self.own_principal()),
+                    &event,
+                )
                 .await
             {
                 Ok(outcome) => match outcome.result {
@@ -536,7 +567,10 @@ impl Handler<Timer> for Extension {
         let (spec, loaded) = self.installed(&ctx).await?;
         let outcome = loaded
             .component
-            .on_timer(self.environment(&ctx, &spec), &action.key)
+            .on_timer(
+                self.environment(&ctx, &spec, &loaded, &self.own_principal()),
+                &action.key,
+            )
             .await?;
         if let Err(error) = &outcome.result {
             tracing::warn!(installation = %self.id, key = %action.key, ?error, "on-timer failed");
@@ -640,6 +674,102 @@ fn valid_event_kind(kind: &str) -> bool {
                     .bytes()
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
         })
+}
+
+/// Serves an installation's `calls` import: checks its manifest's `permissions.calls` and its
+/// scope, then calls the target installation's tool as the same principal.
+struct InstallationCaller {
+    client: rivetkit::client::Client,
+    org_id: String,
+    repo_id: Option<String>,
+    /// `permissions.calls`: extension id to the tools it may call.
+    allowed: Value,
+    viewer: String,
+}
+
+#[async_trait]
+impl ToolCaller for InstallationCaller {
+    async fn call(
+        &self,
+        extension: &str,
+        repo: Option<&str>,
+        tool: &str,
+        args: &str,
+    ) -> Result<Result<String, ExtensionError>> {
+        use rivetkit::TypedClientExt;
+        use rivetkit::client::GetOptions;
+
+        let permitted = self.allowed[extension]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|t| t == tool));
+        if !permitted {
+            return Ok(Err(ExtensionError::Denied(format!(
+                "permissions.calls does not allow {extension} {tool}"
+            ))));
+        }
+        let Some(repo_id) = repo else {
+            return Ok(Err(ExtensionError::Invalid(
+                "repo is required: only repository installations can be called".to_owned(),
+            )));
+        };
+        if self.repo_id.as_deref().is_some_and(|own| own != repo_id) {
+            return Ok(Err(ExtensionError::Denied(
+                "an installation on a repository may only call into that repository".to_owned(),
+            )));
+        }
+        let Ok(args) = serde_json::from_str::<Value>(args) else {
+            return Ok(Err(ExtensionError::Invalid("args is not JSON".to_owned())));
+        };
+        let target = self.client.get_typed::<crate::Repo>(
+            crate::actors::REPO,
+            [repo_id],
+            GetOptions::default(),
+        )?;
+        let Ok(status) = target.send(crate::RepoStatusQuery {}).await else {
+            return Ok(Err(ExtensionError::NotFound(format!(
+                "repository {repo_id}"
+            ))));
+        };
+        if status.org_id != self.org_id {
+            return Ok(Err(ExtensionError::Denied(
+                "the repository belongs to another org".to_owned(),
+            )));
+        }
+        let installation = target
+            .send(crate::InstallationQuery {
+                extension_id: extension.to_owned(),
+            })
+            .await?;
+        let Some(installation) = installation else {
+            return Ok(Err(ExtensionError::NotFound(format!(
+                "{extension} on repository {repo_id}"
+            ))));
+        };
+        let reply = self
+            .client
+            .get_typed::<Extension>(
+                crate::actors::EXTENSION,
+                [installation.installation_id.as_str()],
+                GetOptions::default(),
+            )?
+            .send(CallTool {
+                tool: tool.to_owned(),
+                args,
+                viewer: self.viewer.clone(),
+            })
+            .await?;
+        Ok(match reply {
+            CallReply::Ok(value) => Ok(value.to_string()),
+            CallReply::Failed { kind, message } => Err(match kind.as_str() {
+                "denied" => ExtensionError::Denied(message),
+                "not_found" => ExtensionError::NotFound(message),
+                "invalid" => ExtensionError::Invalid(message),
+                "conflict" => ExtensionError::Conflict(message),
+                "unavailable" => ExtensionError::Unavailable(message),
+                _ => ExtensionError::Internal(message),
+            }),
+        })
+    }
 }
 
 /// The installation's database, as the extension host sees it.

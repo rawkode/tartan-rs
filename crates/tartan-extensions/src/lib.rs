@@ -9,6 +9,8 @@
 //!   a guard that keeps them off the host's `_tartan_*` tables and refuses `ATTACH` and `PRAGMA`;
 //!   render and context calls may only read;
 //! - the installation's configuration, a clock, randomness and ULIDs;
+//! - a [`ToolCaller`] for calls to other installations' tools, which the caller checks against
+//!   the manifest's `permissions.calls`;
 //! - an effects buffer: events the call emits and timers it sets are returned with its result,
 //!   so the caller applies them only when the call succeeds.
 
@@ -31,7 +33,7 @@ pub use crate::package::{
 pub use crate::runtime::{
     CallEnvironment, CallLimits, CallOutcome, ExtensionComponent, ExtensionRuntime,
 };
-pub use crate::sql::{SqlBackend, SqlRows, SqlValue, check_statement};
+pub use crate::sql::{SqlBackend, SqlRows, SqlValue, ToolCaller, check_statement};
 
 /// The extension API this host implements.
 pub const EXTENSION_API: &str = "tartan:ext@0.1.0";

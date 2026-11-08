@@ -1,0 +1,23 @@
+[package]
+name = "kanban"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "rawkode.kanban: boards over an org's issues, for the org, a repository or a project"
+publish = false
+
+# Built for wasm32-unknown-unknown by scripts/build-extension.sh, outside the host workspace.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tartan-ext = { path = "../../sdk/rust/tartan-ext" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

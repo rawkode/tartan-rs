@@ -103,6 +103,7 @@ fn env(sql: &Arc<MemorySql>, limits: CallLimits) -> CallEnvironment {
         config: "{}".to_owned(),
         limits,
         label: "rawkode.issues@test".to_owned(),
+        caller: None,
     }
 }
 

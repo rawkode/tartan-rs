@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use wasmtime::StoreLimits;
 
-use crate::bindings::{effects, host, kv, sql, types};
+use crate::ToolCaller;
+use crate::bindings::{calls, effects, host, kv, sql, types};
 use crate::{SqlBackend, SqlRows, SqlValue, check_statement};
 
 /// Whether a call may change the installation's data.
@@ -51,6 +52,8 @@ pub(crate) struct HostState {
     pub(crate) limits: StoreLimits,
     /// Names the installation in logs.
     pub(crate) label: String,
+    /// Calls other installations' tools; `None` where calls are not offered.
+    pub(crate) caller: Option<Arc<dyn ToolCaller>>,
     kv_ready: bool,
 }
 
@@ -61,6 +64,7 @@ impl HostState {
         kind: CallKind,
         limits: StoreLimits,
         label: String,
+        caller: Option<Arc<dyn ToolCaller>>,
     ) -> Self {
         Self {
             sql,
@@ -69,6 +73,7 @@ impl HostState {
             effects: Vec::new(),
             limits,
             label,
+            caller,
             kv_ready: false,
         }
     }
@@ -300,5 +305,28 @@ impl effects::Host for HostState {
         }
         self.effects.push(Effect::SetTimer { key, at_ms });
         Ok(())
+    }
+}
+
+impl calls::Host for HostState {
+    async fn call(
+        &mut self,
+        extension: String,
+        repo: Option<String>,
+        tool: String,
+        args: String,
+    ) -> wasmtime::Result<Result<String, types::Error>> {
+        if self.read_only() {
+            return Ok(Err(types::Error::Denied("read-only".to_owned())));
+        }
+        let Some(caller) = self.caller.clone() else {
+            return Ok(Err(types::Error::Denied(
+                "calls to other extensions are not available here".to_owned(),
+            )));
+        };
+        match caller.call(&extension, repo.as_deref(), &tool, &args).await {
+            Ok(result) => Ok(result),
+            Err(error) => Ok(Err(types::Error::Unavailable(format!("{error:#}")))),
+        }
     }
 }

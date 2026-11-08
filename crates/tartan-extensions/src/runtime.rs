@@ -65,6 +65,8 @@ pub struct CallEnvironment {
     pub limits: CallLimits,
     /// Names the installation in logs.
     pub label: String,
+    /// Serves the `calls` import; without one, calls are refused.
+    pub caller: Option<Arc<dyn crate::ToolCaller>>,
 }
 
 impl ExtensionRuntime {
@@ -193,7 +195,7 @@ impl ExtensionComponent {
             .tables(16)
             .memories(4)
             .build();
-        let state = HostState::new(env.sql, env.config, kind, limits, env.label);
+        let state = HostState::new(env.sql, env.config, kind, limits, env.label, env.caller);
         let mut store = Store::new(self.pre.engine(), state);
         store.limiter(|state| &mut state.limits);
         store.set_fuel(env.limits.fuel)?;

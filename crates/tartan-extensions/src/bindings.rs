@@ -10,4 +10,4 @@ wasmtime::component::bindgen!({
     exports: { default: async },
 });
 
-pub(crate) use self::tartan::ext::{effects, host, kv, sql, types};
+pub(crate) use self::tartan::ext::{calls, effects, host, kv, sql, types};

@@ -150,6 +150,17 @@ interface effects {
   set-timer: func(key: string, at-ms: u64);
 }
 
+// Calls a tool of another extension installed in the same org, as the principal the current
+// call acts for. The manifest names what it may call: `permissions.calls` maps an extension id
+// to its tools, such as {"rawkode.issues": ["update"]}. `repo` is the repository whose
+// installation to call (its id); an installation on a repository may only call into that
+// repository. Refused with `denied` otherwise, and in read-only calls.
+interface calls {
+  use types.{error, json};
+
+  call: func(extension: string, repo: option<string>, tool: string, args: json) -> result<json, error>;
+}
+
 world extension {
   use types.{slot-context, event, error, json, gate-decision};
 
@@ -157,6 +168,7 @@ world extension {
   import kv;
   import host;
   import effects;
+  import calls;
 
   export init: func() -> result<_, error>;
   export on-event: func(e: event) -> result<_, error>;

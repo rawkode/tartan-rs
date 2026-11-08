@@ -1,9 +1,8 @@
 //! # tartan-ext
 //!
 //! The Rust SDK for Tartan extensions (`tartan:ext@0.1.0`).
-//! An extension is a WebAssembly component: the forge runs it in a Dynamic
-//! Worker facet inside the installation's own ExtensionDO (the `wasm`
-//! runtime), with synchronous host imports and no JSPI.
+//! An extension is a WebAssembly component: the forge runs it in wasmtime,
+//! one instance per call, against the installation's own SQLite database.
 //!
 //! WIT has no optional exports, so this crate supplies them: implement
 //! [`Extension`] (every hook has a default) and call [`export!`]:
@@ -28,15 +27,17 @@
 //! clock, entropy and ULIDs, and [`effects`] buffers events, notices, note
 //! sections and timers, which the host applies through the kernel's
 //! capabilities only after the export returns `Ok` (and never during
-//! `render` or `provide-context`, which are read-only).
+//! `render` or `provide-context`, which are read-only), and [`calls`] reaches
+//! the tools of other extensions the manifest names.
 
+pub mod calls;
 pub mod effects;
 pub mod gate;
 pub mod host;
 pub mod sql;
 pub mod ui;
 
-/// The bindings generated from `packages/contract/wit/tartan.wit`.
+/// The bindings generated from `wit/tartan.wit`.
 pub mod bindings {
 	wit_bindgen::generate!({
 		path: "../../../wit",
