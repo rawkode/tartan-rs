@@ -1,68 +1,125 @@
 ---
 title: Kanban
-description: rawkode.kanban — boards over an org's issues, for the org, a repository or a project, defined in CUE configuration.
+description: rawkode.kanban — boards over a repository's issues, with columns, lanes and groups from Issues properties.
 sidebar:
-  order: 9
+  order: 10
 ---
 
-Kanban installs once per org, from the org's `tartan` repository. It keeps a card for every issue in the org from Issues' events, including issues created before it was installed, and shows them on boards. Boards are defined in configuration: the org's in its `tartan` repository, and a repository's or a project's in that repository.
+Kanban installs on a repository beside [Issues](/issues/). It keeps a card for every issue of the repository from Issues' events, including issues created before it was installed, and shows them on boards. Boards are defined in the repository's configuration, for the whole repository or for one of its projects, and refer to Issues' properties: CUE checks every reference, so a board that names a property Issues does not have, or a property of the wrong kind, fails evaluation instead of showing an empty board.
 
 ## A worked example
 
-The org's `tartan` repository installs Kanban and defines org-wide boards:
+The repository depends on the types module and on both extensions' modules:
 
 ```cue
-// acme/tartan: any root file of package tartan, such as tartan.cue
+// cue.mod/module.cue
+module: "example.com/acme-api"
+language: version: "v0.14.1"
+deps: {
+	"tartan.dev/types@v0":                     v: "v0.1.0"
+	"github.com/rawkode/tartan-ext/issues@v0": v: "v0.6.0"
+	"github.com/rawkode/tartan-ext/kanban@v0": v: "v0.3.0"
+}
+```
+
+Its configuration gives Issues the properties the boards use, and binds Issues' entry to Kanban's `#issues`:
+
+```cue
+// tartan.cue
 package tartan
 
-let statuses = [{value: "todo", title: "To do"}, {value: "doing", title: "Doing"}, {value: "done", title: "Done"}]
+import (
+	"tartan.dev/types"
+	"github.com/rawkode/tartan-ext/issues"
+	"github.com/rawkode/tartan-ext/kanban"
+)
 
-extensions: "rawkode.kanban": {
-	version: "0.2.0"
+let props = extensions."rawkode.issues".settings.properties
+
+extensions: "rawkode.issues": issues.#Extension & {settings: properties: {
+	status:   types.#Select & {options: ["todo", "doing", "review", "done"], labels: todo: "To do", default: "todo"}
+	priority: types.#Select & {options: ["p1", "p2", "p3"], labels: {p1: "Urgent", p2: "Soon", p3: "Later"}}
+	tags:     types.#MultiSelect & {options: ["bug", "docs", "perf"]}
+	owner:    types.#Person
+	notes:    types.#LongText
+}}
+
+extensions: "rawkode.kanban": kanban.#Extension & {
+	#issues: extensions."rawkode.issues"
 	settings: boards: {
-		org: {name: "Everything", field: "status", columns: statuses}
-		web: {field: "status", columns: statuses, scope: {kind: "repo", repo: "acme/web"}}
-		state: {field: "state", columns: [{value: "open"}, {value: "closed"}]}
+		// Every issue: a column per status, a lane per priority, grouped by project.
+		triage: {name: "Triage", columns: props.status, lanes: props.priority, group: "project"}
+		// The language server's issues: three of the statuses in a chosen order,
+		// a lane per tag, grouped by owner.
+		lsp: {
+			name:    "Language server"
+			project: "crates/lsp"
+			columns: {property: props.status, values: ["todo", "doing", "done"]}
+			lanes:   props.tags
+			group:   props.owner
+		}
+		// Open and closed.
+		state: {columns: "state"}
 	}
 }
 ```
 
-A repository adds its own boards, and its projects' boards, by contributing settings without a version:
-
-```cue
-// acme/api
-package tartan
-
-let statuses = [{value: "todo"}, {value: "doing"}, {value: "done"}]
-
-extensions: "rawkode.issues": {
-	version: "0.5.0"
-	settings: fields: status: {type: "select", options: ["todo", "doing", "done"], default: "todo"}
-}
-extensions: "rawkode.kanban": settings: boards: {
-	api: {name: "API", field: "status", columns: statuses}
-	lsp: {name: "Language server", field: "status", project: "crates/lsp", columns: statuses}
-}
-```
-
-This gives five boards: `org`, `web` and `state` from the org, and `acme/api/api` and `acme/api/lsp` from the repository.
+This gives three boards. `triage` has the columns To do, doing, review and done, a lane for each of Urgent, Soon and Later, and a final "None" lane for issues without a priority; inside each cell, cards are grouped under their projects, with issues of the whole repository under "None". `lsp` shows only issues filed against `crates/lsp`: an issue tagged both `bug` and `docs` appears in both lanes. `state` is named after its id and has the columns Open and Closed.
 
 ## Board settings
 
 | Key | Meaning |
 | --- | --- |
-| `name` | the board's title; defaults to its id |
-| `field` | the issue field the columns are values of, or `state` for open and closed |
-| `columns` | 1 to 12 columns, each `{value, title}`, with distinct values |
-| `scope` | org boards only: `{kind: "org"}` (the default), `{kind: "repo", repo: "acme/web"}` or `{kind: "project", repo: "acme/api", project: "crates/lsp"}` |
-| `project` | contributed boards only: scope the board to one of the repository's projects |
+| `name` | the board's title; defaults to its id (1 to 64 lowercase letters, digits and `-`) |
+| `project` | show only the issues filed against this project, by its root path |
+| `columns` | one of Issues' select properties, with a column per option in order; `{property, values}` for some of its options in a chosen order; or `"state"` for open and closed |
+| `lanes` | rows: one of Issues' select, multi-select or person properties, or `"project"` |
+| `group` | headed groups inside each cell, by the same kinds of values as `lanes` |
 
-A contributed board is named `<org>/<repo>/<id>` and is scoped to its repository. An issue without a value starts in the first column; one whose value is not a column is listed as unplaced. A definition that is not a valid board is left out and reported by `list_boards` under `invalid`.
+Kanban's module refuses, at evaluation:
 
-## Moving cards
+- a board whose `columns`, `lanes` or `group` is not one of `#issues`' properties, such as an inline `types.#Select` whose options differ from every Issues select property;
+- columns that are not a select property (a short text, a multi-select, a person), and lanes or groups by a short text, number, date, URL or money property;
+- `values` that are not options of the property, repeat one, or are empty;
+- a board without columns, an unknown key, or an invalid board id;
+- Kanban without the `#issues` binding, unless every board's columns are `"state"`.
 
-The `move` tool (and the board's `move` action) moves a card by calling Issues' `update` in the card's repository, which Kanban's manifest permits with `"calls": {"rawkode.issues": ["update"]}`. Moving to a value that is not a column is refused, and so is a card outside the board's scope.
+CUE compares values, not where they were written: an inline select identical to one of Issues' select properties, name aside, unifies with it and is that property. Kanban's manifest also requires `rawkode.issues`, so a configuration that installs Kanban without Issues is refused.
+
+## Boards
+
+Column titles come from the property's labels, falling back to the values; lane and group titles likewise, and project roots and person ids as they are. A select's lanes include every option, in order; groups include only the values with cards. Other values come next, sorted, and cards without a value come last under "None". A card with no column value is in the first column (or its property's default column); a card whose value is no column's, such as an option a subset leaves out, is listed as unplaced.
 
 ## Tools
 
-`list_boards` (the boards, and the definitions that are not boards), `board` (one board with its cards in columns) and `move`.
+| Tool | Does |
+| --- | --- |
+| `list_boards` | `{boards: [{id, name, project}], invalid: [{id, problem}]}` |
+| `board` | one board (`board`: its id) as lanes × columns × groups |
+| `move` | moves a card (`board`, `number`, `column`) and returns `{card}` |
+
+`board` returns `{board, lanes, unplaced}`. `board` is `{id, name, project, columns: [{value, title}], lanes: {by} | null, group: {by} | null}`. Each lane is `{value, title, cells}`, each cell `{column, groups}`, and each group `{value, title, cards}`. Without lanes there is exactly one lane, and without a group exactly one group per cell, each with a null value and an empty title. A card is `{number, title, state, project, properties, version}`.
+
+```json
+{
+	"board": {"id": "triage", "name": "Triage", "project": null,
+		"columns": [{"value": "todo", "title": "To do"}, {"value": "doing", "title": "doing"}],
+		"lanes": {"by": "priority"}, "group": {"by": "project"}},
+	"lanes": [
+		{"value": "p1", "title": "Urgent", "cells": [
+			{"column": "todo", "groups": [
+				{"value": "crates/lsp", "title": "crates/lsp", "cards": [
+					{"number": 4, "title": "Hover is slow", "state": "open", "project": "crates/lsp",
+						"properties": {"priority": "p1"}, "version": 2}
+				]}
+			]},
+			{"column": "doing", "groups": []}
+		]}
+	],
+	"unplaced": []
+}
+```
+
+## Moving cards
+
+`move` (and the `board` slot's `move` action) sets the board's column property, or the issue's state for a `"state"` board, by calling Issues' `update` on the repository, which Kanban's manifest permits with `"calls": {"rawkode.issues": ["update"]}`. Moving to a value that is not a column is refused, and so is a card that is not on the board.

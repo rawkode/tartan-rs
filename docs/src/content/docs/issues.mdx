@@ -1,38 +1,83 @@
 ---
 title: Issues
-description: rawkode.issues — numbered issues per repository with configured fields.
+description: rawkode.issues — numbered issues per repository with typed properties.
 sidebar:
-  order: 8
+  order: 9
 ---
 
-Issues installs per repository, from the repository's configuration. Each repository's issues are numbered from 1, open or closed, and may be filed against a project (a root path such as `crates/lsp`).
+Issues installs on a repository, from the repository's configuration. Each repository's issues are numbered from 1, open or closed, and may be filed against a project (a root path such as `crates/lsp`). Issues has the typed properties the configuration gives it.
 
-## Fields
+## Installing
 
-Fields come from the installation's settings:
+Issues is the CUE module `github.com/rawkode/tartan-ext/issues`. Its `#Extension` fixes the extension's id and version and types its settings with [`tartan.dev/types`](/property-types/), so the module version a repository depends on is the Issues version it installs:
 
 ```cue
-package tartan
-
-extensions: "rawkode.issues": {
-	version: "0.5.0"
-	settings: fields: status: {type: "select", options: ["todo", "doing", "done"], default: "todo"}
+// cue.mod/module.cue
+module: "example.com/acme-api"
+language: version: "v0.14.1"
+deps: {
+	"tartan.dev/types@v0":                     v: "v0.1.0"
+	"github.com/rawkode/tartan-ext/issues@v0": v: "v0.6.0"
 }
 ```
 
-Types are `text`, `number`, `select`, `multiselect`, `monetary`, `date` and `boolean`. A value that does not fit its field is refused.
+```cue
+// tartan.cue
+package tartan
+
+import (
+	"tartan.dev/types"
+	"github.com/rawkode/tartan-ext/issues"
+)
+
+extensions: "rawkode.issues": issues.#Extension & {settings: properties: {
+	status:   types.#Select & {options: ["todo", "doing", "done"], labels: todo: "To do", default: "todo"}
+	priority: types.#Select & {options: ["p1", "p2", "p3"]}
+	tags:     types.#MultiSelect & {options: ["bug", "docs"]}
+	owner:    types.#Person & {label: "Owner"}
+	notes:    types.#LongText & {label: "Notes"}
+	spec:     types.#URL
+	budget:   types.#Money & {currency: "GBP"}
+	due:      types.#Date
+}}
+```
+
+Run `cue export` with `CUE_REGISTRY` set to the forge to see exactly what the forge applies. A property name is a lowercase identifier of up to 32 characters (`^[a-z][a-z0-9_]{0,31}$`). Each property records its own name (`properties.status.name` is `"status"`), so another extension's configuration, such as a [Kanban](/kanban/) board, can refer to the property itself and CUE checks the reference.
+
+## Values
+
+| Kind | Values | Shown as |
+| --- | --- | --- |
+| `shorttext` | one line, at most `maxLength` characters (200) | text |
+| `longtext` | Markdown, at most `maxLength` characters (20000) | rendered Markdown |
+| `number` | a number within `min` and `max` | number |
+| `date` | a real day, `YYYY-MM-DD` | date |
+| `boolean` | `true` or `false` | Yes or No |
+| `select` | one of `options` | the option's label, or the option |
+| `multiselect` | distinct options | their labels |
+| `person` | a principal id, such as `usr_dev` | the id |
+| `url` | an `http` or `https` URL | a link, for `https` |
+| `money` | an integer of minor units in the property's currency | `GBP 12.50` |
+
+A value is checked when it is written: one that does not fit its property is refused with `invalid`, and so is a property the configuration does not define. `null` clears a property. A default fills in when an issue is read. Changing the configuration never rewrites stored values: a removed property or option stays on the issues that have it.
 
 ## Tools
 
 | Tool | Does |
 | --- | --- |
-| `list` | issues newest first, without bodies (`state`, `limit`, `project`, `before`) |
+| `list` | issues newest first, without bodies (`state`, `limit`, `project`, `before`), with the counts and the properties |
 | `get` | one issue with its body |
-| `fields` | the configured fields |
-| `create` | a new issue (`title`, `body`, `project`, `fields`) |
-| `update` | title, body, fields or state (`expectedVersion` guards against concurrent edits) |
+| `properties` | the configured properties: `name`, `kind`, and `label`, `options`, `labels`, `default`, `min`, `max`, `maxLength` and `currency` where set |
+| `create` | a new issue (`title`, `body`, `project`, `properties`) |
+| `update` | title, body, `properties` or state in one write (`expectedVersion` guards against concurrent edits) |
 | `close`, `reopen` | change the state |
+
+An issue is `{number, title, project, state, author, createdAt, updatedAt, closedAt, properties, version}`, with `body` from `get`, `create` and the issue view. `properties` holds the stored values with the configured defaults filled in.
+
+## Views
+
+The repository's Issues tab (slot `issues`) shows the counts, the newest issues with up to six properties as columns, and a form that opens an issue. The `issue` slot (`props: {number}`) shows one issue: its body and each long text property rendered as Markdown, and its other properties.
 
 ## Events
 
-Every write emits `x.rawkode.issues.issue.created` or `.updated` with the issue's number, title, project, state, fields, version and update time, but not its body. Other extensions keep a copy by keeping the highest version.
+Every write emits `x.rawkode.issues.issue.created` or `.updated` with the issue's number, title, project, state, stored `properties`, version and update time, but not its body. Other extensions keep a copy by keeping the highest version.

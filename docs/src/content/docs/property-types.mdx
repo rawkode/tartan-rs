@@ -1,0 +1,71 @@
+---
+title: Property types
+description: The tartan.dev/types CUE module — typed properties that extensions store and repositories configure.
+sidebar:
+  order: 8
+---
+
+`tartan.dev/types` is a CUE module of typed property definitions. Extensions build on it: Issues types its `properties` with it, and Kanban's boards refer to those properties. A repository imports it like any other module, so `cue export` with `CUE_REGISTRY` pointed at the forge checks a configuration exactly as the forge does.
+
+```cue
+// cue.mod/module.cue
+module: "example.com/acme-api"
+language: version: "v0.14.1"
+deps: "tartan.dev/types@v0": v: "v0.1.0"
+```
+
+```cue
+// tartan.cue
+package tartan
+
+import "tartan.dev/types"
+
+let status = types.#Select & {options: ["todo", "doing", "done"], labels: todo: "To do", default: "todo"}
+```
+
+## The types
+
+Every property has a `kind`, an optional `label` (the title people see, 1 to 100 characters) and an optional `name`. An extension that keeps properties by name sets `name` to the key it stores the property under, so other configuration can refer to the property itself. A `default`, when given, must be a value of the property.
+
+| Definition | `kind` | Constraints | Values |
+| --- | --- | --- | --- |
+| `#ShortText` | `shorttext` | `maxLength`, 1 to 200 | one line of at most `maxLength` characters (200) |
+| `#LongText` | `longtext` | `maxLength`, 1 to 20000 | Markdown of at most `maxLength` characters (20000) |
+| `#Number` | `number` | `min`, `max` (`max` at least `min`) | a number within the bounds |
+| `#Date` | `date` | | a real day, `YYYY-MM-DD` |
+| `#Boolean` | `boolean` | | `true` or `false` |
+| `#Select` | `select` | `options`, `labels` | one of `options` |
+| `#MultiSelect` | `multiselect` | `options`, `labels` | distinct options, in any order |
+| `#Person` | `person` | | a principal id, such as `usr_dev` |
+| `#URL` | `url` | | an `http` or `https` URL of at most 2048 characters |
+| `#Money` | `money` | `currency`, three capital letters (`GBP`) | an integer of minor units: `1250` is GBP 12.50 |
+
+`options` is a list of 1 to 100 distinct, non-empty strings. `labels` gives an option its title, keyed by option: a label for a value that is not an option is invalid. Money stays exact because its values are integers; ISO 4217 sets each currency's decimal places, and any other code has two.
+
+`#Property` is any of them, chosen by `kind`:
+
+```cue
+budget: types.#Property & {kind: "money", currency: "GBP"}
+```
+
+## What CUE refuses
+
+Each of these fails `cue export`, and so fails the configuration:
+
+```cue
+types.#Select & {options: ["todo", "done"], labels: doing: "Doing"} // a label for a missing option
+types.#Select & {options: ["todo", "done"], default: "doing"}       // a default that is not an option
+types.#Select & {options: []}                                        // no options
+types.#Money & {currency: "gbp"}                                     // not a currency code
+types.#Number & {min: 0, default: -1}                                // a default out of bounds
+types.#ShortText & {maxLength: 201}                                  // over the limit
+types.#Property & {kind: "colour"}                                   // an unknown kind
+```
+
+## Checking the module
+
+`cue/types/test.sh` evaluates every case in `cue/types/testdata/valid` and expects every case in `cue/types/testdata/invalid` to fail. It also checks the value vectors Issues shares (`extensions/issues/testdata/property-values.json`): each value Issues accepts must be a valid `default` in CUE and each value it refuses must not, so a default the module accepts is always a value Issues stores.
+
+```sh
+CUE_BIN=cue cue/types/test.sh
+```
