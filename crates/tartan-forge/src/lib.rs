@@ -29,14 +29,14 @@ pub use crate::actors::extension::{
 };
 pub use crate::actors::forge::{
     CreateOrg, Forge, ListPackages, ListRecipients, ListSubscribers, OrgInfo, PackageInfo,
-    PackageQuery, Placement, PublishPackage, Recipient, RegisterSubscriber, ResolveOrg,
-    SetPlacement, SubscribeInstallation, SubscriberSpec, valid_placement_target,
+    PackageQuery, Placement, PublishPackage, Recipient, RecipientScope, RegisterSubscriber,
+    ResolveOrg, SetPlacement, SubscribeInstallation, SubscriberSpec, valid_placement_target,
+};
+pub use crate::actors::installations::{
+    Install, InstallationInfo, InstallationQuery, ListInstallations,
 };
 pub use crate::actors::org::{CreateRepo, Org, OrgStatus, OrgStatusQuery, RepoInfo, ResolveRepo};
-pub use crate::actors::repo::{
-    Install, InstallationInfo, InstallationQuery, ListInstallations, RecordRefEvents, Repo,
-    RepoStatus, RepoStatusQuery,
-};
+pub use crate::actors::repo::{RecordRefEvents, Repo, RepoStatus, RepoStatusQuery};
 pub use crate::actors::subscriber::{Received, ReceivedEvent, Subscriber};
 pub use crate::clients::{
     extension_handle, forge_handle, org_handle, repo_handle, subscriber_handle,
@@ -45,6 +45,7 @@ pub use crate::envelope::Envelope;
 pub use crate::event_log::ReadEvents;
 pub use crate::event_pattern::{EventPattern, EventPatternError};
 pub use crate::extensions::{Extensions, Loaded};
+pub use crate::outbox::{Flush, FlushTree};
 pub use crate::services::{GitHost, Services, install_services};
 pub use crate::slug::{Slug, SlugError};
 pub use crate::walgit::{RefEvent, WalgitClient, verify_signature};

@@ -39,8 +39,9 @@ const SCHEMA: &str = "
         version TEXT NOT NULL,
         digest TEXT NOT NULL,
         config TEXT NOT NULL,
-        repo_id TEXT NOT NULL,
-        repo_path TEXT NOT NULL
+        org_id TEXT NOT NULL,
+        repo_id TEXT,
+        path TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS _tartan_cursors (
         source TEXT PRIMARY KEY,
@@ -69,10 +70,12 @@ pub struct InstallationSpec {
     pub digest: String,
     /// The installation's configuration, as JSON.
     pub config: String,
-    /// The repository the installation belongs to.
-    pub repo_id: String,
-    /// The repository's `org/repo` path.
-    pub repo_path: String,
+    /// The org the installation belongs to.
+    pub org_id: String,
+    /// The repository, for a repository's installation.
+    pub repo_id: Option<String>,
+    /// `org` for an org's installation, `org/repo` for a repository's.
+    pub path: String,
 }
 
 /// The reply of an extension call: its JSON result, or the error it returned.
@@ -205,8 +208,16 @@ impl Actor for Extension {
         apply_schema(ctx.sql(), EVENT_LOG_SCHEMA).await?;
         apply_schema(ctx.sql(), SCHEMA).await?;
         let id = key_id(ctx.key())?;
+        let outbox = Outbox::new(format!("extension:{id}"));
+        let org = ctx
+            .sql()
+            .query("SELECT org_id FROM _tartan_installation", None)
+            .await?;
+        if let Some(row) = org.rows.first() {
+            outbox.set_org(text(row, 0)?);
+        }
         Ok(Self {
-            outbox: Outbox::new(format!("extension:{id}")),
+            outbox,
             id,
             calls: Mutex::new(()),
         })
@@ -223,7 +234,7 @@ impl Extension {
         let result = ctx
             .sql()
             .query(
-                "SELECT extension_id, version, digest, config, repo_id, repo_path
+                "SELECT extension_id, version, digest, config, org_id, repo_id, path
                  FROM _tartan_installation",
                 None,
             )
@@ -237,8 +248,9 @@ impl Extension {
             version: text(row, 1)?,
             digest: text(row, 2)?,
             config: text(row, 3)?,
-            repo_id: text(row, 4)?,
-            repo_path: text(row, 5)?,
+            org_id: text(row, 4)?,
+            repo_id: crate::sql::optional_text(row, 5)?,
+            path: text(row, 6)?,
         }))
     }
 
@@ -306,6 +318,7 @@ impl Extension {
                         format!("x.{}.{kind}", spec.extension_id),
                         json!({
                             "installation_id": self.id,
+                            "org_id": spec.org_id,
                             "repo_id": spec.repo_id,
                             "subject": subject,
                             "data": serde_json::from_str::<Value>(&data)?,
@@ -365,6 +378,7 @@ impl Handler<Init> for Extension {
             .extensions
             .load(&spec.extension_id, &spec.version, &spec.digest)
             .await?;
+        self.outbox.set_org(spec.org_id.clone());
         let sql = ActorSql(ctx.sql().clone());
         apply_migrations(&sql, &loaded.package.migrations).await?;
         let outcome = loaded.component.init(self.environment(&ctx, &spec)).await?;
@@ -378,16 +392,17 @@ impl Handler<Init> for Extension {
         ctx.sql()
             .execute(
                 "INSERT INTO _tartan_installation
-                 (id, extension_id, version, digest, config, repo_id, repo_path)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                 (id, extension_id, version, digest, config, org_id, repo_id, path)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 Some(vec![
                     param_text(spec.installation_id.as_str()),
                     param_text(spec.extension_id.as_str()),
                     param_text(spec.version.as_str()),
                     param_text(spec.digest.as_str()),
                     param_text(spec.config.as_str()),
-                    param_text(spec.repo_id.as_str()),
-                    param_text(spec.repo_path.as_str()),
+                    param_text(spec.org_id.as_str()),
+                    crate::sql::param_optional_text(spec.repo_id.clone()),
+                    param_text(spec.path.as_str()),
                 ]),
             )
             .await?;
@@ -564,8 +579,8 @@ fn to_extension_event(envelope: &Envelope, spec: &InstallationSpec) -> tartan_ex
         seq: envelope.seq,
         kind: envelope.kind.clone(),
         source: envelope.source.clone(),
-        node: spec.repo_id.clone(),
-        repo: Some(spec.repo_id.clone()),
+        node: spec.repo_id.clone().unwrap_or_else(|| spec.org_id.clone()),
+        repo: spec.repo_id.clone(),
         subject: None,
         actor: ExtensionActor {
             kind: ActorKind::System,
@@ -585,8 +600,8 @@ fn to_extension_event(envelope: &Envelope, spec: &InstallationSpec) -> tartan_ex
 fn slot_context(spec: &InstallationSpec, slot: Option<&str>, viewer: &str) -> SlotContext {
     SlotContext {
         slot: slot.map(str::to_owned),
-        node: spec.repo_id.clone(),
-        repo: Some(spec.repo_id.clone()),
+        node: spec.repo_id.clone().unwrap_or_else(|| spec.org_id.clone()),
+        repo: spec.repo_id.clone(),
         git_ref: None,
         path: None,
         entity: None,

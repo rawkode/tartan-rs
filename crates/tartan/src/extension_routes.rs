@@ -11,12 +11,12 @@ use serde_json::{Value, json};
 use tartan_extensions::{ExtensionPackage, Manifest};
 use tartan_forge::{
     Act, CallReply, CallTool, Install, InstallationInfo, InstallationQuery, ListInstallations,
-    ListPackages, PackageInfo, PackageQuery, PublishPackage, Render, extension_handle,
-    forge_handle, repo_handle,
+    ListPackages, OrgInfo, PackageInfo, PackageQuery, PublishPackage, Render, RepoInfo,
+    extension_handle, forge_handle, org_handle, repo_handle,
 };
 
 use crate::ApiError;
-use crate::gateway::{GatewayState, resolve_repo};
+use crate::gateway::{GatewayState, resolve_org, resolve_repo};
 
 /// The largest package upload, base64 included.
 const PACKAGE_UPLOAD_MAX: usize = 32 << 20;
@@ -34,20 +34,20 @@ pub(crate) fn routes() -> axum::Router<GatewayState> {
                 .layer(DefaultBodyLimit::max(PACKAGE_UPLOAD_MAX)),
         )
         .route(
+            "/orgs/{org}/extensions",
+            post(install_on_org).get(list_on_org),
+        )
+        .route(
+            "/orgs/{org}/extensions/{extension}/{call}/{name}",
+            post(call_on_org),
+        )
+        .route(
             "/orgs/{org}/repos/{repo}/extensions",
-            post(install).get(list_installations),
+            post(install_on_repo).get(list_on_repo),
         )
         .route(
-            "/orgs/{org}/repos/{repo}/extensions/{extension}/tools/{tool}",
-            post(call_tool),
-        )
-        .route(
-            "/orgs/{org}/repos/{repo}/extensions/{extension}/render/{slot}",
-            post(render),
-        )
-        .route(
-            "/orgs/{org}/repos/{repo}/extensions/{extension}/actions/{action}",
-            post(act),
+            "/orgs/{org}/repos/{repo}/extensions/{extension}/{call}/{name}",
+            post(call_on_repo),
         )
 }
 
@@ -136,6 +136,102 @@ async fn list_packages(
     ))
 }
 
+/// The org or repository an installation is made on.
+enum Target {
+    Org(OrgInfo),
+    Repo(RepoInfo),
+}
+
+impl Target {
+    async fn org(state: &GatewayState, org: &str) -> Result<Self, ApiError> {
+        Ok(Self::Org(resolve_org(&state.client, org).await?))
+    }
+
+    async fn repo(state: &GatewayState, org: &str, repo: &str) -> Result<Self, ApiError> {
+        Ok(Self::Repo(resolve_repo(&state.client, org, repo).await?))
+    }
+
+    fn scope(&self) -> &'static str {
+        match self {
+            Self::Org(_) => "org",
+            Self::Repo(_) => "repo",
+        }
+    }
+
+    fn pool(&self) -> Option<String> {
+        match self {
+            Self::Org(info) => info.pool.clone(),
+            Self::Repo(info) => info.pool.clone(),
+        }
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            Self::Org(info) => info.slug.to_string(),
+            Self::Repo(info) => format!("{}/{}", info.org_slug, info.slug),
+        }
+    }
+
+    async fn install(
+        &self,
+        state: &GatewayState,
+        action: Install,
+    ) -> Result<InstallationInfo, ApiError> {
+        Ok(match self {
+            Self::Org(info) => {
+                org_handle(&state.client, &info.id, info.pool.clone())?
+                    .send(action)
+                    .await?
+            }
+            Self::Repo(info) => {
+                repo_handle(&state.client, &info.id, info.pool.clone())?
+                    .send(action)
+                    .await?
+            }
+        })
+    }
+
+    async fn list(&self, state: &GatewayState) -> Result<Vec<InstallationInfo>, ApiError> {
+        Ok(match self {
+            Self::Org(info) => {
+                org_handle(&state.client, &info.id, info.pool.clone())?
+                    .send(ListInstallations {})
+                    .await?
+            }
+            Self::Repo(info) => {
+                repo_handle(&state.client, &info.id, info.pool.clone())?
+                    .send(ListInstallations {})
+                    .await?
+            }
+        })
+    }
+
+    async fn installation(
+        &self,
+        state: &GatewayState,
+        extension: &str,
+    ) -> Result<InstallationInfo, ApiError> {
+        let query = InstallationQuery {
+            extension_id: extension.to_owned(),
+        };
+        let found = match self {
+            Self::Org(info) => {
+                org_handle(&state.client, &info.id, info.pool.clone())?
+                    .send(query)
+                    .await?
+            }
+            Self::Repo(info) => {
+                repo_handle(&state.client, &info.id, info.pool.clone())?
+                    .send(query)
+                    .await?
+            }
+        };
+        found.ok_or_else(|| {
+            ApiError::NotFound(format!("extension {extension} on {}", self.describe()))
+        })
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct InstallBody {
     package: String,
@@ -148,10 +244,26 @@ fn empty_object() -> Value {
     json!({})
 }
 
-async fn install(
+async fn install_on_org(
+    State(state): State<GatewayState>,
+    Path(org): Path<String>,
+    Json(body): Json<InstallBody>,
+) -> Result<(StatusCode, Json<InstallationInfo>), ApiError> {
+    install(&state, Target::org(&state, &org).await?, body).await
+}
+
+async fn install_on_repo(
     State(state): State<GatewayState>,
     Path((org, repo)): Path<(String, String)>,
     Json(body): Json<InstallBody>,
+) -> Result<(StatusCode, Json<InstallationInfo>), ApiError> {
+    install(&state, Target::repo(&state, &org, &repo).await?, body).await
+}
+
+async fn install(
+    state: &GatewayState,
+    target: Target,
+    body: InstallBody,
 ) -> Result<(StatusCode, Json<InstallationInfo>), ApiError> {
     let found = forge_handle(&state.client)?
         .send(PackageQuery {
@@ -165,100 +277,110 @@ async fn install(
             body.package, body.version
         )));
     };
-    if package.manifest["storage"]["scope"] != "repo" {
+    if package.manifest["storage"]["scope"] != target.scope() {
         return Err(ApiError::BadRequest(format!(
-            "{} is not installed per repository",
-            package.id
+            "{} is not installed per {}",
+            package.id,
+            target.scope()
         )));
     }
-    let info = resolve_repo(&state.client, &org, &repo).await?;
-    let installation = repo_handle(&state.client, &info.id, info.pool)?
-        .send(Install {
-            extension_id: body.package,
-            version: body.version,
-            config: body.config,
-        })
+    let installation = target
+        .install(
+            state,
+            Install {
+                extension_id: body.package,
+                version: body.version,
+                config: body.config,
+            },
+        )
         .await?;
     Ok((StatusCode::CREATED, Json(installation)))
 }
 
-async fn list_installations(
+async fn list_on_org(
+    State(state): State<GatewayState>,
+    Path(org): Path<String>,
+) -> Result<Json<Vec<InstallationInfo>>, ApiError> {
+    Ok(Json(Target::org(&state, &org).await?.list(&state).await?))
+}
+
+async fn list_on_repo(
     State(state): State<GatewayState>,
     Path((org, repo)): Path<(String, String)>,
 ) -> Result<Json<Vec<InstallationInfo>>, ApiError> {
-    let info = resolve_repo(&state.client, &org, &repo).await?;
-    let installations = repo_handle(&state.client, &info.id, info.pool)?
-        .send(ListInstallations {})
-        .await?;
-    Ok(Json(installations))
+    Ok(Json(
+        Target::repo(&state, &org, &repo)
+            .await?
+            .list(&state)
+            .await?,
+    ))
 }
 
-async fn call_tool(
+async fn call_on_org(
     State(state): State<GatewayState>,
-    Path((org, repo, extension, tool)): Path<(String, String, String, String)>,
-    Json(args): Json<Value>,
+    Path((org, extension, call, name)): Path<(String, String, String, String)>,
+    Json(input): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    let (installation, pool) = installation(&state, &org, &repo, &extension).await?;
-    let reply = extension_handle(&state.client, &installation.installation_id, pool)?
-        .send(CallTool {
-            tool,
-            args,
-            viewer: VIEWER.to_owned(),
-        })
-        .await?;
-    into_response(reply)
+    let target = Target::org(&state, &org).await?;
+    call_extension(&state, target, &extension, &call, name, input).await
 }
 
-async fn render(
+async fn call_on_repo(
     State(state): State<GatewayState>,
-    Path((org, repo, extension, slot)): Path<(String, String, String, String)>,
-    Json(props): Json<Value>,
+    Path((org, repo, extension, call, name)): Path<(String, String, String, String, String)>,
+    Json(input): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    let (installation, pool) = installation(&state, &org, &repo, &extension).await?;
-    let reply = extension_handle(&state.client, &installation.installation_id, pool)?
-        .send(Render {
-            slot,
-            props,
-            viewer: VIEWER.to_owned(),
-        })
-        .await?;
-    into_response(reply)
+    let target = Target::repo(&state, &org, &repo).await?;
+    call_extension(&state, target, &extension, &call, name, input).await
 }
 
-async fn act(
-    State(state): State<GatewayState>,
-    Path((org, repo, extension, action)): Path<(String, String, String, String)>,
-    Json(payload): Json<Value>,
-) -> Result<Json<Value>, ApiError> {
-    let (installation, pool) = installation(&state, &org, &repo, &extension).await?;
-    let reply = extension_handle(&state.client, &installation.installation_id, pool)?
-        .send(Act {
-            action,
-            payload,
-            viewer: VIEWER.to_owned(),
-        })
-        .await?;
-    into_response(reply)
-}
-
-/// The installation of `extension` on `org/repo`, and the pool its repository runs in.
-async fn installation(
+/// Calls an installation: `call` is `tools`, `render` or `actions`, and `name` the tool, slot
+/// or action.
+async fn call_extension(
     state: &GatewayState,
-    org: &str,
-    repo: &str,
+    target: Target,
     extension: &str,
-) -> Result<(InstallationInfo, Option<String>), ApiError> {
-    let info = resolve_repo(&state.client, org, repo).await?;
-    let installation = repo_handle(&state.client, &info.id, info.pool.clone())?
-        .send(InstallationQuery {
-            extension_id: extension.to_owned(),
-        })
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("extension {extension} on {org}/{repo}")))?;
-    Ok((installation, info.pool))
-}
-
-fn into_response(reply: CallReply) -> Result<Json<Value>, ApiError> {
+    call: &str,
+    name: String,
+    input: Value,
+) -> Result<Json<Value>, ApiError> {
+    let installation = target.installation(state, extension).await?;
+    let handle = extension_handle(&state.client, &installation.installation_id, target.pool())?;
+    let viewer = VIEWER.to_owned();
+    let reply = match call {
+        "tools" => {
+            handle
+                .send(CallTool {
+                    tool: name,
+                    args: input,
+                    viewer,
+                })
+                .await?
+        }
+        "render" => {
+            handle
+                .send(Render {
+                    slot: name,
+                    props: input,
+                    viewer,
+                })
+                .await?
+        }
+        "actions" => {
+            handle
+                .send(Act {
+                    action: name,
+                    payload: input,
+                    viewer,
+                })
+                .await?
+        }
+        other => {
+            return Err(ApiError::NotFound(format!(
+                "{other} of extension {extension}"
+            )));
+        }
+    };
     match reply {
         CallReply::Ok(value) => Ok(Json(value)),
         CallReply::Failed { kind, message } => Err(ApiError::Extension { kind, message }),

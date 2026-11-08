@@ -17,7 +17,7 @@ use crate::actors::extension::DeliverEvents;
 use crate::actors::subscriber::Deliver;
 use crate::event_log::read;
 use crate::sql::{integer, param_integer, param_text};
-use crate::{ListRecipients, Recipient, extension_handle, subscriber_handle};
+use crate::{ListRecipients, Recipient, RecipientScope, extension_handle, subscriber_handle};
 
 /// The most events sent to a subscriber in one call.
 const BATCH: u32 = 100;
@@ -36,10 +36,24 @@ impl Action for Flush {
     const NAME: &'static str = "flush";
 }
 
+/// Flushes this source and every source below it: an org's repositories, and the extensions
+/// installed on each. Sent when a new recipient subscribes, so it receives the history it
+/// matches without waiting for the next event.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct FlushTree {}
+
+impl Action for FlushTree {
+    type Output = ();
+
+    const NAME: &'static str = "flushTree";
+}
+
 /// The delivery state of one event source.
 #[derive(Debug)]
 pub(crate) struct Outbox {
     source: String,
+    // The org the source belongs to, once known: org recipients receive its events.
+    org: std::sync::Mutex<Option<String>>,
     // One flush at a time per source, so a subscriber sees each source's events in order.
     flushing: Mutex<()>,
 }
@@ -49,8 +63,32 @@ impl Outbox {
     pub(crate) fn new(source: String) -> Arc<Self> {
         Arc::new(Self {
             source,
+            org: std::sync::Mutex::new(None),
             flushing: Mutex::new(()),
         })
+    }
+
+    /// Records the org the source belongs to.
+    pub(crate) fn set_org(&self, org_id: String) {
+        *self
+            .org
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(org_id);
+    }
+
+    fn org(&self) -> Option<String> {
+        self.org
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Whether events of this source may go to an installation receiving `scope`.
+    fn reaches(&self, scope: &RecipientScope) -> bool {
+        match scope {
+            RecipientScope::Source(source) => *source == self.source,
+            RecipientScope::Org(org_id) => self.org().as_deref() == Some(org_id.as_str()),
+        }
     }
 
     /// Flushes in the background, and schedules a retry if delivery fails.
@@ -96,15 +134,17 @@ impl Outbox {
     }
 
     async fn deliver_to<A: Actor>(&self, ctx: &Ctx<A>, recipient: &Recipient) -> Result<()> {
-        let (pattern, only_source) = match recipient {
-            Recipient::Store { subscriber } => (&subscriber.pattern, None),
+        let pattern = match recipient {
+            Recipient::Store { subscriber } => &subscriber.pattern,
             Recipient::Installation {
-                pattern, source, ..
-            } => (pattern, Some(source)),
+                pattern, receives, ..
+            } => {
+                if !self.reaches(receives) {
+                    return Ok(());
+                }
+                pattern
+            }
         };
-        if only_source.is_some_and(|source| *source != self.source) {
-            return Ok(());
-        }
         let key = recipient.delivery_key();
         loop {
             let cursor = self.cursor(ctx, &key).await?;

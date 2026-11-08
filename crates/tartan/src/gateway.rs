@@ -259,7 +259,7 @@ async fn git_host_events(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn resolve_org(client: &Client, org: &str) -> Result<OrgInfo, ApiError> {
+pub(crate) async fn resolve_org(client: &Client, org: &str) -> Result<OrgInfo, ApiError> {
     let slug = parse_slug(org)?;
     forge_handle(client)?
         .send(ResolveOrg { slug })

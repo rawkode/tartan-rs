@@ -2,6 +2,7 @@
 
 pub(crate) mod extension;
 pub(crate) mod forge;
+pub(crate) mod installations;
 pub(crate) mod org;
 pub(crate) mod repo;
 pub(crate) mod subscriber;

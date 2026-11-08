@@ -9,13 +9,17 @@ use rivetkit::{Handler, action};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::actors::installations::{
+    self, INSTALLATIONS_SCHEMA, Install, InstallTarget, InstallationInfo, InstallationQuery,
+    ListInstallations,
+};
 use crate::actors::repo::Init as InitRepo;
 use crate::actors::{apply_schema, key_id};
 use crate::event_log::{EVENT_LOG_SCHEMA, ReadEvents, append, read};
-use crate::outbox::{Flush, Outbox, SubscriberSource};
+use crate::outbox::{Flush, FlushTree, Outbox, SubscriberSource};
 use crate::services::services;
 use crate::sql::{integer, optional_text, param_optional_text, param_text, text};
-use crate::{Envelope, Placement, Slug, forge_handle, repo_handle};
+use crate::{Envelope, Placement, RecipientScope, Slug, forge_handle, repo_handle};
 
 /// The org actor.
 #[derive(Debug)]
@@ -124,8 +128,12 @@ impl Actor for Org {
         CreateRepo,
         ResolveRepo,
         OrgStatusQuery,
+        Install,
+        InstallationQuery,
+        ListInstallations,
         ReadEvents,
         Flush,
+        FlushTree,
     );
     type Events = ();
     type ConnParams = ();
@@ -134,11 +142,11 @@ impl Actor for Org {
     async fn create(ctx: &Ctx<Self>) -> Result<Self> {
         apply_schema(ctx.sql(), EVENT_LOG_SCHEMA).await?;
         apply_schema(ctx.sql(), SCHEMA).await?;
+        apply_schema(ctx.sql(), INSTALLATIONS_SCHEMA).await?;
         let id = key_id(ctx.key())?;
-        Ok(Self {
-            outbox: Outbox::new(format!("org:{id}")),
-            id,
-        })
+        let outbox = Outbox::new(format!("org:{id}"));
+        outbox.set_org(id.clone());
+        Ok(Self { outbox, id })
     }
 
     async fn on_start(self: Arc<Self>, ctx: Ctx<Self>) -> Result<()> {
@@ -319,6 +327,58 @@ impl Handler<OrgStatusQuery> for Org {
             slug: self.slug(&ctx).await?,
             pool: ctx.inner().client_pool_name().map(str::to_owned),
         })
+    }
+}
+
+impl Handler<Install> for Org {
+    async fn handle(self: Arc<Self>, ctx: Ctx<Self>, action: Install) -> Result<InstallationInfo> {
+        let slug = self.slug(&ctx).await?;
+        let target = InstallTarget {
+            scope: "org",
+            org_id: self.id.clone(),
+            repo_id: None,
+            path: slug.to_string(),
+            receives: RecipientScope::Org(self.id.clone()),
+        };
+        installations::install(&ctx, &self.outbox, &self.source(), target, action).await
+    }
+}
+
+impl Handler<InstallationQuery> for Org {
+    async fn handle(
+        self: Arc<Self>,
+        ctx: Ctx<Self>,
+        action: InstallationQuery,
+    ) -> Result<Option<InstallationInfo>> {
+        installations::ready(&ctx, &action.extension_id).await
+    }
+}
+
+impl Handler<ListInstallations> for Org {
+    async fn handle(
+        self: Arc<Self>,
+        ctx: Ctx<Self>,
+        _action: ListInstallations,
+    ) -> Result<Vec<InstallationInfo>> {
+        installations::list(&ctx).await
+    }
+}
+
+impl Handler<FlushTree> for Org {
+    async fn handle(self: Arc<Self>, ctx: Ctx<Self>, _action: FlushTree) -> Result<()> {
+        self.outbox.flush_later(&ctx, SubscriberSource::Forge);
+        let client = ctx.client()?;
+        let repos = ctx
+            .sql()
+            .query("SELECT id, pool FROM repos WHERE ready = 1", None)
+            .await?;
+        for row in &repos.rows {
+            let (id, pool) = (text(row, 0)?, optional_text(row, 1)?);
+            if let Err(error) = repo_handle(&client, &id, pool)?.send(FlushTree {}).await {
+                tracing::warn!(repo = %id, %error, "could not flush a repository");
+            }
+        }
+        Ok(())
     }
 }
 

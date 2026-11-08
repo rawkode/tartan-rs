@@ -113,6 +113,10 @@ fn ref_event(seq: &str, name: &str, old: &str, new: &str) -> Value {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "needs TARTAN_FIXTURE_PACKAGE and a Rivet engine; run scripts/e2e.sh"]
 async fn an_extension_receives_its_repository_events_and_emits_its_own() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("error")
+        .with_test_writer()
+        .try_init();
     let dir = std::env::var("TARTAN_FIXTURE_PACKAGE").expect("TARTAN_FIXTURE_PACKAGE");
     let package = ExtensionPackage::from_dir(dir.as_ref()).expect("a package");
 
@@ -257,6 +261,60 @@ async fn an_extension_receives_its_repository_events_and_emits_its_own() {
         assert_eq!(received["event"]["type"], "x.tartan.fixture.seen");
         assert_eq!(received["event"]["data"]["data"]["type"], "ref.updated");
     }
+
+    // The same component installed on the org: it receives the events of every repository in
+    // the org, including those recorded before it was installed.
+    let mut org_manifest = package.manifest.raw.clone();
+    org_manifest["id"] = json!("tartan.fixture-org");
+    org_manifest["storage"]["scope"] = json!("org");
+    let org_upload = json!({
+        "manifest": org_manifest,
+        "component": base64::engine::general_purpose::STANDARD.encode(&package.component),
+        "migrations": package.migrations.iter()
+            .map(|(path, sql)| json!({"path": path, "sql": sql}))
+            .collect::<Vec<_>>(),
+    });
+    let (status, published) = api.post("/-/api/packages", org_upload).await;
+    assert_eq!(status, 201, "{published}");
+    let (status, refused) = api
+        .post(
+            "/-/api/orgs/acme/repos/api/extensions",
+            json!({"package": "tartan.fixture-org", "version": "0.1.0"}),
+        )
+        .await;
+    assert_eq!(
+        status, 400,
+        "an org extension is not installed on a repository: {refused}"
+    );
+    let (status, installed) = api
+        .post(
+            "/-/api/orgs/acme/extensions",
+            json!({"package": "tartan.fixture-org", "version": "0.1.0"}),
+        )
+        .await;
+    assert_eq!(status, 201, "{installed}");
+    let org_seen = api
+        .until(
+            "the org fixture's seen tool",
+            async || {
+                api.post(
+                    "/-/api/orgs/acme/extensions/tartan.fixture-org/tools/seen",
+                    json!({}),
+                )
+                .await
+                .1
+            },
+            |value| value["seen"].as_array().is_some_and(|seen| seen.len() >= 3),
+        )
+        .await;
+    let org_seen = org_seen["seen"].as_array().expect("a list");
+    assert_eq!(org_seen.len(), 3, "{org_seen:#?}");
+    let sources: std::collections::BTreeSet<&str> = org_seen
+        .iter()
+        .filter_map(|s| s["source"].as_str())
+        .collect();
+    assert_eq!(sources.len(), 2, "both repositories' events: {sources:?}");
+    assert!(sources.contains(repo_source));
 
     actors.shutdown().await;
 }
