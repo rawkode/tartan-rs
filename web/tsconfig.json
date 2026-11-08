@@ -1,0 +1,12 @@
+{
+	"extends": "astro/tsconfigs/strict",
+	"compilerOptions": {
+		"noUncheckedIndexedAccess": true,
+		"noImplicitOverride": true,
+		"paths": {
+			"styled-system/*": ["./styled-system/*"]
+		}
+	},
+	"include": [".astro/types.d.ts", "src/**/*", "*.ts"],
+	"exclude": ["dist", "node_modules"]
+}

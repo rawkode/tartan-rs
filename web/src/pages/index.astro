@@ -1,0 +1,43 @@
+---
+import "@fontsource-variable/inter";
+import "@fontsource-variable/jetbrains-mono";
+import "../styles/global.css";
+import App from "../components/App.vue";
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="description" content="Tartan: an event-driven Git forge configured from the repository." />
+		<meta name="color-scheme" content="light dark" />
+		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+		<title>Tartan</title>
+		<script is:inline>
+			// Sets the theme before first paint so a dark preference never flashes light.
+			(() => {
+				let theme = "system";
+				try {
+					theme = JSON.parse(localStorage.getItem("tartan.settings.v1") || "{}").theme || "system";
+				} catch {}
+				const dark = theme === "dark" || (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+				document.documentElement.dataset.theme = dark ? "dark" : "light";
+			})();
+		</script>
+	</head>
+	<body>
+		<App client:only="vue">
+			<div slot="fallback" class="boot">Loading Tartan…</div>
+		</App>
+		<style is:global>
+			.boot {
+				display: grid;
+				place-items: center;
+				min-height: 100vh;
+				font: 14px system-ui, sans-serif;
+				color: #71717a;
+			}
+		</style>
+	</body>
+</html>
