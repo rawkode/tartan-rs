@@ -127,7 +127,11 @@ fn source_client(source: &Source) -> OciClient {
 }
 
 /// Copies `module` from `source` unless the registry holds it already.
-async fn copy(registry: &RegistryStore, source: &Source, module: &ModuleVersion) -> Result<CopyOutcome> {
+async fn copy(
+    registry: &RegistryStore,
+    source: &Source,
+    module: &ModuleVersion,
+) -> Result<CopyOutcome> {
     let held = registry.manifest(&module.path, &module.version).await?;
     let client = source_client(source);
     let reference = Reference::with_tag(
@@ -211,12 +215,28 @@ async fn register(
             package.manifest.version, module.version
         )));
     }
-    match register_package(targets.client, targets.extensions, &package).await {
-        Ok(info) => Ok(Some(format!("{}@{}", info.id, info.version))),
-        Err(RegisterError::Conflict(reason)) => Err(Registration::Mismatched(reason)),
-        Err(error) => Err(Registration::Refused(error.to_string())),
+    // At startup the sync runs while the actors are still coming up, so a forge actor that is
+    // not ready yet is waited for rather than leaving the package unavailable until the next
+    // start.
+    let mut delay = REGISTER_FIRST_DELAY;
+    loop {
+        match register_package(targets.client, targets.extensions, &package).await {
+            Ok(info) => return Ok(Some(format!("{}@{}", info.id, info.version))),
+            Err(RegisterError::Conflict(reason)) => return Err(Registration::Mismatched(reason)),
+            Err(RegisterError::Unavailable(error)) if delay <= REGISTER_LAST_DELAY => {
+                tracing::info!(module = %module, error = format!("{error:#}"), "registering again shortly");
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
+            Err(error) => return Err(Registration::Refused(error.to_string())),
+        }
     }
 }
+
+/// The wait before registering a package again after the forge was unavailable; it doubles up
+/// to [`REGISTER_LAST_DELAY`], about two minutes in all.
+const REGISTER_FIRST_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+const REGISTER_LAST_DELAY: std::time::Duration = std::time::Duration::from_secs(64);
 
 /// The files of a module's zip, by path.
 async fn module_files(
