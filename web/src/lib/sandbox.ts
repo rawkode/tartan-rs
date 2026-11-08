@@ -146,6 +146,7 @@ const issuesTool = (repo: SandboxRepo, name: string, input: Input): unknown => {
 				issues: page.map(snapshot),
 				open: inProject.filter((i) => i.state === "open").length,
 				closed: inProject.filter((i) => i.state === "closed").length,
+				properties: repo.properties,
 				nextBefore: matching.length > limit ? page.at(-1)?.number ?? null : null,
 			};
 		}

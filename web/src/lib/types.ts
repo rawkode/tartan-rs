@@ -146,6 +146,8 @@ export interface IssueListOutput {
 	issues: Issue[];
 	open: number;
 	closed: number;
+	/** The repository's property definitions, as the `properties` tool gives them. */
+	properties: PropertyDef[];
 	nextBefore: number | null;
 }
 
