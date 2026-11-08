@@ -201,9 +201,9 @@ export default defineConfig({
 						surface: { value: { base: "{colors.white}", _dark: "{colors.zinc.900}" } },
 						subtle: { value: { base: "{colors.zinc.100}", _dark: "{colors.zinc.800}" } },
 						muted: { value: { base: "{colors.zinc.200}", _dark: "{colors.zinc.700}" } },
-						overlay: {
-							value: { base: "rgb(24 24 27 / 0.45)", _dark: "rgb(0 0 0 / 0.6)" },
-						},
+						// Board lanes sit below cards; cards are raised above them in both themes.
+						lane: { value: { base: "{colors.zinc.100}", _dark: "{colors.zinc.900}" } },
+						raised: { value: { base: "{colors.white}", _dark: "{colors.zinc.800}" } },
 					},
 					fg: {
 						default: { value: { base: "{colors.zinc.900}", _dark: "{colors.zinc.50}" } },
@@ -231,11 +231,6 @@ export default defineConfig({
 						ring: {
 							value: { base: "rgb(4 120 87 / 0.22)", _dark: "rgb(52 211 153 / 0.3)" },
 						},
-					},
-					tartan: {
-						red: { value: { base: "{colors.red.700}", _dark: "{colors.red.500}" } },
-						green: { value: { base: "{colors.emerald.700}", _dark: "{colors.emerald.500}" } },
-						navy: { value: { base: "{colors.blue.900}", _dark: "{colors.blue.400}" } },
 					},
 					success: {
 						fg: { value: { base: "{colors.green.700}", _dark: "{colors.green.300}" } },

@@ -82,7 +82,7 @@ const styles = {
 	stack: css({ display: "grid", gap: "4" }),
 	label: css({ display: "block", fontSize: "xs", fontWeight: "semibold", color: "fg.muted", mb: "1.5" }),
 	error: css({ fontSize: "xs", color: "danger.fg", mt: "1" }),
-	hint: css({ fontSize: "2xs", color: "fg.subtle", mt: "1" }),
+	hint: css({ fontSize: "xs", color: "fg.subtle", mt: "1" }),
 	titleInput: css({ fontSize: "md !important", h: "11 !important", fontWeight: "medium" }),
 	props: css({ display: "grid", gap: "4" }),
 	actions: css({ display: "flex", gap: "2", justifyContent: "flex-end", flexWrap: "wrap" }),

@@ -1,0 +1,54 @@
+---
+title: Web interface
+description: The browser interface in web/ — orgs, repositories, issues and Kanban boards over the gateway API.
+sidebar:
+  order: 11
+---
+
+`web/` is a browser interface for the forge: create orgs and repositories, see what a repository installs and how to configure it, file and edit issues with typed properties, and work Kanban boards. It is an [Astro](https://astro.build) site of Vue single-file components styled with Panda CSS, and it talks only to the gateway's HTTP API.
+
+## Run it
+
+Start the forge (see [Running locally](/running-locally/)), then:
+
+```sh
+npm --prefix web ci
+npm --prefix web run dev
+```
+
+Open `http://127.0.0.1:4321`. The dev server forwards `/-/` and `/v2/` to the gateway, `http://127.0.0.1:8080` by default; set `TARTAN_GATEWAY` to use another. The browser only talks to its own origin, so the gateway needs no CORS configuration.
+
+`npm --prefix web run build` writes a static site to `web/dist`. Routes live in the URL's fragment (`/#/acme/api/issues`), so any file server can host it behind a proxy that forwards `/-/` and `/v2/` to the gateway.
+
+## Settings
+
+The settings page keeps everything in the browser's local storage:
+
+| Setting | Meaning |
+| --- | --- |
+| Admin token | sent as `Authorization: Bearer` on every API request; `dev-admin-token` by default, as `scripts/dev.sh` configures |
+| Gateway address for `cue` | the origin `cue` on your machine reaches the forge's registry at; the setup steps derive `CUE_REGISTRY` from it (`host:port`, with `+insecure` over plain HTTP) |
+| Git host token | shown in the `git push` command of a repository's setup steps; `dev-git-host-token` by default |
+| Board refresh | how often an open board reloads, in seconds |
+| Sandbox | answer every request from sample data in the browser instead of the gateway |
+
+The sandbox serves an org `acme` with a repository `api` that installs Issues and Kanban, with sample issues and boards. It follows the gateway's wire format, so the interface can be explored, or its views developed, without a running forge. Its changes last until the page reloads.
+
+## Pages
+
+- **Orgs and repositories.** `GET` and `POST /-/api/orgs`, and `/-/api/orgs/{org}/repos`, with the forge's slug rule checked before a request is sent.
+- **A repository's overview.** Its clone URL, the extensions its committed configuration installs (`GET …/extensions`), and the files and commands to configure it: a `cue.mod/module.cue` that depends on the types, Issues and Kanban modules, a `tartan.cue` that installs Issues with typed properties and a Kanban board over them, the `CUE_REGISTRY` to set, and the `git push` to `main`. Extensions are installed only by committed CUE, so the overview offers no install button.
+- **Issues.** Lists by state and project with title search and paging, and an issue page that edits the title, the Markdown body and every [property type](/property-types/) with a control suited to it: text and Markdown with a preview, numbers within their bounds, dates, switches, selects and multi-selects by label, people, URLs and money in the currency's major units (stored as minor units). An edit is saved as one `update` with `expectedVersion`; if someone else changed the issue first, the page offers to reload it.
+- **Boards.** `list_boards` and `board` render lanes as rows, columns across and headed groups inside each cell, with boards that could not be shown listed with their problem. Cards move by drag and drop or with their column picker; a move shows at once, calls `move`, and is rolled back if Kanban refuses it. Kanban learns of changes from Issues' events, so the board reloads every few seconds and keeps showing an accepted move until the board catches up.
+
+Every failed request shows the gateway's own error, the extension's error kind when there is one, and the request it answered.
+
+## Checks
+
+```sh
+npm --prefix web run check   # astro check and vue-tsc
+npm --prefix web test        # vitest: the API client, the sandbox, properties, boards and components
+npm --prefix web run build
+```
+
+With `CUE_BIN` set to a `cue` binary and `CUE_REGISTRY` to a registry serving the types, Issues and Kanban modules, the tests also evaluate the overview's example configuration with `cue export`.

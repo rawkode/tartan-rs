@@ -15,10 +15,9 @@ const styles = {
 		borderRadius: "full",
 		fontSize: "xs",
 		fontWeight: "semibold",
-		color: "white",
 	}),
 	open: css({ bg: "accent.solid", color: "accent.contrast" }),
-	closed: css({ bg: "closed" , color: { base: "white", _dark: "zinc.950" } }),
+	closed: css({ bg: "closed", color: { base: "white", _dark: "zinc.950" } }),
 };
 </script>
 

@@ -33,8 +33,8 @@ const styles = {
 		overflow: "hidden",
 		bg: "bg.surface",
 		_focusWithin: { borderColor: "accent.solid", boxShadow: "0 0 0 3px token(colors.accent.ring)" },
+		"&[data-invalid=true]": { borderColor: "danger.border" },
 	}),
-	invalid: css({ borderColor: "danger.border" }),
 	tabs: css({
 		display: "flex",
 		alignItems: "center",
@@ -61,7 +61,7 @@ const styles = {
 		_focusVisible: { outline: "2px solid", outlineColor: "focus", outlineOffset: "-2px" },
 		"&[aria-selected=true]": { bg: "bg.surface", color: "fg.default", borderColor: "border.default" },
 	}),
-	hint: css({ ml: "auto", pr: "2", fontSize: "2xs", color: "fg.subtle" }),
+	hint: css({ ml: "auto", pr: "2", fontSize: "xs", color: "fg.subtle" }),
 	area: css({
 		display: "block",
 		w: "full",
@@ -76,12 +76,12 @@ const styles = {
 		outline: "none",
 	}),
 	preview: css({ p: "3", minH: "32" }),
-	count: css({ px: "3", pb: "1.5", fontSize: "2xs", color: "fg.subtle", textAlign: "right" }),
+	count: css({ px: "3", pb: "1.5", fontSize: "xs", color: "fg.subtle", textAlign: "right" }),
 };
 </script>
 
 <template>
-	<div :class="[styles.root, props.invalid && styles.invalid]">
+	<div :class="styles.root" :data-invalid="props.invalid">
 		<div :class="styles.tabs" role="tablist" aria-label="Markdown editor">
 			<button
 				:id="`${uid}-write`"

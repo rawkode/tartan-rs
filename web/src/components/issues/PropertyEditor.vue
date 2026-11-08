@@ -102,8 +102,8 @@ const describedBy = computed(() => (props.error || hint.value ? hintId : undefin
 const styles = {
 	root: css({ display: "grid", gap: "1.5" }),
 	label: css({ display: "flex", alignItems: "baseline", gap: "2", fontSize: "xs", fontWeight: "semibold", color: "fg.muted" }),
-	kind: css({ fontWeight: "normal", color: "fg.subtle", fontFamily: "mono", fontSize: "2xs" }),
-	hint: css({ fontSize: "2xs", color: "fg.subtle" }),
+	kind: css({ fontWeight: "normal", color: "fg.subtle", fontFamily: "mono", fontSize: "xs" }),
+	hint: css({ fontSize: "xs", color: "fg.subtle" }),
 	error: css({ fontSize: "xs", color: "danger.fg" }),
 	affix: css({ display: "flex", alignItems: "stretch" }),
 	prefix: css({
@@ -321,7 +321,7 @@ const styles = {
 				inputmode="decimal"
 				:step="moneyStep"
 				:value="moneyText"
-				:placeholder="fromMinorUnits(0, currency)"
+				placeholder="Amount"
 				:aria-invalid="!!props.error"
 				:aria-describedby="describedBy"
 				@input="setMoney(($event.target as HTMLInputElement).value)"

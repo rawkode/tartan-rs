@@ -49,8 +49,8 @@ const styles = {
 		color: "fg.default",
 		borderRadius: "lg",
 		p: "4",
+		"&[data-compact=true]": { p: "3" },
 	}),
-	compact: css({ p: "3" }),
 	icon: css({ color: "danger.fg", mt: "0.5" }),
 	body: css({ display: "flex", flexDirection: "column", gap: "1.5", minW: 0, flex: 1 }),
 	heading: css({ fontWeight: "semibold", color: "danger.fg" }),
@@ -73,7 +73,7 @@ const styles = {
 </script>
 
 <template>
-	<div :class="[styles.root, props.compact && styles.compact]" role="alert">
+	<div :class="styles.root" :data-compact="props.compact" role="alert">
 		<Icon name="alert" :size="18" :class="styles.icon" />
 		<div :class="styles.body">
 			<div :class="styles.heading">{{ heading }}</div>

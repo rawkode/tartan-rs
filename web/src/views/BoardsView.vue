@@ -36,10 +36,33 @@ watch([boards.data, boardId], ([list, id]) => {
 	if (!id && first) void router.replace({ name: "boards", params: { org: org.value, repo: repo.value, board: first.id } });
 });
 
+/**
+ * Moves Kanban has accepted but may not show yet: it learns of the issue's new value from
+ * Issues' events, so a board fetched right after a move can still show the card where it was.
+ * Until the board shows the card at the moved version (or a while has passed), the move is
+ * applied again on top of each fetched board.
+ */
+const accepted = new Map<number, { column: string; version: number; until: number }>();
+const ACCEPTED_FOR_MS = 20_000;
+
+const reconcile = (view: BoardView): BoardView => {
+	let next = view;
+	for (const [number, move] of accepted) {
+		const card = findCard(next, number);
+		if (Date.now() > move.until || !card || card.version >= move.version) {
+			accepted.delete(number);
+			continue;
+		}
+		next = moveCard(next, number, move.column);
+	}
+	return next;
+};
+
 const board = useResource<BoardView | null>(
-	(signal) => (boardId.value ? api().board(boardId.value, signal) : Promise.resolve(null)),
+	async (signal) => (boardId.value ? reconcile(await api().board(boardId.value, signal)) : null),
 	[org, repo, boardId, () => settings.sandbox],
 );
+watch(boardId, () => accepted.clear());
 
 const hasIssues = computed(() => !!installed(ISSUES_ID));
 const defs = useResource<PropertyDef[]>(
@@ -72,7 +95,8 @@ const move = async (number: number, column: string) => {
 	board.set(optimistic);
 	pending.add(number);
 	try {
-		await api().move(view.board.id, number, column);
+		const moved = await api().move(view.board.id, number, column);
+		accepted.set(number, { column, version: moved.version, until: Date.now() + ACCEPTED_FOR_MS });
 		const title = view.board.columns.find((c) => c.value === column)?.title ?? column;
 		notify(`Moved #${number} to ${title}`, "success", 2500);
 	} catch (cause) {
@@ -140,8 +164,13 @@ const styles = {
 	}),
 	pillProject: css({ fontFamily: "mono", fontSize: "2xs", opacity: 0.8 }),
 	status: css({ display: "flex", alignItems: "center", gap: "2", fontSize: "xs", color: "fg.muted" }),
-	dot: css({ w: "2", h: "2", borderRadius: "full", bg: "fg.subtle" }),
-	dotLive: css({ bg: "success.fg", boxShadow: "0 0 0 3px token(colors.success.subtle)" }),
+	dot: css({
+		w: "2",
+		h: "2",
+		borderRadius: "full",
+		bg: "fg.subtle",
+		"&[data-live=true]": { bg: "success.fg", boxShadow: "0 0 0 3px token(colors.success.subtle)" },
+	}),
 	invalid: css({
 		display: "grid",
 		gap: "1",
@@ -197,7 +226,7 @@ const styles = {
 					</RouterLink>
 				</nav>
 				<div :class="styles.status">
-					<span :class="[styles.dot, live && styles.dotLive]" aria-hidden="true" />
+					<span :class="styles.dot" :data-live="live" aria-hidden="true" />
 					<label :class="styles.switchLabel">
 						<input v-model="live" type="checkbox" /> Live
 					</label>

@@ -18,7 +18,7 @@ export const moduleCue = (org: string, repo: string): string =>
 	`module: "tartan.example/${org}/${repo}"
 language: version: "v0.14.1"
 deps: {
-	"tartan.dev/types@v0": v: "${MODULE_VERSIONS.types}"
+	"tartan.dev/types@v0": v:                     "${MODULE_VERSIONS.types}"
 	"github.com/rawkode/tartan-ext/issues@v0": v: "${MODULE_VERSIONS.issues}"
 	"github.com/rawkode/tartan-ext/kanban@v0": v: "${MODULE_VERSIONS.kanban}"
 }
@@ -39,22 +39,27 @@ let props = extensions."rawkode.issues".settings.properties
 extensions: "rawkode.issues": issues.#Extension & {
 	settings: properties: {
 		status: types.#Select & {
-			label:   "Status"
+			label: "Status"
 			options: ["todo", "doing", "review", "done"]
-			labels: {todo: "To do", doing: "In progress", review: "In review", done: "Done"}
+			labels: {
+				todo:   "To do"
+				doing:  "In progress"
+				review: "In review"
+				done:   "Done"
+			}
 			default: "todo"
 		}
 		priority: types.#Select & {
-			label:   "Priority"
+			label: "Priority"
 			options: ["p1", "p2", "p3"]
 		}
 		tags: types.#MultiSelect & {options: ["bug", "feature", "docs"]}
 		assignee: types.#Person
 		due:      types.#Date
 		estimate: types.#Number & {min: 0, max: 21}
-		budget:   types.#Money & {currency: "GBP"}
-		spec:     types.#URL & {label: "Design doc"}
-		notes:    types.#LongText
+		budget: types.#Money & {currency: "GBP"}
+		spec: types.#URL & {label: "Design doc"}
+		notes: types.#LongText
 	}
 }
 

@@ -13,7 +13,7 @@ const routes: RouteRecordRaw[] = [
 	{
 		path: "/:org/:repo",
 		component: () => import("./views/RepoLayout.vue"),
-		props: true,
+		props: (route) => ({ org: route.params.org, repo: route.params.repo }),
 		children: [
 			{ path: "", name: "repo", component: () => import("./views/RepoOverview.vue") },
 			{ path: "issues", name: "issues", component: () => import("./views/IssuesView.vue") },

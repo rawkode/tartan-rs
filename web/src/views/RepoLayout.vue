@@ -74,9 +74,10 @@ const styles = {
 	tabs: css({
 		display: "flex",
 		gap: "1",
-		borderBottomWidth: "1px",
-		borderColor: "border.default",
+		boxShadow: "inset 0 -1px 0 token(colors.border.default)",
 		overflowX: "auto",
+		overflowY: "hidden",
+		scrollbarWidth: "none",
 	}),
 	tab: css({
 		display: "inline-flex",
@@ -88,12 +89,11 @@ const styles = {
 		fontWeight: "medium",
 		borderBottomWidth: "2px",
 		borderColor: "transparent",
-		mb: "-1px",
 		whiteSpace: "nowrap",
 		_hover: { color: "fg.default", borderColor: "border.strong" },
 		_focusVisible: { outline: "2px solid", outlineColor: "focus", outlineOffset: "-2px", borderRadius: "sm" },
+		"&[aria-current=page]": { color: "fg.default", borderColor: "accent.solid" },
 	}),
-	activeTab: css({ color: "fg.default", borderColor: "accent.solid", _hover: { borderColor: "accent.solid" } }),
 };
 </script>
 
@@ -118,7 +118,7 @@ const styles = {
 					v-for="tab in tabs"
 					:key="tab.name"
 					:to="{ name: tab.name, params: { org: props.org, repo: props.repo } }"
-					:class="[styles.tab, active(tab) && styles.activeTab]"
+					:class="styles.tab"
 					:aria-current="active(tab) ? 'page' : undefined"
 				>
 					<Icon :name="tab.icon" :size="15" /> {{ tab.label }}

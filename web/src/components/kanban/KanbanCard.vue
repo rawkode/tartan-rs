@@ -38,7 +38,7 @@ const styles = {
 		display: "grid",
 		gap: "2",
 		p: "3",
-		bg: "bg.surface",
+		bg: "bg.raised",
 		borderWidth: "1px",
 		borderColor: "border.default",
 		borderRadius: "md",
@@ -48,26 +48,26 @@ const styles = {
 		_hover: { borderColor: "border.strong", boxShadow: "sm" },
 		_focusWithin: { borderColor: "accent.solid" },
 		"&:active": { cursor: "grabbing" },
+		"&[aria-busy=true]": { borderStyle: "dashed", borderColor: "accent.solid" },
+		"&[data-dragging=true]": { opacity: 0.4, transform: "rotate(1deg)" },
 	}),
-	dragging: css({ opacity: 0.4, transform: "rotate(1deg)" }),
-	pending: css({ borderStyle: "dashed", borderColor: "accent.border" }),
-	top: css({ display: "flex", alignItems: "center", gap: "1.5", fontSize: "2xs", color: "fg.subtle" }),
+	top: css({ display: "flex", alignItems: "center", gap: "1.5", fontSize: "xs", color: "fg.subtle" }),
 	closed: css({ color: "closed", display: "inline-flex", alignItems: "center", gap: "1" }),
 	number: css({ fontFamily: "mono" }),
-	project: css({ ml: "auto", fontFamily: "mono", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxW: "50%" }),
+	spacer: css({ flex: 1 }),
+	project: css({ fontFamily: "mono", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minW: 0 }),
 	title: css({ fontWeight: "medium", fontSize: "sm", lineHeight: "snug", color: "fg.default", wordBreak: "break-word" }),
 	link: css({
 		_hover: { color: "accent.fg", textDecoration: "underline" },
 		_focusVisible: { outline: "2px solid", outlineColor: "focus", outlineOffset: "2px", borderRadius: "sm" },
 	}),
-	foot: css({ display: "flex", alignItems: "center", gap: "1" }),
 	grip: css({ color: "fg.subtle" }),
 	move: css({
-		ml: "auto",
+		flexShrink: 0,
 		h: "6",
-		maxW: "36",
+		maxW: "28",
 		px: "1.5",
-		fontSize: "2xs",
+		fontSize: "xs",
 		color: "fg.muted",
 		bg: "bg.subtle",
 		borderWidth: "1px",
@@ -84,7 +84,8 @@ const styles = {
 
 <template>
 	<article
-		:class="['group', styles.card, props.dragging && styles.dragging, props.pending && styles.pending]"
+		:class="['group', styles.card]"
+		:data-dragging="props.dragging"
 		draggable="true"
 		:aria-label="`#${props.card.number} ${props.card.title}`"
 		:aria-busy="props.pending"
@@ -95,14 +96,8 @@ const styles = {
 			<Icon name="grip" :size="12" :class="styles.grip" />
 			<span :class="styles.number">#{{ props.card.number }}</span>
 			<span v-if="props.card.state === 'closed'" :class="styles.closed"><Icon name="issue-closed" :size="12" /> closed</span>
+			<span :class="styles.spacer" />
 			<span v-if="props.showProject && props.card.project" :class="styles.project" :title="props.card.project">{{ props.card.project }}</span>
-		</div>
-		<div :class="styles.title">
-			<RouterLink v-if="props.issueLink" :to="props.issueLink" :class="styles.link" draggable="false">{{ props.card.title }}</RouterLink>
-			<span v-else>{{ props.card.title }}</span>
-		</div>
-		<PropertyChips :defs="props.defs" :values="props.card.properties" :exclude="props.exclude" :limit="4" />
-		<div :class="styles.foot">
 			<select
 				:class="styles.move"
 				:aria-label="`Move #${props.card.number} to another column`"
@@ -114,5 +109,10 @@ const styles = {
 				<option v-for="c in targets" :key="c.value" :value="c.value">{{ c.title }}</option>
 			</select>
 		</div>
+		<div :class="styles.title">
+			<RouterLink v-if="props.issueLink" :to="props.issueLink" :class="styles.link" draggable="false">{{ props.card.title }}</RouterLink>
+			<span v-else>{{ props.card.title }}</span>
+		</div>
+		<PropertyChips :defs="props.defs" :values="props.card.properties" :exclude="props.exclude" :limit="4" />
 	</article>
 </template>

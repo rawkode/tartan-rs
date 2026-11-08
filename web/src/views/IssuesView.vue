@@ -152,8 +152,9 @@ const styles = {
 		color: "fg.default",
 		_hover: { color: "accent.fg" },
 		_focusVisible: { outline: "none" },
+		// The link covers its whole row, so the row is the click target and shows the focus ring.
 		"&::after": { content: '""', position: "absolute", inset: 0 },
-		_focus: { "&::after": { outline: "2px solid", outlineColor: "focus", outlineOffset: "-2px", borderRadius: "lg" } },
+		"&:focus-visible::after": { outline: "2px solid", outlineColor: "focus", outlineOffset: "-2px" },
 	}),
 	meta: css({ display: "flex", gap: "2", flexWrap: "wrap", alignItems: "center", fontSize: "xs", color: "fg.muted" }),
 	time: css({ fontSize: "xs", color: "fg.subtle", whiteSpace: "nowrap" }),

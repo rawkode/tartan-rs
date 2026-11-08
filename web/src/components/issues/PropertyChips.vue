@@ -54,7 +54,7 @@ const styles = {
 		h: "5",
 		px: "1.5",
 		borderRadius: "sm",
-		fontSize: "2xs",
+		fontSize: "xs",
 		fontWeight: "medium",
 		borderWidth: "1px",
 		whiteSpace: "nowrap",

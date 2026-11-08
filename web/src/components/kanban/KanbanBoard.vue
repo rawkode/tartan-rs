@@ -30,7 +30,7 @@ const board = computed(() => props.view.board);
 const hasLanes = computed(() => board.value.lanes !== null);
 const exclude = computed(() => [board.value.lanes?.by, board.value.group?.by].filter((b): b is string => !!b));
 const showProject = computed(() => board.value.lanes?.by !== "project" && board.value.group?.by !== "project");
-const gridColumns = computed(() => `repeat(${board.value.columns.length}, minmax(248px, 1fr))`);
+const gridColumns = computed(() => `repeat(${board.value.columns.length}, minmax(min(260px, 78vw), 1fr))`);
 
 const laneKey = (value: string | null) => value ?? "\u0000none";
 const laneCount = (laneIndex: number) => {
@@ -78,16 +78,21 @@ const onDrop = (event: DragEvent, column: string) => {
 };
 
 const styles = {
+	// The board scrolls in both directions inside its own frame, so the column headers can
+	// stick to its top while lanes scroll beneath them.
 	scroller: css({
-		overflowX: "auto",
+		overflow: "auto",
+		maxH: "calc(100dvh - 15rem)",
+		minH: "80",
 		pb: "3",
 		mx: { base: "-4", md: "-6" },
 		px: { base: "4", md: "6" },
+		overscrollBehavior: "contain",
 	}),
 	grid: css({ display: "grid", gap: "3", minW: "fit-content" }),
 	colHead: css({
 		position: "sticky",
-		top: "14",
+		top: 0,
 		zIndex: 5,
 		display: "flex",
 		alignItems: "center",
@@ -110,7 +115,7 @@ const styles = {
 		borderRadius: "full",
 		bg: "bg.subtle",
 		color: "fg.muted",
-		fontSize: "2xs",
+		fontSize: "xs",
 		fontVariantNumeric: "tabular-nums",
 	}),
 	laneHead: css({
@@ -130,8 +135,11 @@ const styles = {
 		_hover: { bg: "bg.subtle" },
 		_focusVisible: { outline: "2px solid", outlineColor: "focus" },
 	}),
-	laneChevron: css({ color: "fg.subtle", transition: "transform 0.15s" }),
-	laneCollapsed: css({ transform: "rotate(-90deg)" }),
+	laneChevron: css({
+		color: "fg.subtle",
+		transition: "transform 0.15s",
+		"&[data-collapsed=true]": { transform: "rotate(-90deg)" },
+	}),
 	laneNone: css({ color: "fg.muted", fontStyle: "italic" }),
 	laneCount: css({ fontSize: "xs", color: "fg.subtle", fontWeight: "normal" }),
 	cell: css({
@@ -140,13 +148,13 @@ const styles = {
 		gap: "2",
 		p: "2",
 		minH: "28",
-		bg: "bg.subtle",
+		bg: "bg.lane",
 		borderRadius: "lg",
 		borderWidth: "1px",
 		borderColor: "transparent",
 		transition: "background 0.1s, border-color 0.1s",
+		"&[data-over=true]": { bg: "accent.subtle", borderColor: "accent.solid", borderStyle: "dashed" },
 	}),
-	cellOver: css({ bg: "accent.subtle", borderColor: "accent.solid", borderStyle: "dashed" }),
 	cellEmpty: css({
 		flex: 1,
 		display: "grid",
@@ -166,13 +174,11 @@ const styles = {
 		gap: "1.5",
 		px: "1",
 		pt: "1",
-		fontSize: "2xs",
+		fontSize: "xs",
 		fontWeight: "semibold",
-		textTransform: "uppercase",
-		letterSpacing: "0.05em",
 		color: "fg.muted",
+		"&[data-none=true]": { fontStyle: "italic" },
 	}),
-	groupNone: css({ fontStyle: "italic", textTransform: "none", letterSpacing: "normal" }),
 	tray: css({
 		mt: "6",
 		p: "4",
@@ -212,7 +218,7 @@ const styles = {
 						:aria-expanded="!collapsed[laneKey(lane.value)]"
 						@click="collapsed[laneKey(lane.value)] = !collapsed[laneKey(lane.value)]"
 					>
-						<Icon name="chevron-down" :class="[styles.laneChevron, collapsed[laneKey(lane.value)] && styles.laneCollapsed]" />
+						<Icon name="chevron-down" :class="styles.laneChevron" :data-collapsed="!!collapsed[laneKey(lane.value)]" />
 						<span :class="lane.value === null && styles.laneNone">{{ lane.title || (lane.value === null ? "None" : lane.value) }}</span>
 						<span :class="styles.laneCount">{{ laneCount(laneIndex) }}</span>
 					</button>
@@ -223,7 +229,8 @@ const styles = {
 						:key="cell.column"
 						role="group"
 						:aria-label="`${columnTitle(cell.column)}${hasLanes ? `, ${lane.title || 'None'}` : ''}`"
-						:class="[styles.cell, over === dropKey(lane.value, cell.column) && styles.cellOver]"
+						:class="styles.cell"
+						:data-over="over === dropKey(lane.value, cell.column)"
 						@dragover="onDragOver($event, lane.value, cell.column)"
 						@dragenter="onDragOver($event, lane.value, cell.column)"
 						@dragleave="onDragLeave($event, lane.value, cell.column)"
@@ -232,7 +239,7 @@ const styles = {
 						<div v-if="cellCount(cell.groups) === 0" :class="styles.cellEmpty">{{ dragged ? "Drop here" : "No cards" }}</div>
 						<template v-else>
 						<section v-for="group in cell.groups" :key="laneKey(group.value)" :class="styles.group">
-							<h4 v-if="group.title || group.value !== null || board.group" :class="[styles.groupHead, group.value === null && styles.groupNone]">
+							<h4 v-if="group.title || group.value !== null || board.group" :class="styles.groupHead" :data-none="group.value === null">
 								{{ group.title || (group.value === null ? "None" : group.value) }} · {{ group.cards.length }}
 							</h4>
 							<KanbanCard
