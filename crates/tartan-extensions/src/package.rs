@@ -110,9 +110,21 @@ impl ExtensionPackage {
         })
     }
 
-    /// The SHA-256 of the component, hex-encoded: the package's identity in storage.
+    /// The SHA-256 of the manifest, the component and the migrations, hex-encoded. Each part is
+    /// length-prefixed, so no two packages share a digest by shifting bytes between parts.
     pub fn digest(&self) -> String {
-        hex::encode(Sha256::digest(&self.component))
+        let mut hasher = Sha256::new();
+        let mut part = |bytes: &[u8]| {
+            hasher.update((bytes.len() as u64).to_be_bytes());
+            hasher.update(bytes);
+        };
+        part(self.manifest.raw.to_string().as_bytes());
+        part(&self.component);
+        for (path, script) in &self.migrations {
+            part(path.as_bytes());
+            part(script.as_bytes());
+        }
+        hex::encode(hasher.finalize())
     }
 }
 

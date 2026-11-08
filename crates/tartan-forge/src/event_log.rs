@@ -8,14 +8,14 @@ use crate::sql::{integer, now_ms, param_integer, param_text, text};
 
 /// The tables every event source keeps: its log, and how far each subscriber has been sent.
 pub(crate) const EVENT_LOG_SCHEMA: &str = "
-    CREATE TABLE IF NOT EXISTS events (
+    CREATE TABLE IF NOT EXISTS _tartan_events (
         seq INTEGER PRIMARY KEY,
         id TEXT NOT NULL UNIQUE,
         type TEXT NOT NULL,
         at_ms INTEGER NOT NULL,
         data TEXT NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS deliveries (
+    CREATE TABLE IF NOT EXISTS _tartan_deliveries (
         subscriber TEXT PRIMARY KEY,
         seq INTEGER NOT NULL
     );
@@ -50,7 +50,7 @@ pub(crate) async fn append(
     let at_ms = now_ms();
     let result = transaction
         .execute(
-            "INSERT INTO events (id, type, at_ms, data) VALUES (?, ?, ?, ?) RETURNING seq",
+            "INSERT INTO _tartan_events (id, type, at_ms, data) VALUES (?, ?, ?, ?) RETURNING seq",
             Some(vec![
                 param_text(id.clone()),
                 param_text(kind),
@@ -83,7 +83,7 @@ pub(crate) async fn read(
     let limit = limit.clamp(1, READ_LIMIT);
     let result = db
         .query(
-            "SELECT seq, id, type, at_ms, data FROM events WHERE seq > ? ORDER BY seq LIMIT ?",
+            "SELECT seq, id, type, at_ms, data FROM _tartan_events WHERE seq > ? ORDER BY seq LIMIT ?",
             Some(vec![
                 param_integer(i64::try_from(after)?),
                 param_integer(i64::from(limit)),

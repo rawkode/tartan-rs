@@ -3,6 +3,8 @@ use std::sync::{Arc, OnceLock};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 
+use crate::Extensions;
+
 /// The service that hosts Git repositories: storage, the wire protocol and ref events.
 #[async_trait]
 pub trait GitHost: Send + Sync {
@@ -21,6 +23,8 @@ pub struct Services {
     pub forge_id: String,
     /// The Git host.
     pub git_host: Arc<dyn GitHost>,
+    /// Extension packages and their runtime.
+    pub extensions: Arc<Extensions>,
 }
 
 // Actors are built by the Rivet runtime, which gives them no constructor arguments, so the

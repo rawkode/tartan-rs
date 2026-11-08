@@ -1,5 +1,6 @@
 //! The actor types and what they share.
 
+pub(crate) mod extension;
 pub(crate) mod forge;
 pub(crate) mod org;
 pub(crate) mod repo;
@@ -8,6 +9,8 @@ pub(crate) mod subscriber;
 use anyhow::Result;
 use rivetkit::SqliteDb;
 
+/// The registered name of the [`extension::Extension`] actor type.
+pub(crate) const EXTENSION: &str = "extension";
 /// The registered name of the [`forge::Forge`] actor type.
 pub(crate) const FORGE: &str = "forge";
 /// The registered name of the [`org::Org`] actor type.

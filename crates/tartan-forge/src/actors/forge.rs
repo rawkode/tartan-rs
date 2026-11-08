@@ -41,6 +41,13 @@ const SCHEMA: &str = "
         name TEXT PRIMARY KEY,
         pattern TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS packages (
+        id TEXT NOT NULL,
+        version TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        manifest TEXT NOT NULL,
+        PRIMARY KEY (id, version)
+    );
 ";
 
 /// An org as the forge knows it.
@@ -142,6 +149,58 @@ impl Action for ListSubscribers {
     const NAME: &'static str = "listSubscribers";
 }
 
+/// A published extension package. `id@version` names exactly one package.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PackageInfo {
+    /// The extension id.
+    pub id: String,
+    /// The version.
+    pub version: String,
+    /// The digest of the package's contents in storage.
+    pub digest: String,
+    /// The manifest as published.
+    pub manifest: serde_json::Value,
+}
+
+/// Registers a package already in storage. Publishing the same package again returns it;
+/// publishing different contents under a published `id@version` is refused.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PublishPackage {
+    /// The package.
+    pub package: PackageInfo,
+}
+
+impl Action for PublishPackage {
+    type Output = PackageInfo;
+
+    const NAME: &'static str = "publishPackage";
+}
+
+/// Finds a published package.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PackageQuery {
+    /// The extension id.
+    pub id: String,
+    /// The version.
+    pub version: String,
+}
+
+impl Action for PackageQuery {
+    type Output = Option<PackageInfo>;
+
+    const NAME: &'static str = "package";
+}
+
+/// Every published package.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ListPackages {}
+
+impl Action for ListPackages {
+    type Output = Vec<PackageInfo>;
+
+    const NAME: &'static str = "listPackages";
+}
+
 #[async_trait]
 impl Actor for Forge {
     type Input = ();
@@ -152,6 +211,9 @@ impl Actor for Forge {
         Placement,
         RegisterSubscriber,
         ListSubscribers,
+        PublishPackage,
+        PackageQuery,
+        ListPackages,
         ReadEvents,
         Flush,
     );
@@ -393,6 +455,111 @@ impl Handler<ListSubscribers> for Forge {
     ) -> Result<Vec<SubscriberSpec>> {
         subscribers(&ctx).await
     }
+}
+
+impl Handler<PublishPackage> for Forge {
+    async fn handle(
+        self: Arc<Self>,
+        ctx: Ctx<Self>,
+        action: PublishPackage,
+    ) -> Result<PackageInfo> {
+        let package = action.package;
+        if let Some(existing) = package_row(&ctx, &package.id, &package.version).await? {
+            if existing.digest != package.digest {
+                bail!(
+                    "{}@{} is already published with other contents",
+                    package.id,
+                    package.version
+                );
+            }
+            return Ok(existing);
+        }
+        let stored = package.clone();
+        ctx.sql()
+            .transaction(
+                move |tx| async move {
+                    tx.execute(
+                        "INSERT INTO packages (id, version, digest, manifest) VALUES (?, ?, ?, ?)",
+                        Some(vec![
+                            param_text(stored.id.as_str()),
+                            param_text(stored.version.as_str()),
+                            param_text(stored.digest.as_str()),
+                            param_text(stored.manifest.to_string()),
+                        ]),
+                    )
+                    .await?;
+                    let data = json!({
+                        "id": stored.id,
+                        "version": stored.version,
+                        "digest": stored.digest,
+                    });
+                    append(&tx, SOURCE, "package.published", data).await?;
+                    Ok(())
+                },
+                SqliteTransactionOptions {
+                    name: Some("publish_package"),
+                    timeout: None,
+                },
+            )
+            .await?;
+        self.flush_later(&ctx).await;
+        Ok(package)
+    }
+}
+
+impl Handler<PackageQuery> for Forge {
+    async fn handle(
+        self: Arc<Self>,
+        ctx: Ctx<Self>,
+        action: PackageQuery,
+    ) -> Result<Option<PackageInfo>> {
+        package_row(&ctx, &action.id, &action.version).await
+    }
+}
+
+impl Handler<ListPackages> for Forge {
+    async fn handle(
+        self: Arc<Self>,
+        ctx: Ctx<Self>,
+        _action: ListPackages,
+    ) -> Result<Vec<PackageInfo>> {
+        let result = ctx
+            .sql()
+            .query(
+                "SELECT id, version, digest, manifest FROM packages ORDER BY id, version",
+                None,
+            )
+            .await?;
+        result
+            .rows
+            .iter()
+            .map(|row| package_from_row(row))
+            .collect()
+    }
+}
+
+async fn package_row(ctx: &Ctx<Forge>, id: &str, version: &str) -> Result<Option<PackageInfo>> {
+    let result = ctx
+        .sql()
+        .query(
+            "SELECT id, version, digest, manifest FROM packages WHERE id = ? AND version = ?",
+            Some(vec![param_text(id), param_text(version)]),
+        )
+        .await?;
+    result
+        .rows
+        .first()
+        .map(|row| package_from_row(row))
+        .transpose()
+}
+
+fn package_from_row(row: &[rivetkit::ColumnValue]) -> Result<PackageInfo> {
+    Ok(PackageInfo {
+        id: text(row, 0)?,
+        version: text(row, 1)?,
+        digest: text(row, 2)?,
+        manifest: serde_json::from_str(&text(row, 3)?)?,
+    })
 }
 
 impl Handler<ReadEvents> for Forge {

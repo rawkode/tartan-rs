@@ -5,9 +5,9 @@ use rivetkit::TypedActorHandle;
 use rivetkit::TypedClientExt;
 use rivetkit::client::{Client, GetOrCreateOptions};
 
-use crate::actors::{FORGE, ORG, REPO, SUBSCRIBER};
+use crate::actors::{EXTENSION, FORGE, ORG, REPO, SUBSCRIBER};
 use crate::services::services;
-use crate::{Forge, Org, Repo, Subscriber};
+use crate::{Extension, Forge, Org, Repo, Subscriber};
 
 /// The forge's single [`Forge`] actor.
 pub fn forge_handle(client: &Client) -> Result<TypedActorHandle<Forge>> {
@@ -32,6 +32,16 @@ pub fn repo_handle(
     pool: Option<String>,
 ) -> Result<TypedActorHandle<Repo>> {
     client.get_or_create_typed::<Repo>(REPO, [repo_id], in_pool(pool))
+}
+
+/// The [`Extension`] actor of installation `installation_id`, created in `pool` if it does not
+/// exist yet.
+pub fn extension_handle(
+    client: &Client,
+    installation_id: &str,
+    pool: Option<String>,
+) -> Result<TypedActorHandle<Extension>> {
+    client.get_or_create_typed::<Extension>(EXTENSION, [installation_id], in_pool(pool))
 }
 
 /// The [`Subscriber`] actor `name` of this forge.

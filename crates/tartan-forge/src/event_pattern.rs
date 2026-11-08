@@ -45,9 +45,9 @@ impl FromStr for EventPattern {
             "*" => true,
             literal => {
                 !literal.is_empty()
-                    && literal
-                        .bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                    && literal.bytes().all(|b| {
+                        b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-')
+                    })
             }
         };
         if s.len() <= 200 && parts.iter().enumerate().all(valid_part) {

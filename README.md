@@ -24,6 +24,10 @@ browser ──► tartan gateway ──► actors on Rivet, each with its own SQ
   `push.accepted` and `ref.updated` events on the repository actor. Git clients send their token up front:
   `git -c http.extraHeader="Authorization: Bearer <token>" push …`. Locally walgit's event bridge wakes on a 1 s
   sweep; in production, point the object store's bucket notifications at walgit's `/_events/notify`.
+- **Extensions.** `POST /-/api/packages` publishes a package (manifest, base64 component, migrations) to object
+  storage; `POST /-/api/orgs/<org>/repos/<repo>/extensions` installs one, and
+  `…/extensions/<id>/tools/<tool>`, `…/render/<slot>` and `…/actions/<action>` call it. Every API call acts as
+  `admin` until the gateway has identities.
 - **Placement.** The forge actor maps `org/<org>` or `repo/<org>/<repo>` to a Rivet pool. New actors for that target
   are created in the pool, so a large org or repository runs on its own machines while staying part of the forge.
 
@@ -47,8 +51,9 @@ such as Issues run unchanged.
 1. A wasmtime host for the world: guarded SQL against the installation's database, migrations, configuration,
    clock and randomness, buffered effects, and fuel, memory and time limits per call. **Done:** the Issues
    component creates, lists and renders issues on it.
-2. Packages in object storage and installations on a repository, each an actor with its own SQLite; tools, render
-   and actions over the API. Not started.
+2. Packages in object storage and installations on a repository, each an `extension` actor with its own SQLite;
+   tools, render and actions over the API. **Done:** Issues is published, installed on a repository and used over
+   HTTP. Packages are immutable per `id@version`.
 3. `on-event` subscriptions and `effects.emit` through the outbox. Not started.
 
 ### Goal 3: the web frontend

@@ -12,12 +12,13 @@ use rivetkit::{Handler, action};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::actors::extension::{Init as InitExtension, InstallationSpec};
 use crate::actors::{apply_schema, key_id};
 use crate::event_log::{EVENT_LOG_SCHEMA, ReadEvents, append, read};
 use crate::outbox::{Flush, Outbox, SubscriberSource};
 use crate::services::services;
 use crate::sql::{param_integer, param_text, text};
-use crate::{Envelope, RefEvent, Slug};
+use crate::{Envelope, PackageQuery, RefEvent, Slug, extension_handle, forge_handle};
 
 /// The repository actor.
 #[derive(Debug)]
@@ -40,6 +41,13 @@ const SCHEMA: &str = "
         seq INTEGER NOT NULL,
         ref_name TEXT NOT NULL,
         PRIMARY KEY (seq, ref_name)
+    );
+    CREATE TABLE IF NOT EXISTS installations (
+        extension_id TEXT PRIMARY KEY,
+        installation_id TEXT NOT NULL UNIQUE,
+        version TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        ready INTEGER NOT NULL DEFAULT 0
     );
 ";
 
@@ -100,10 +108,73 @@ impl Action for RepoStatusQuery {
     const NAME: &'static str = "status";
 }
 
+/// An extension installed on the repository.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallationInfo {
+    /// The installation's id: its extension actor's key.
+    pub installation_id: String,
+    /// The extension's id.
+    pub extension_id: String,
+    /// The installed version.
+    pub version: String,
+    /// The package digest.
+    pub digest: String,
+}
+
+/// Installs a published extension package on the repository, or returns the existing
+/// installation of that extension. One version of an extension is installed at a time.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Install {
+    /// The extension's id.
+    pub extension_id: String,
+    /// The version to install.
+    pub version: String,
+    /// The installation's configuration.
+    pub config: serde_json::Value,
+}
+
+impl Action for Install {
+    type Output = InstallationInfo;
+
+    const NAME: &'static str = "install";
+}
+
+/// Finds the installation of an extension on the repository.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct InstallationQuery {
+    /// The extension's id.
+    pub extension_id: String,
+}
+
+impl Action for InstallationQuery {
+    type Output = Option<InstallationInfo>;
+
+    const NAME: &'static str = "installation";
+}
+
+/// Every installation on the repository.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ListInstallations {}
+
+impl Action for ListInstallations {
+    type Output = Vec<InstallationInfo>;
+
+    const NAME: &'static str = "listInstallations";
+}
+
 #[async_trait]
 impl Actor for Repo {
     type Input = ();
-    type Actions = (Init, RecordRefEvents, RepoStatusQuery, ReadEvents, Flush);
+    type Actions = (
+        Init,
+        RecordRefEvents,
+        RepoStatusQuery,
+        Install,
+        InstallationQuery,
+        ListInstallations,
+        ReadEvents,
+        Flush,
+    );
     type Events = ();
     type ConnParams = ();
     type Action = action::Raw;
@@ -275,6 +346,170 @@ impl Handler<RepoStatusQuery> for Repo {
             slug,
             pool: ctx.inner().client_pool_name().map(str::to_owned),
         })
+    }
+}
+
+impl Repo {
+    async fn installation(
+        &self,
+        ctx: &Ctx<Self>,
+        extension_id: &str,
+    ) -> Result<Option<(InstallationInfo, bool)>> {
+        let result = ctx
+            .sql()
+            .query(
+                "SELECT installation_id, version, digest, ready FROM installations
+                 WHERE extension_id = ?",
+                Some(vec![param_text(extension_id)]),
+            )
+            .await?;
+        let Some(row) = result.rows.first() else {
+            return Ok(None);
+        };
+        let info = InstallationInfo {
+            installation_id: text(row, 0)?,
+            extension_id: extension_id.to_owned(),
+            version: text(row, 1)?,
+            digest: text(row, 2)?,
+        };
+        Ok(Some((info, crate::sql::integer(row, 3)? != 0)))
+    }
+}
+
+impl Handler<Install> for Repo {
+    async fn handle(self: Arc<Self>, ctx: Ctx<Self>, action: Install) -> Result<InstallationInfo> {
+        let (org_slug, slug) = self.path(&ctx).await?;
+        if self
+            .installation(&ctx, &action.extension_id)
+            .await?
+            .is_none()
+        {
+            let client = ctx.client()?;
+            let Some(package) = forge_handle(&client)?
+                .send(PackageQuery {
+                    id: action.extension_id.clone(),
+                    version: action.version.clone(),
+                })
+                .await?
+            else {
+                bail!(
+                    "{}@{} is not published",
+                    action.extension_id,
+                    action.version
+                );
+            };
+            if package.manifest["storage"]["scope"] != "repo" {
+                bail!("{} is not installed per repository", action.extension_id);
+            }
+            let installation_id = ulid::Ulid::new().to_string().to_lowercase();
+            ctx.sql()
+                .execute(
+                    "INSERT OR IGNORE INTO installations
+                     (extension_id, installation_id, version, digest) VALUES (?, ?, ?, ?)",
+                    Some(vec![
+                        param_text(action.extension_id.as_str()),
+                        param_text(installation_id),
+                        param_text(package.version.as_str()),
+                        param_text(package.digest.as_str()),
+                    ]),
+                )
+                .await?;
+        }
+        let Some((info, ready)) = self.installation(&ctx, &action.extension_id).await? else {
+            bail!("installation of {} vanished", action.extension_id);
+        };
+        if ready {
+            return Ok(info);
+        }
+
+        // As with repositories: initialize the extension actor first, then mark the
+        // installation ready, so a retry reuses the pending id.
+        let pool = ctx.inner().client_pool_name().map(str::to_owned);
+        extension_handle(&ctx.client()?, &info.installation_id, pool)?
+            .send(InitExtension {
+                spec: InstallationSpec {
+                    installation_id: info.installation_id.clone(),
+                    extension_id: info.extension_id.clone(),
+                    version: info.version.clone(),
+                    digest: info.digest.clone(),
+                    config: action.config.to_string(),
+                    repo_id: self.id.clone(),
+                    repo_path: format!("{org_slug}/{slug}"),
+                },
+            })
+            .await?;
+
+        let source = self.source();
+        let event_info = info.clone();
+        ctx.sql()
+            .transaction(
+                move |tx| async move {
+                    let marked = tx
+                        .execute(
+                            "UPDATE installations SET ready = 1 WHERE extension_id = ? AND ready = 0",
+                            Some(vec![param_text(event_info.extension_id.as_str())]),
+                        )
+                        .await?;
+                    if marked.changes == 1 {
+                        let data = json!({
+                            "installation_id": event_info.installation_id,
+                            "extension_id": event_info.extension_id,
+                            "version": event_info.version,
+                        });
+                        append(&tx, &source, "extension.installed", data).await?;
+                    }
+                    Ok(())
+                },
+                SqliteTransactionOptions {
+                    name: Some("install"),
+                    timeout: None,
+                },
+            )
+            .await?;
+        self.outbox.flush_later(&ctx, SubscriberSource::Forge);
+        Ok(info)
+    }
+}
+
+impl Handler<InstallationQuery> for Repo {
+    async fn handle(
+        self: Arc<Self>,
+        ctx: Ctx<Self>,
+        action: InstallationQuery,
+    ) -> Result<Option<InstallationInfo>> {
+        Ok(self
+            .installation(&ctx, &action.extension_id)
+            .await?
+            .and_then(|(info, ready)| ready.then_some(info)))
+    }
+}
+
+impl Handler<ListInstallations> for Repo {
+    async fn handle(
+        self: Arc<Self>,
+        ctx: Ctx<Self>,
+        _action: ListInstallations,
+    ) -> Result<Vec<InstallationInfo>> {
+        let result = ctx
+            .sql()
+            .query(
+                "SELECT installation_id, extension_id, version, digest FROM installations
+                 WHERE ready = 1 ORDER BY extension_id",
+                None,
+            )
+            .await?;
+        result
+            .rows
+            .iter()
+            .map(|row| {
+                Ok(InstallationInfo {
+                    installation_id: text(row, 0)?,
+                    extension_id: text(row, 1)?,
+                    version: text(row, 2)?,
+                    digest: text(row, 3)?,
+                })
+            })
+            .collect()
     }
 }
 

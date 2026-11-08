@@ -1,6 +1,6 @@
 //! Delivery of an actor's events to subscribers.
 //!
-//! Each source keeps, per subscriber, the last sequence number it delivered (`deliveries`). A
+//! Each source keeps, per subscriber, the last sequence number it delivered (`_tartan_deliveries`). A
 //! flush sends every newer event that matches the subscriber's pattern through the subscriber's
 //! `deliver` action and moves the cursor only once the subscriber has stored them, so delivery is
 //! in order and at least once. A failed flush is retried by a scheduled `flush` action.
@@ -123,7 +123,7 @@ impl Outbox {
         let result = ctx
             .sql()
             .query(
-                "SELECT seq FROM deliveries WHERE subscriber = ?",
+                "SELECT seq FROM _tartan_deliveries WHERE subscriber = ?",
                 Some(vec![param_text(subscriber)]),
             )
             .await?;
@@ -136,7 +136,7 @@ impl Outbox {
     async fn set_cursor<A: Actor>(&self, ctx: &Ctx<A>, subscriber: &str, seq: u64) -> Result<()> {
         ctx.sql()
             .execute(
-                "INSERT INTO deliveries (subscriber, seq) VALUES (?, ?)
+                "INSERT INTO _tartan_deliveries (subscriber, seq) VALUES (?, ?)
                  ON CONFLICT (subscriber) DO UPDATE SET seq = MAX(seq, excluded.seq)",
                 Some(vec![
                     param_text(subscriber),

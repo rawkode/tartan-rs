@@ -10,6 +10,7 @@ mkdir -p "$state/rustfs" "$state/logs"
 : "${WALGIT_BIN:?set WALGIT_BIN to a walgit binary (github.com/tobi/walgit)}"
 
 export TARTAN_S3_ACCESS_KEY="tartandev" TARTAN_S3_SECRET_KEY="tartandevsecret"
+export TARTAN_S3_ENDPOINT="http://127.0.0.1:9100" TARTAN_S3_BUCKET="tartan-dev"
 export TARTAN_ADMIN_TOKEN="dev-admin-token" TARTAN_WEBHOOK_SECRET="dev-webhook-secret"
 export TARTAN_GIT_HOST_TOKEN="dev-git-host-token" TARTAN_GIT_HOST_URL="http://127.0.0.1:9200"
 export WALGIT__EVENTS__WEBHOOK_SECRET="$TARTAN_WEBHOOK_SECRET"

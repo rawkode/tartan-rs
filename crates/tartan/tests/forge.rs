@@ -13,7 +13,7 @@ use rivetkit::{EngineSpawnMode, Registry, ServeConfig};
 use serde_json::{Value, json};
 use sha2::Sha256;
 use tartan::{GatewayState, router};
-use tartan_forge::{GitHost, Services, install_services, register_actors};
+use tartan_forge::{Extensions, GitHost, Services, install_services, register_actors};
 use tokio_util::sync::CancellationToken;
 
 const ADMIN_TOKEN: &str = "test-admin-token";
@@ -149,7 +149,12 @@ async fn forge_end_to_end() {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("after 1970")
         .as_nanos();
+    let extensions = Arc::new(Extensions::new(
+        tartan_extensions::ExtensionRuntime::new().expect("runtime"),
+        Arc::new(object_store::memory::InMemory::new()),
+    ));
     install_services(Services {
+        extensions: extensions.clone(),
         forge_id: format!("test-{nanos}"),
         git_host: git_host.clone(),
     })
@@ -180,6 +185,7 @@ async fn forge_end_to_end() {
         client: actors.client().clone(),
         admin_token: Arc::from(ADMIN_TOKEN),
         webhook_secret: Arc::from(WEBHOOK_SECRET),
+        extensions,
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

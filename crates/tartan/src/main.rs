@@ -10,16 +10,22 @@
 //! | `TARTAN_WEBHOOK_SECRET` | the key the Git host signs its webhook with |
 //! | `TARTAN_GIT_HOST_URL` | the Git host (walgit) base URL |
 //! | `TARTAN_GIT_HOST_TOKEN` | optional: the bearer token for the Git host |
+//! | `TARTAN_S3_ENDPOINT`, `TARTAN_S3_BUCKET` | the object store for extension packages |
+//! | `TARTAN_S3_ACCESS_KEY`, `TARTAN_S3_SECRET_KEY` | its credentials |
+//! | `TARTAN_S3_REGION` | optional, default `us-east-1` |
 //! | `RIVET_ENDPOINT`, `RIVET_TOKEN`, `RIVET_NAMESPACE`, `RIVET_POOL` | the Rivet engine and the pool this process serves |
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use object_store::aws::AmazonS3Builder;
+use object_store::prefix::PrefixStore;
 use rivetkit::client::{Client, ClientConfig};
 use rivetkit::{Registry, ServeConfig};
 use tartan::{GatewayState, router};
-use tartan_forge::{Services, WalgitClient, install_services, register_actors};
+use tartan_extensions::ExtensionRuntime;
+use tartan_forge::{Extensions, Services, WalgitClient, install_services, register_actors};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
@@ -37,9 +43,23 @@ async fn main() -> Result<()> {
         &required("TARTAN_GIT_HOST_URL")?,
         std::env::var("TARTAN_GIT_HOST_TOKEN").ok(),
     );
+    let package_store = AmazonS3Builder::new()
+        .with_endpoint(required("TARTAN_S3_ENDPOINT")?)
+        .with_allow_http(true)
+        .with_bucket_name(required("TARTAN_S3_BUCKET")?)
+        .with_region(env_or("TARTAN_S3_REGION", "us-east-1"))
+        .with_access_key_id(required("TARTAN_S3_ACCESS_KEY")?)
+        .with_secret_access_key(required("TARTAN_S3_SECRET_KEY")?)
+        .build()
+        .context("the package store")?;
+    let extensions = Arc::new(Extensions::new(
+        ExtensionRuntime::new()?,
+        Arc::new(PrefixStore::new(package_store, "tartan")),
+    ));
     install_services(Services {
         forge_id: env_or("TARTAN_FORGE_ID", "forge"),
         git_host: Arc::new(git_host),
+        extensions: extensions.clone(),
     })?;
 
     let serve_config = ServeConfig::from_env()?;
@@ -62,6 +82,7 @@ async fn main() -> Result<()> {
         client,
         admin_token: Arc::from(admin_token),
         webhook_secret: Arc::from(webhook_secret.into_bytes()),
+        extensions,
     };
     let listener = tokio::net::TcpListener::bind(listen)
         .await

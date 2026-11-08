@@ -11,10 +11,10 @@ use axum::{Json, Router};
 use rivetkit::client::Client;
 use serde::{Deserialize, Serialize};
 use tartan_forge::{
-    CreateOrg, CreateRepo, EventPattern, OrgInfo, OrgStatus, OrgStatusQuery, Placement, Received,
-    ReceivedEvent, RecordRefEvents, RefEvent, RegisterSubscriber, RepoInfo, RepoStatusQuery,
-    ResolveOrg, ResolveRepo, SetPlacement, Slug, SubscriberSpec, forge_handle, org_handle,
-    repo_handle, subscriber_handle, valid_placement_target, verify_signature,
+    CreateOrg, CreateRepo, EventPattern, Extensions, OrgInfo, OrgStatus, OrgStatusQuery, Placement,
+    Received, ReceivedEvent, RecordRefEvents, RefEvent, RegisterSubscriber, RepoInfo,
+    RepoStatusQuery, ResolveOrg, ResolveRepo, SetPlacement, Slug, SubscriberSpec, forge_handle,
+    org_handle, repo_handle, subscriber_handle, valid_placement_target, verify_signature,
 };
 
 use crate::ApiError;
@@ -31,6 +31,8 @@ pub struct GatewayState {
     pub admin_token: Arc<str>,
     /// The key the Git host signs webhook bodies with.
     pub webhook_secret: Arc<[u8]>,
+    /// Extension packages and their runtime.
+    pub extensions: Arc<Extensions>,
 }
 
 /// The gateway's routes.
@@ -44,6 +46,7 @@ pub fn router(state: GatewayState) -> Router {
         .route("/placements/{*target}", get(placement))
         .route("/subscribers/{name}", put(register_subscriber))
         .route("/subscribers/{name}/events", get(received))
+        .merge(crate::extension_routes::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
     Router::new()
         .nest("/-/api", api)
@@ -264,7 +267,11 @@ async fn resolve_org(client: &Client, org: &str) -> Result<OrgInfo, ApiError> {
         .ok_or_else(|| ApiError::NotFound(format!("org {org}")))
 }
 
-async fn resolve_repo(client: &Client, org: &str, repo: &str) -> Result<RepoInfo, ApiError> {
+pub(crate) async fn resolve_repo(
+    client: &Client,
+    org: &str,
+    repo: &str,
+) -> Result<RepoInfo, ApiError> {
     let slug = parse_slug(repo)?;
     let org_info = resolve_org(client, org).await?;
     org_handle(client, &org_info.id, org_info.pool)?

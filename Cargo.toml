@@ -12,8 +12,10 @@ license = "MIT"
 anyhow = "1"
 async-trait = "0.1"
 axum = "0.8.9"
+base64 = "0.22"
 hex = "0.4"
 hmac = "0.12"
+object_store = { version = "0.14.2", features = ["aws"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rivetkit = "3.0.6"
 serde = { version = "1", features = ["derive"] }
@@ -25,6 +27,7 @@ tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ulid = "1"
+tartan-extensions = { path = "crates/tartan-extensions" }
 tartan-forge = { path = "crates/tartan-forge" }
 
 [workspace.lints.rust]

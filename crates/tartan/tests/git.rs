@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use rivetkit::Registry;
 use serde_json::{Value, json};
 use tartan::{GatewayState, router};
-use tartan_forge::{Services, WalgitClient, install_services, register_actors};
+use tartan_forge::{Extensions, Services, WalgitClient, install_services, register_actors};
 use tokio::process::{Child, Command};
 
 const ADMIN_TOKEN: &str = "git-test-admin-token";
@@ -209,7 +209,12 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("after 1970")
         .as_nanos();
+    let extensions = Arc::new(Extensions::new(
+        tartan_extensions::ExtensionRuntime::new().expect("runtime"),
+        Arc::new(object_store::memory::InMemory::new()),
+    ));
     install_services(Services {
+        extensions: extensions.clone(),
         forge_id: format!("git-test-{nanos}"),
         git_host: Arc::new(WalgitClient::new(
             &format!("http://127.0.0.1:{walgit_port}"),
@@ -226,6 +231,7 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
         client: actors.client().clone(),
         admin_token: Arc::from(ADMIN_TOKEN),
         webhook_secret: Arc::from(WEBHOOK_SECRET.as_bytes()),
+        extensions,
     };
     tokio::spawn(async move { axum::serve(listener, router(state)).await });
 

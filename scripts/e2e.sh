@@ -19,6 +19,7 @@ if [[ -z "${TARTAN_ISSUES_PACKAGE:-}" ]]; then
 fi
 export TARTAN_ISSUES_PACKAGE
 cargo test -p tartan-extensions -- --include-ignored
+cargo test -p tartan --test extensions -- --include-ignored
 
 # The full stack: RustFS, walgit and the git CLI. WALGIT_BIN names a walgit binary.
 if [[ -n "${WALGIT_BIN:-}" ]]; then
