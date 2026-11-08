@@ -1,0 +1,3 @@
+max_width = 100
+# The guide also asks for hex_literal_case = "Lower" and format_macro_matchers = true,
+# which stable rustfmt does not support yet.

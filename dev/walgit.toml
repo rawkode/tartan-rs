@@ -1,0 +1,40 @@
+# walgit for local development: repositories in the local RustFS bucket, ref events posted to
+# the Tartan gateway. Secrets come from the environment that scripts/dev.sh sets.
+
+[server]
+listen = "127.0.0.1:9200"
+public_url = "http://127.0.0.1:9200"
+# Tartan creates repositories; a push to an unknown one is refused.
+auto_create_on_push = false
+
+[server.tls]
+mode = "off"
+
+[server.auth]
+mode = "token"
+anonymous_read = true
+tokens = [
+  { principal = "tartan", token_env = "TARTAN_GIT_HOST_TOKEN", write = true, admin = true },
+]
+
+[store]
+backend = "s3"
+bucket = "tartan-dev"
+prefix = "git"
+
+[store.s3]
+endpoint = "http://127.0.0.1:9100"
+region = "us-east-1"
+access_key_env = "TARTAN_S3_ACCESS_KEY"
+secret_key_env = "TARTAN_S3_SECRET_KEY"
+force_path_style = true
+
+[cache]
+dir = ".dev/walgit-cache"
+max_bytes = "5GiB"
+
+[events]
+webhook_url = "http://127.0.0.1:8080/-/hooks/git-host"
+# Without bucket notifications to POST /_events/notify, the sweep is the only wake-up.
+sweep_interval = "1s"
+# webhook_secret comes from WALGIT__EVENTS__WEBHOOK_SECRET.
