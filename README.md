@@ -105,6 +105,12 @@ migrations.
 
 `scripts/rivet-engine.sh` downloads the Rivet engine matching the `rivetkit` crate and verifies its checksum.
 
+## License
+
+The forge (`crates/*`) is AGPL-3.0-or-later: it links [cuengine](https://crates.io/crates/cuengine), which is
+AGPL-licensed, to evaluate CUE. The extension SDK (`sdk/`) and the first-party extensions (`extensions/`) are MIT;
+they are separate WebAssembly components and do not link the forge.
+
 ## Style
 
 [Google's Rust style guide](https://google.github.io/styleguide/rustguide.html), `cargo fmt` with `rustfmt.toml`, and
