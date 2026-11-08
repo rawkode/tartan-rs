@@ -3,8 +3,8 @@
 ## 1. The forge as a CUE registry
 
 - [ ] 1.1 Read the deployment configuration (CUE package `forge` at `TARTAN_CONFIG`: `modules`, `sources`) and verify with unit tests: valid lists, an unknown source, an unversioned module
-- [ ] 1.2 Serve the OCI read API at `/v2/` from the object store with `angos-oci-service` for parsing and responses (manifests, blobs, tag lists; writes answer 405) and verify with the `cue` CLI fetching a module from a test forge
-- [ ] 1.3 Sync listed modules at startup with `oci-client` (idempotent, digest mismatches refused, unreachable sources reported) and register the packages inside them (manifest, version match, migrations, component); remove `POST /-/api/packages`; verify end to end against a test-only `distribution` source registry
+- [ ] 1.2 Serve the OCI read API at `/v2/` from the object store with custom read-only endpoints and `oci-spec` types (manifests, blobs, tag lists; writes answer 405) and verify with the `cue` CLI fetching a module from a test forge
+- [ ] 1.3 Sync listed modules at startup with ORAS's `oci-client` (idempotent, digest mismatches refused, unreachable sources reported) and register the packages inside them (manifest, version match, migrations, component); remove `POST /-/api/packages`; verify end to end against a test-only `distribution` source registry
 - [ ] 1.4 Evaluate configuration exactly as committed against the forge's registry (no added files) and check the exported value's shape in Rust; verify with unit tests and an end-to-end refusal for an unlisted module
 - [ ] 1.5 Make `scripts/build-extension.sh` build an extension module directory and publish it with `cue mod publish`; document the deployment configuration, the registry and authoring an extension module (Running locally, Deploying, Configuration, Extensions), and verify the docs build and lint
 
