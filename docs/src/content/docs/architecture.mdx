@@ -1,0 +1,35 @@
+---
+title: Architecture
+description: How the forge is put together — actors, events, Git hosting and extensions.
+sidebar:
+  order: 1
+---
+
+Tartan is three services and a set of actors.
+
+| Part | What it does |
+| --- | --- |
+| The gateway (`tartan`) | Serves the forge API under `/-/api` and receives the Git host's ref events at `/-/hooks/git-host`. |
+| Actors on [Rivet](https://rivet.dev) | Hold the forge's state. Each actor has its own SQLite database. |
+| [walgit](https://github.com/tobi/walgit) | Hosts Git: storage in an S3-compatible object store, smart HTTP, and ref events. |
+| An object store | Holds repositories and extension packages. [RustFS](https://rustfs.com) in development. |
+
+## Actors
+
+| Actor | One per | Holds |
+| --- | --- | --- |
+| `forge` | forge | orgs, placements, subscribers, published packages |
+| `org` | org | the org's repositories and org-wide extension installations |
+| `repo` | repository | the repository's installations and the record of its pushes |
+| `extension` | installation | the installation's own database |
+| `subscriber` | subscriber | the events it has received |
+
+Several forges can share one Rivet namespace: the forge's own actors are keyed by its id (`TARTAN_FORGE_ID`, default `forge`).
+
+## Everything is an event
+
+Every change appends an event to the changing actor's log in the same transaction. See [Events](/events/).
+
+## Configuration lives in the repository
+
+Extensions are WebAssembly components, installed and configured by the `tartan.cue` committed in a repository — never through the API. See [Extensions](/extensions/).

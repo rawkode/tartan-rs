@@ -1,0 +1,43 @@
+---
+title: Running locally
+description: Start the forge and run its tests on one machine.
+sidebar:
+  order: 2
+---
+
+## What you need
+
+- Rust 1.98, with the `wasm32-unknown-unknown` target for extensions
+- Go, to build the CUE evaluator
+- `git`, `rustfs`, `rclone`, `wasm-tools` and `jq` on `PATH`
+- A walgit binary: build [walgit](https://github.com/tobi/walgit) at `80e9a20` with `cargo build --release -p walgit-cli` (it needs `protoc`), and set `WALGIT_BIN` to `target/release/walgit`
+
+`scripts/rivet-engine.sh` downloads the Rivet engine matching the `rivetkit` crate and checks its checksum.
+
+## Run the forge
+
+```sh
+WALGIT_BIN=/path/to/walgit scripts/dev.sh
+```
+
+This starts RustFS on port 9100, the Rivet engine on 6420, walgit on 9200 and the gateway on 8080, with development credentials only. The admin token is `dev-admin-token`.
+
+## Run the tests
+
+```sh
+WALGIT_BIN=/path/to/walgit scripts/e2e.sh
+```
+
+It checks formatting and lints, then runs every test: unit tests, the extensions' own tests, and end-to-end tests against the real Rivet engine, walgit and RustFS.
+
+## Configuration
+
+| Variable | Meaning |
+| --- | --- |
+| `TARTAN_LISTEN` | the gateway's address, default `127.0.0.1:8080` |
+| `TARTAN_FORGE_ID` | this forge's id within the Rivet namespace, default `forge` |
+| `TARTAN_ADMIN_TOKEN` | the bearer token of the forge API |
+| `TARTAN_WEBHOOK_SECRET` | the key the Git host signs its webhook with |
+| `TARTAN_GIT_HOST_URL`, `TARTAN_GIT_HOST_TOKEN` | the walgit base URL and token |
+| `TARTAN_S3_ENDPOINT`, `TARTAN_S3_BUCKET`, `TARTAN_S3_ACCESS_KEY`, `TARTAN_S3_SECRET_KEY` | the object store for extension packages |
+| `RIVET_ENDPOINT`, `RIVET_TOKEN`, `RIVET_NAMESPACE`, `RIVET_POOL` | the Rivet engine and the pool this process serves |

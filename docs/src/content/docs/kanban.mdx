@@ -1,0 +1,28 @@
+---
+title: Kanban
+description: rawkode.kanban — boards over an org's issues, for the org, a repository or a project.
+sidebar:
+  order: 8
+---
+
+Kanban installs once per org. It keeps a card for every issue in the org from Issues' events, including issues created before it was installed, and shows them on boards.
+
+## Boards
+
+A board has a field (an issue field such as `status`, or `state` for open and closed), one to twelve columns, and a scope:
+
+| Scope | Shows |
+| --- | --- |
+| `org` | every issue in the org |
+| `repo` | one repository's issues |
+| `project` | one project's issues in a repository |
+
+An issue without a value starts in the first column; one whose value is not a column is listed as unplaced.
+
+## Moving cards
+
+The `move` tool (and the board's `move` action) moves a card by calling Issues' `update` in the card's repository, which Kanban's manifest permits with `"calls": {"rawkode.issues": ["update"]}`. Moving to a value that is not a column is refused, and so is a card outside the board's scope.
+
+## Tools
+
+`list_boards`, `board` (one board with its cards in columns) and `move`.

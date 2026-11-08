@@ -1,0 +1,17 @@
+---
+title: Placement
+description: Put a large org or repository on its own machines.
+sidebar:
+  order: 5
+---
+
+Rivet runs actors on pools of machines. A placement names the pool new actors for an org or a repository are created in:
+
+```sh
+curl -X PUT -H "Authorization: Bearer $TOKEN" localhost:8080/-/api/placements \
+  -d '{"target": "org/big", "pool": "dedicated"}'
+```
+
+`target` is `org/<org>` (the org and its repositories) or `repo/<org>/<repo>` (one repository). Run gateway processes with `RIVET_POOL=dedicated` on the machines for that pool; they stay part of the same forge.
+
+A placement applies when actors are created. Actors that already exist stay where they are.

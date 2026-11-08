@@ -1,0 +1,33 @@
+---
+title: Issues
+description: rawkode.issues — numbered issues per repository with configured fields.
+sidebar:
+  order: 7
+---
+
+Issues installs per repository. Each repository's issues are numbered from 1, open or closed, and may be filed against a project (a root path such as `crates/lsp`).
+
+## Fields
+
+Fields come from the installation's settings:
+
+```cue
+fields: status: {type: "select", options: ["todo", "doing", "done"], default: "todo"}
+```
+
+Types are `text`, `number`, `select`, `multiselect`, `monetary`, `date` and `boolean`. A value that does not fit its field is refused.
+
+## Tools
+
+| Tool | Does |
+| --- | --- |
+| `list` | issues newest first, without bodies (`state`, `limit`, `project`, `before`) |
+| `get` | one issue with its body |
+| `fields` | the configured fields |
+| `create` | a new issue (`title`, `body`, `project`, `fields`) |
+| `update` | title, body, fields or state (`expectedVersion` guards against concurrent edits) |
+| `close`, `reopen` | change the state |
+
+## Events
+
+Every write emits `x.rawkode.issues.issue.created` or `.updated` with the issue's number, title, project, state, fields, version and update time, but not its body. Other extensions keep a copy by keeping the highest version.

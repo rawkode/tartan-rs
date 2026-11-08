@@ -2,8 +2,8 @@
 
 ## 1. Documentation site
 
-- [ ] 1.1 Scaffold Nimbus in `docs/` with `npx @cloudflare/create-nimbus-docs`, set the site name and navigation, and verify `npm run build` in `docs/` succeeds
-- [ ] 1.2 Write pages for what exists — architecture, running locally (`scripts/dev.sh`, `scripts/e2e.sh`), events and subscribers, Git hosting, placement, extensions (packages, the `tartan:ext` world, limits, events, calls), Issues and Kanban — and verify the build and that every page appears in the navigation
+- [x] 1.1 Scaffold Nimbus in `docs/` with `npx @cloudflare/create-nimbus-docs`, set the site name and navigation, and verify `npm run build` in `docs/` succeeds
+- [x] 1.2 Write pages for what exists — architecture, running locally (`scripts/dev.sh`, `scripts/e2e.sh`), events and subscribers, Git hosting, placement, extensions (packages, the `tartan:ext` world, limits, events, calls), Issues and Kanban — and verify the build and that every page appears in the navigation
 
 ## 2. Reading configuration
 

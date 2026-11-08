@@ -1,0 +1,24 @@
+---
+title: Git hosting
+description: Repositories live in the object store and are served by walgit.
+sidebar:
+  order: 4
+---
+
+[walgit](https://github.com/tobi/walgit) hosts every repository in the object store: the bucket is the repository, and any walgit host pointed at it can serve it, even with an empty cache.
+
+## Clone and push
+
+Creating a repository through the forge creates it on walgit and returns its clone URL. Pushes need the Git host token, sent as a bearer header:
+
+```sh
+git -c http.extraHeader="Authorization: Bearer $GIT_TOKEN" push http://127.0.0.1:9200/acme/api.git main
+```
+
+Anonymous reads are allowed.
+
+## Ref events
+
+walgit posts each batch of ref changes to `/-/hooks/git-host`, signed with `X-Walgit-Signature` (HMAC-SHA256 of the body). The forge answers 401 to a wrong signature, skips repositories it does not know, and records one `push.accepted` per walgit log entry and one `ref.updated` per ref in the repository's log, once each however often walgit sends them.
+
+Without bucket notifications, walgit's event bridge wakes on its sweep (`events.sweep_interval`, one second in development). In production, point the object store's bucket notifications at walgit's `/_events/notify`.
