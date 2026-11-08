@@ -1,18 +1,18 @@
-//! The extension API: publishing packages, installing them on repositories, and calling an
-//! installation's tools, slots and actions.
+//! The extension API: publishing packages, and listing and calling installations. Installations
+//! come only from the `tartan.cue` committed in repositories; there is no install route.
 
 use axum::Json;
 use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
-use axum::routing::post;
+use axum::routing::{get, post};
 use base64::Engine;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tartan_extensions::{ExtensionPackage, Manifest};
 use tartan_forge::{
-    Act, CallReply, CallTool, Install, InstallationInfo, InstallationQuery, ListInstallations,
-    ListPackages, OrgInfo, PackageInfo, PackageQuery, PublishPackage, Render, RepoInfo,
-    extension_handle, forge_handle, org_handle, repo_handle,
+    Act, CallReply, CallTool, InstallationInfo, InstallationQuery, ListInstallations, ListPackages,
+    OrgInfo, PackageInfo, PackageQuery, PublishPackage, Render, RepoInfo, extension_handle,
+    forge_handle, org_handle, repo_handle,
 };
 
 use crate::ApiError;
@@ -33,18 +33,12 @@ pub(crate) fn routes() -> axum::Router<GatewayState> {
                 .get(list_packages)
                 .layer(DefaultBodyLimit::max(PACKAGE_UPLOAD_MAX)),
         )
-        .route(
-            "/orgs/{org}/extensions",
-            post(install_on_org).get(list_on_org),
-        )
+        .route("/orgs/{org}/extensions", get(list_on_org))
         .route(
             "/orgs/{org}/extensions/{extension}/{call}/{name}",
             post(call_on_org),
         )
-        .route(
-            "/orgs/{org}/repos/{repo}/extensions",
-            post(install_on_repo).get(list_on_repo),
-        )
+        .route("/orgs/{org}/repos/{repo}/extensions", get(list_on_repo))
         .route(
             "/orgs/{org}/repos/{repo}/extensions/{extension}/{call}/{name}",
             post(call_on_repo),
@@ -136,7 +130,7 @@ async fn list_packages(
     ))
 }
 
-/// The org or repository an installation is made on.
+/// The org or repository an installation is on.
 enum Target {
     Org(OrgInfo),
     Repo(RepoInfo),
@@ -151,13 +145,6 @@ impl Target {
         Ok(Self::Repo(resolve_repo(&state.client, org, repo).await?))
     }
 
-    fn scope(&self) -> &'static str {
-        match self {
-            Self::Org(_) => "org",
-            Self::Repo(_) => "repo",
-        }
-    }
-
     fn pool(&self) -> Option<String> {
         match self {
             Self::Org(info) => info.pool.clone(),
@@ -170,25 +157,6 @@ impl Target {
             Self::Org(info) => info.slug.to_string(),
             Self::Repo(info) => format!("{}/{}", info.org_slug, info.slug),
         }
-    }
-
-    async fn install(
-        &self,
-        state: &GatewayState,
-        action: Install,
-    ) -> Result<InstallationInfo, ApiError> {
-        Ok(match self {
-            Self::Org(info) => {
-                org_handle(&state.client, &info.id, info.pool.clone())?
-                    .send(action)
-                    .await?
-            }
-            Self::Repo(info) => {
-                repo_handle(&state.client, &info.id, info.pool.clone())?
-                    .send(action)
-                    .await?
-            }
-        })
     }
 
     async fn list(&self, state: &GatewayState) -> Result<Vec<InstallationInfo>, ApiError> {
@@ -230,71 +198,6 @@ impl Target {
             ApiError::NotFound(format!("extension {extension} on {}", self.describe()))
         })
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct InstallBody {
-    package: String,
-    version: String,
-    #[serde(default = "empty_object")]
-    config: Value,
-}
-
-fn empty_object() -> Value {
-    json!({})
-}
-
-async fn install_on_org(
-    State(state): State<GatewayState>,
-    Path(org): Path<String>,
-    Json(body): Json<InstallBody>,
-) -> Result<(StatusCode, Json<InstallationInfo>), ApiError> {
-    install(&state, Target::org(&state, &org).await?, body).await
-}
-
-async fn install_on_repo(
-    State(state): State<GatewayState>,
-    Path((org, repo)): Path<(String, String)>,
-    Json(body): Json<InstallBody>,
-) -> Result<(StatusCode, Json<InstallationInfo>), ApiError> {
-    install(&state, Target::repo(&state, &org, &repo).await?, body).await
-}
-
-async fn install(
-    state: &GatewayState,
-    target: Target,
-    body: InstallBody,
-) -> Result<(StatusCode, Json<InstallationInfo>), ApiError> {
-    let found = forge_handle(&state.client)?
-        .send(PackageQuery {
-            id: body.package.clone(),
-            version: body.version.clone(),
-        })
-        .await?;
-    let Some(package) = found else {
-        return Err(ApiError::NotFound(format!(
-            "package {}@{}",
-            body.package, body.version
-        )));
-    };
-    if package.manifest["storage"]["scope"] != target.scope() {
-        return Err(ApiError::BadRequest(format!(
-            "{} is not installed per {}",
-            package.id,
-            target.scope()
-        )));
-    }
-    let installation = target
-        .install(
-            state,
-            Install {
-                extension_id: body.package,
-                version: body.version,
-                config: body.config,
-            },
-        )
-        .await?;
-    Ok((StatusCode::CREATED, Json(installation)))
 }
 
 async fn list_on_org(

@@ -25,17 +25,18 @@ mod sql;
 mod walgit;
 
 pub use crate::actors::extension::{
-    Act, CallReply, CallTool, DeliverEvents, Extension, InstallationSpec, Render,
+    Act, CallReply, CallTool, DeliverEvents, Disable, Extension, InstallationSpec, Render,
 };
 pub use crate::actors::forge::{
     CreateOrg, Forge, ListPackages, ListRecipients, ListSubscribers, OrgInfo, PackageInfo,
     PackageQuery, Placement, PublishPackage, Recipient, RecipientScope, RegisterSubscriber,
     ResolveOrg, SetPlacement, SubscribeInstallation, SubscriberSpec, valid_placement_target,
 };
-pub use crate::actors::installations::{
-    Install, InstallationInfo, InstallationQuery, ListInstallations,
+pub use crate::actors::installations::{InstallationInfo, InstallationQuery, ListInstallations};
+pub use crate::actors::org::{
+    ApplyOrgConfig, CreateRepo, Org, OrgStatus, OrgStatusQuery, RepoInfo, ResolveRepo,
+    SetContributions,
 };
-pub use crate::actors::org::{CreateRepo, Org, OrgStatus, OrgStatusQuery, RepoInfo, ResolveRepo};
 pub use crate::actors::repo::{RecordRefEvents, Repo, RepoStatus, RepoStatusQuery};
 pub use crate::actors::subscriber::{Received, ReceivedEvent, Subscriber};
 pub use crate::clients::{

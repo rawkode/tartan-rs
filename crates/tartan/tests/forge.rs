@@ -40,6 +40,16 @@ impl GitHost for FakeGitHost {
     fn clone_url(&self, owner: &str, name: &str) -> String {
         format!("http://git.test/{owner}/{name}.git")
     }
+
+    async fn read_file(
+        &self,
+        _owner: &str,
+        _name: &str,
+        _rev: &str,
+        _path: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
 }
 
 struct Forge {

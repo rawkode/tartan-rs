@@ -1,23 +1,63 @@
 ---
 title: Kanban
-description: rawkode.kanban — boards over an org's issues, for the org, a repository or a project.
+description: rawkode.kanban — boards over an org's issues, for the org, a repository or a project, defined in tartan.cue.
 sidebar:
-  order: 8
+  order: 9
 ---
 
-Kanban installs once per org. It keeps a card for every issue in the org from Issues' events, including issues created before it was installed, and shows them on boards.
+Kanban installs once per org, from the org's `tartan` repository. It keeps a card for every issue in the org from Issues' events, including issues created before it was installed, and shows them on boards. Boards are defined in `tartan.cue`: the org's in its `tartan` repository, and a repository's or a project's in that repository.
 
-## Boards
+## A worked example
 
-A board has a field (an issue field such as `status`, or `state` for open and closed), one to twelve columns, and a scope:
+The org's `tartan` repository installs Kanban and defines org-wide boards:
 
-| Scope | Shows |
+```cue
+// acme/tartan: tartan.cue
+package tartan
+
+let statuses = [{value: "todo", title: "To do"}, {value: "doing", title: "Doing"}, {value: "done", title: "Done"}]
+
+extensions: "rawkode.kanban": {
+	version: "0.2.0"
+	settings: boards: {
+		org: {name: "Everything", field: "status", columns: statuses}
+		web: {field: "status", columns: statuses, scope: {kind: "repo", repo: "acme/web"}}
+		state: {field: "state", columns: [{value: "open"}, {value: "closed"}]}
+	}
+}
+```
+
+A repository adds its own boards, and its projects' boards, by contributing settings without a version:
+
+```cue
+// acme/api: tartan.cue
+package tartan
+
+let statuses = [{value: "todo"}, {value: "doing"}, {value: "done"}]
+
+extensions: "rawkode.issues": {
+	version: "0.5.0"
+	settings: fields: status: {type: "select", options: ["todo", "doing", "done"], default: "todo"}
+}
+extensions: "rawkode.kanban": settings: boards: {
+	api: {name: "API", field: "status", columns: statuses}
+	lsp: {name: "Language server", field: "status", project: "crates/lsp", columns: statuses}
+}
+```
+
+This gives five boards: `org`, `web` and `state` from the org, and `acme/api/api` and `acme/api/lsp` from the repository.
+
+## Board settings
+
+| Key | Meaning |
 | --- | --- |
-| `org` | every issue in the org |
-| `repo` | one repository's issues |
-| `project` | one project's issues in a repository |
+| `name` | the board's title; defaults to its id |
+| `field` | the issue field the columns are values of, or `state` for open and closed |
+| `columns` | 1 to 12 columns, each `{value, title}`, with distinct values |
+| `scope` | org boards only: `{kind: "org"}` (the default), `{kind: "repo", repo: "acme/web"}` or `{kind: "project", repo: "acme/api", project: "crates/lsp"}` |
+| `project` | contributed boards only: scope the board to one of the repository's projects |
 
-An issue without a value starts in the first column; one whose value is not a column is listed as unplaced.
+A contributed board is named `<org>/<repo>/<id>` and is scoped to its repository. An issue without a value starts in the first column; one whose value is not a column is listed as unplaced. A definition that is not a valid board is left out and reported by `list_boards` under `invalid`.
 
 ## Moving cards
 
@@ -25,4 +65,4 @@ The `move` tool (and the board's `move` action) moves a card by calling Issues' 
 
 ## Tools
 
-`list_boards`, `board` (one board with its cards in columns) and `move`.
+`list_boards` (the boards, and the definitions that are not boards), `board` (one board with its cards in columns) and `move`.

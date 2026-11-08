@@ -7,11 +7,12 @@ use tartan_ext::serde_json::{Map, Value, json};
 pub const COLUMNS_MAX: usize = 12;
 
 /// What a board shows: every card in the org, a repository's, or one project's in a repository.
+/// A repository is named by its id or its `org/repo` path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Scope {
 	Org,
-	Repo { repo_id: String },
-	Project { repo_id: String, project: String },
+	Repo { repo: String },
+	Project { repo: String, project: String },
 }
 
 /// One column: the field value it holds, and its title.
@@ -46,30 +47,34 @@ pub struct Card {
 }
 
 impl Board {
-	/// Parses a board from tool arguments, checking every rule.
-	pub fn from_args(args: &Value) -> Result<Self, Error> {
-		let id = args["id"].as_str().unwrap_or_default();
-		let valid_id = !id.is_empty()
-			&& id.len() <= 64
-			&& id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-		if !valid_id {
-			return Err(Error::invalid("id is 1 to 64 lowercase letters, digits and -"));
-		}
-		let name = args["name"].as_str().unwrap_or(id).trim();
+	/// A board from its definition in the configuration. `scope` fixes the scope for a board a
+	/// repository contributes; the org's boards set their own (`scope: {kind, repo, project}`).
+	pub fn from_definition(id: &str, definition: &Value, scope: Option<Scope>) -> Result<Self, Error> {
+		let name = definition["name"].as_str().unwrap_or(id).trim();
 		if name.is_empty() || name.chars().count() > 100 {
 			return Err(Error::invalid("name is 1 to 100 characters"));
 		}
-		let field = args["field"].as_str().unwrap_or("state").trim();
+		let field = definition["field"].as_str().unwrap_or("state").trim();
 		if field.is_empty() || field.len() > 64 {
 			return Err(Error::invalid("field names an issue field, or state"));
 		}
-		let columns = columns_from(&args["columns"])?;
+		let scope = match scope {
+			Some(Scope::Repo { repo }) => match definition["project"].as_str() {
+				Some(project) if !project.is_empty() => Scope::Project {
+					repo,
+					project: project.to_owned(),
+				},
+				_ => Scope::Repo { repo },
+			},
+			Some(fixed) => fixed,
+			None => scope_from(&definition["scope"])?,
+		};
 		Ok(Self {
 			id: id.to_owned(),
 			name: name.to_owned(),
-			scope: scope_from(&args["scope"])?,
+			scope,
 			field: field.to_owned(),
-			columns,
+			columns: columns_from(&definition["columns"])?,
 		})
 	}
 
@@ -77,9 +82,9 @@ impl Board {
 	pub fn includes(&self, card: &Card) -> bool {
 		match &self.scope {
 			Scope::Org => true,
-			Scope::Repo { repo_id } => card.repo_id == *repo_id,
-			Scope::Project { repo_id, project } => {
-				card.repo_id == *repo_id && card.project.as_deref() == Some(project.as_str())
+			Scope::Repo { repo } => names(card, repo),
+			Scope::Project { repo, project } => {
+				names(card, repo) && card.project.as_deref() == Some(project.as_str())
 			}
 		}
 	}
@@ -121,9 +126,9 @@ impl Board {
 	pub fn to_json(&self) -> Value {
 		let scope = match &self.scope {
 			Scope::Org => json!({ "kind": "org" }),
-			Scope::Repo { repo_id } => json!({ "kind": "repo", "repo_id": repo_id }),
-			Scope::Project { repo_id, project } => {
-				json!({ "kind": "project", "repo_id": repo_id, "project": project })
+			Scope::Repo { repo } => json!({ "kind": "repo", "repo": repo }),
+			Scope::Project { repo, project } => {
+				json!({ "kind": "project", "repo": repo, "project": project })
 			}
 		};
 		json!({
@@ -144,6 +149,64 @@ pub fn update_args(board: &Board, number: u32, value: &str) -> Value {
 		json!({ "number": number, "state": value })
 	} else {
 		json!({ "number": number, "fields": { board.field.as_str(): value } })
+	}
+}
+
+/// Whether `repo` (an id or an `org/repo` path) names `card`'s repository.
+fn names(card: &Card, repo: &str) -> bool {
+	card.repo_id == repo || card.repo_path == repo
+}
+
+/// Whether `id` can name a board: 1 to 64 lowercase letters, digits and `-`.
+pub fn valid_id(id: &str) -> bool {
+	!id.is_empty()
+		&& id.len() <= 64
+		&& id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// The boards in Kanban's configuration: the org's own (`boards`), then each repository's
+/// contribution (`repos.<id>.settings.boards`), named `<org>/<repo>/<id>`. Definitions that are
+/// not boards are returned with their problem.
+pub fn boards_from_config(config: &Value) -> (Vec<Board>, Vec<(String, String)>) {
+	let mut boards = Vec::new();
+	let mut invalid = Vec::new();
+	let mut add = |id: String, definition: &Value, scope: Option<Scope>, local: &str| {
+		if !valid_id(local) {
+			invalid.push((id, "a board id is 1 to 64 lowercase letters, digits and -".to_owned()));
+			return;
+		}
+		match Board::from_definition(&id, definition, scope) {
+			Ok(board) => boards.push(board),
+			Err(error) => invalid.push((id, error_text(&error))),
+		}
+	};
+	if let Some(own) = config["boards"].as_object() {
+		for (id, definition) in own {
+			add(id.clone(), definition, None, id);
+		}
+	}
+	if let Some(repos) = config["repos"].as_object() {
+		for (repo_id, contribution) in repos {
+			let path = contribution["path"].as_str().unwrap_or(repo_id);
+			if let Some(contributed) = contribution["settings"]["boards"].as_object() {
+				for (id, definition) in contributed {
+					let scope = Scope::Repo { repo: repo_id.clone() };
+					add(format!("{path}/{id}"), definition, Some(scope), id);
+				}
+			}
+		}
+	}
+	(boards, invalid)
+}
+
+fn error_text(error: &Error) -> String {
+	match error {
+		Error::Denied(m)
+		| Error::NotFound(m)
+		| Error::Invalid(m)
+		| Error::Conflict(m)
+		| Error::Unavailable(m)
+		| Error::Internal(m) => m.clone(),
 	}
 }
 
@@ -169,9 +232,9 @@ fn scope_from(scope: &Value) -> Result<Scope, Error> {
 	};
 	match scope["kind"].as_str().unwrap_or("org") {
 		"org" => Ok(Scope::Org),
-		"repo" => Ok(Scope::Repo { repo_id: text("repo_id")? }),
+		"repo" => Ok(Scope::Repo { repo: text("repo")? }),
 		"project" => Ok(Scope::Project {
-			repo_id: text("repo_id")?,
+			repo: text("repo")?,
 			project: text("project")?,
 		}),
 		other => Err(Error::invalid(format!("scope.kind {other:?} is org, repo or project"))),
@@ -211,7 +274,7 @@ mod tests {
 			fields.insert("status".to_owned(), json!(status));
 		}
 		Card {
-			repo_id: repo.to_owned(),
+			repo_id: format!("id-{repo}"),
 			repo_path: format!("acme/{repo}"),
 			number,
 			title: format!("#{number}"),
@@ -222,31 +285,57 @@ mod tests {
 		}
 	}
 
-	fn board(scope: Value) -> Board {
-		Board::from_args(&json!({
-			"id": "b", "field": "status", "scope": scope,
-			"columns": [{"value": "todo"}, {"value": "doing"}, {"value": "done"}],
-		}))
-		.expect("valid board")
+	fn columns() -> Value {
+		json!([{"value": "todo"}, {"value": "doing"}, {"value": "done"}])
 	}
 
 	#[test]
-	fn scopes_filter_cards() {
+	fn boards_come_from_the_org_and_from_repositories() {
+		let config = json!({
+			"boards": {
+				"all": {"field": "status", "columns": columns()},
+				"web": {"field": "status", "columns": columns(),
+						"scope": {"kind": "repo", "repo": "acme/web"}},
+				"bad": {"columns": []},
+			},
+			"repos": {
+				"id-api": {"path": "acme/api", "settings": {"boards": {
+					"api": {"field": "status", "columns": columns()},
+					"lsp": {"field": "status", "columns": columns(), "project": "crates/lsp"},
+					"Bad": {"columns": columns()},
+				}}},
+			},
+		});
+		let (boards, invalid) = boards_from_config(&config);
+		let ids: Vec<&str> = boards.iter().map(|b| b.id.as_str()).collect();
+		assert_eq!(ids, vec!["all", "web", "acme/api/api", "acme/api/lsp"]);
+		let bad: Vec<&str> = invalid.iter().map(|(id, _)| id.as_str()).collect();
+		assert_eq!(bad, vec!["bad", "acme/api/Bad"]);
+
 		let cards = [
 			card("api", 1, Some("crates/lsp"), Some("doing")),
 			card("api", 2, None, None),
 			card("web", 1, None, Some("done")),
 		];
-		let count = |b: &Board| cards.iter().filter(|c| b.includes(c)).count();
-		assert_eq!(count(&board(json!({"kind": "org"}))), 3);
-		assert_eq!(count(&board(json!({"kind": "repo", "repo_id": "api"}))), 2);
-		let project = json!({"kind": "project", "repo_id": "api", "project": "crates/lsp"});
-		assert_eq!(count(&board(project)), 1);
+		let count = |id: &str| {
+			let board = boards.iter().find(|b| b.id == id).expect("a board");
+			cards.iter().filter(|c| board.includes(c)).count()
+		};
+		assert_eq!(count("all"), 3);
+		assert_eq!(count("web"), 1);
+		assert_eq!(count("acme/api/api"), 2);
+		assert_eq!(count("acme/api/lsp"), 1);
 	}
 
 	#[test]
 	fn cards_without_a_value_start_in_the_first_column() {
-		let view = board(json!({"kind": "org"})).view(&[
+		let board = Board::from_definition(
+			"b",
+			&json!({"field": "status", "columns": columns()}),
+			None,
+		)
+		.expect("a board");
+		let view = board.view(&[
 			card("api", 1, None, None),
 			card("api", 2, None, Some("doing")),
 			card("api", 3, None, Some("blocked")),
@@ -257,22 +346,26 @@ mod tests {
 	}
 
 	#[test]
-	fn refuses_bad_boards() {
+	fn refuses_bad_definitions() {
 		let bad = [
-			json!({"id": "Bad", "columns": [{"value": "a"}]}),
-			json!({"id": "b", "columns": []}),
-			json!({"id": "b", "columns": [{"value": "a"}, {"value": "a"}]}),
-			json!({"id": "b", "columns": [{"value": "a"}], "scope": {"kind": "repo"}}),
-			json!({"id": "b", "columns": [{"value": "a"}], "scope": {"kind": "team"}}),
+			json!({"columns": []}),
+			json!({"columns": [{"value": "a"}, {"value": "a"}]}),
+			json!({"columns": [{"value": "a"}], "scope": {"kind": "repo"}}),
+			json!({"columns": [{"value": "a"}], "scope": {"kind": "team"}}),
 		];
-		for args in bad {
-			assert!(Board::from_args(&args).is_err(), "{args}");
+		for definition in bad {
+			assert!(Board::from_definition("b", &definition, None).is_err(), "{definition}");
 		}
 	}
 
 	#[test]
 	fn moves_update_the_board_field() {
-		let status = board(json!({"kind": "org"}));
+		let status = Board::from_definition(
+			"b",
+			&json!({"field": "status", "columns": columns()}),
+			None,
+		)
+		.expect("a board");
 		assert_eq!(
 			update_args(&status, 3, "done"),
 			json!({"number": 3, "fields": {"status": "done"}})

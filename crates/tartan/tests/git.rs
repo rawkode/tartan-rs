@@ -13,7 +13,9 @@ use std::time::{Duration, Instant};
 use rivetkit::Registry;
 use serde_json::{Value, json};
 use tartan::{GatewayState, router};
-use tartan_forge::{Extensions, Services, WalgitClient, install_services, register_actors};
+use tartan_forge::{
+    Extensions, GitHost, Services, WalgitClient, install_services, register_actors,
+};
 use tokio::process::{Child, Command};
 
 const ADMIN_TOKEN: &str = "git-test-admin-token";
@@ -384,6 +386,77 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
             ("delete".to_owned(), "refs/heads/topic".to_owned(), zero),
         ]
     );
+
+    // The forge reads files at a commit through walgit.
+    let walgit_client = WalgitClient::new(
+        &format!("http://127.0.0.1:{walgit_port}"),
+        Some(GIT_HOST_TOKEN.to_owned()),
+    );
+    let readme = walgit_client
+        .read_file("acme", "api", &second, "README.md")
+        .await
+        .expect("read a file");
+    assert_eq!(readme.as_deref(), Some(&b"two\n"[..]));
+    let missing = walgit_client
+        .read_file("acme", "api", &second, "tartan.cue")
+        .await
+        .expect("read a missing file");
+    assert_eq!(missing, None);
+
+    // A tartan.cue pushed to main installs Issues from its published package.
+    let issues = tartan_extensions::ExtensionPackage::from_dir(
+        std::env::var("TARTAN_ISSUES_PACKAGE")
+            .expect("TARTAN_ISSUES_PACKAGE names the Issues package")
+            .as_ref(),
+    )
+    .expect("the Issues package");
+    let upload = json!({
+        "manifest": issues.manifest.raw,
+        "component": base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            &issues.component
+        ),
+        "migrations": issues.migrations.iter()
+            .map(|(path, sql)| json!({"path": path, "sql": sql}))
+            .collect::<Vec<_>>(),
+    });
+    api(&http, &base, "/-/api/packages", upload).await;
+    let config = format!(
+        "package tartan\n\nextensions: \"rawkode.issues\": version: \"{}\"\n",
+        issues.manifest.version
+    );
+    std::fs::write(work.join("tartan.cue"), config).expect("write");
+    run(&work, "git", &["add", "tartan.cue"]).await;
+    run(&work, "git", &["commit", "--quiet", "-m", "Install Issues"]).await;
+    push("main").await;
+    let start = Instant::now();
+    loop {
+        let listed: Value = http
+            .get(format!("{base}/-/api/orgs/acme/repos/api/extensions"))
+            .bearer_auth(ADMIN_TOKEN)
+            .send()
+            .await
+            .expect("answers")
+            .json()
+            .await
+            .expect("json");
+        if listed.to_string().contains("rawkode.issues") {
+            break;
+        }
+        assert!(
+            start.elapsed() < DEADLINE,
+            "Issues was not installed from the pushed tartan.cue: {listed}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let created = api(
+        &http,
+        &base,
+        "/-/api/orgs/acme/repos/api/extensions/rawkode.issues/tools/create",
+        json!({"title": "Installed by Git"}),
+    )
+    .await;
+    assert_eq!(created["issue"]["number"], 1);
 
     actors.shutdown().await;
 }

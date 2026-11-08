@@ -2,16 +2,17 @@
 //!
 //! Installed once per org. It keeps a card for every issue in the org from the snapshots Issues
 //! emits (`x.rawkode.issues.issue.*`), keeping the highest version of each. A board is a view
-//! of those cards with its own columns: the org's, a repository's or a project's. Moving a card
-//! calls Issues' `update` in the card's repository, which the manifest's `permissions.calls`
-//! allows.
+//! of those cards with its own columns: the org's, a repository's or a project's. Boards come
+//! from the configuration: the org's settings (`boards`) and what repositories contribute
+//! (`repos.<id>.settings.boards`, named `<org>/<repo>/<id>`). Moving a card calls Issues'
+//! `update` in the card's repository, which the manifest's `permissions.calls` allows.
 //!
-//! Tools: `create_board` (also updates), `delete_board`, `list_boards`, `board` and `move`.
+//! Tools: `list_boards`, `board` and `move`.
 //! The `board` slot renders a board (`props.board`), and its `move` action moves a card.
 
 pub mod board;
 
-use board::{Board, Card, Column, Scope, card_json, update_args};
+use board::{Board, Card, boards_from_config, card_json, update_args};
 use tartan_ext::serde_json::{self, Map, Value, json};
 use tartan_ext::sql::{self, Row, params};
 use tartan_ext::{Error, Event, Extension, Json, SlotContext, calls, export, ui};
@@ -91,68 +92,17 @@ fn upsert(card: &Card) -> Result<(), Error> {
 	Ok(())
 }
 
-fn board_from(row: &Row) -> Result<Board, Error> {
-	let scope = match text(row, "scope")?.as_str() {
-		"repo" => Scope::Repo { repo_id: text(row, "repo_id")? },
-		"project" => Scope::Project {
-			repo_id: text(row, "repo_id")?,
-			project: text(row, "project")?,
-		},
-		_ => Scope::Org,
-	};
-	let columns: Vec<Value> = serde_json::from_str(&text(row, "columns")?)
-		.map_err(|e| Error::internal(e.to_string()))?;
-	Ok(Board {
-		id: text(row, "id")?,
-		name: text(row, "name")?,
-		scope,
-		field: text(row, "field")?,
-		columns: columns
-			.iter()
-			.map(|c| Column {
-				value: c["value"].as_str().unwrap_or_default().to_owned(),
-				title: c["title"].as_str().unwrap_or_default().to_owned(),
-			})
-			.collect(),
-	})
+/// The boards in the installation's configuration, and the definitions that are not boards.
+fn boards() -> (Vec<Board>, Vec<(String, String)>) {
+	boards_from_config(&tartan_ext::host::config())
 }
 
 fn find_board(id: &str) -> Result<Board, Error> {
-	sql::first(
-		"SELECT id, name, scope, repo_id, project, field, columns FROM boards WHERE id = ?",
-		&params![id],
-	)?
-	.map(|row| board_from(&row))
-	.transpose()?
-	.ok_or_else(|| Error::not_found(format!("board {id}")))
-}
-
-fn save_board(board: &Board) -> Result<(), Error> {
-	let (scope, repo_id, project) = match &board.scope {
-		Scope::Org => ("org", None, None),
-		Scope::Repo { repo_id } => ("repo", Some(repo_id.as_str()), None),
-		Scope::Project { repo_id, project } => {
-			("project", Some(repo_id.as_str()), Some(project.as_str()))
-		}
-	};
-	let columns = board.to_json()["columns"].to_string();
-	sql::execute(
-		"INSERT INTO boards (id, name, scope, repo_id, project, field, columns)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT (id) DO UPDATE SET name = excluded.name, scope = excluded.scope,
-		   repo_id = excluded.repo_id, project = excluded.project, field = excluded.field,
-		   columns = excluded.columns",
-		&params![
-			board.id.as_str(),
-			board.name.as_str(),
-			scope,
-			repo_id,
-			project,
-			board.field.as_str(),
-			columns.as_str()
-		],
-	)?;
-	Ok(())
+	boards()
+		.0
+		.into_iter()
+		.find(|board| board.id == id)
+		.ok_or_else(|| Error::not_found(format!("board {id}")))
 }
 
 /// Moves a card: updates the issue through Issues, then the card from the version it returns.
@@ -259,25 +209,15 @@ impl Extension for Kanban {
 	fn call_tool(name: String, args: Json, _ctx: SlotContext) -> Result<Json, Error> {
 		let args = parse(&args)?;
 		let result = match name.as_str() {
-			"create_board" => {
-				let board = Board::from_args(&args)?;
-				save_board(&board)?;
-				json!({ "board": board.to_json() })
-			}
-			"delete_board" => {
-				let id = args["id"].as_str().unwrap_or_default();
-				let deleted = sql::execute("DELETE FROM boards WHERE id = ?", &params![id])?;
-				json!({ "deleted": deleted > 0 })
-			}
 			"list_boards" => {
-				let boards: Vec<Value> = sql::query(
-					"SELECT id, name, scope, repo_id, project, field, columns FROM boards ORDER BY id",
-					&[],
-				)?
-				.iter()
-				.map(|row| board_from(row).map(|b| b.to_json()))
-				.collect::<Result<_, _>>()?;
-				json!({ "boards": boards })
+				let (boards, invalid) = boards();
+				json!({
+					"boards": boards.iter().map(Board::to_json).collect::<Vec<_>>(),
+					"invalid": invalid
+						.iter()
+						.map(|(id, problem)| json!({ "id": id, "problem": problem }))
+						.collect::<Vec<_>>(),
+				})
 			}
 			"board" => find_board(args["id"].as_str().unwrap_or_default())?.view(&cards()?),
 			"move" => move_card(&args)?,

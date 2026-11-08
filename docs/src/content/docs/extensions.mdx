@@ -2,10 +2,10 @@
 title: Extensions
 description: WebAssembly components of the tartan:ext world, run with their own database and limits.
 sidebar:
-  order: 6
+  order: 7
 ---
 
-An extension is a WebAssembly component of the `tartan:ext@0.1.0` world (`wit/tartan.wit`), published as a package and installed on a repository or an org.
+An extension is a WebAssembly component of the `tartan:ext@0.1.0` world (`wit/tartan.wit`), published as a package and installed on a repository or an org by its [configuration](/configuration/).
 
 ## Packages
 
@@ -23,7 +23,7 @@ A package is a directory with `tartan.json`, `component.wasm` and the migrations
 }
 ```
 
-`storage.scope` is `repo` (one database per repository) or `org` (one per org). Publish with `POST /-/api/packages` (`manifest`, base64 `component`, `migrations`). An `id@version` never changes: publishing other contents under it answers 409.
+`storage.scope` is `repo` (one database per repository, installed by a repository's `tartan.cue`) or `org` (one per org, installed by the org's `tartan` repository). Publish with `POST /-/api/packages` (`manifest`, base64 `component`, `migrations`). An `id@version` never changes: publishing other contents under it answers 409.
 
 ## What an extension can do
 
@@ -49,11 +49,11 @@ The manifest's `subscribe` patterns decide what reaches `on-event`: a repository
 
 The `calls` import calls another installation's tool, acting for the same principal, when the manifest's `permissions.calls` names the extension and tool and the target is a repository installation in the same org (a repository's installation may only call into its own repository).
 
-## Calling an installation over HTTP
+## Listing and calling installations
 
 ```sh
 curl -X POST -H "Authorization: Bearer $TOKEN" \
   localhost:8080/-/api/orgs/acme/repos/api/extensions/rawkode.issues/tools/list -d '{}'
 ```
 
-Org installations are under `/-/api/orgs/<org>/extensions/<id>/…`. Besides `tools/<tool>` there are `render/<slot>` and `actions/<action>`. Extension errors map to statuses: `denied` 403, `not_found` 404, `invalid` 400, `conflict` 409, `unavailable` 503.
+`GET /-/api/orgs/<org>/repos/<repo>/extensions` lists a repository's installations and `GET /-/api/orgs/<org>/extensions` the org's. Org installations are called under `/-/api/orgs/<org>/extensions/<id>/…`. Besides `tools/<tool>` there are `render/<slot>` and `actions/<action>`. Extension errors map to statuses: `denied` 403, `not_found` 404, `invalid` 400, `conflict` 409, `unavailable` 503.

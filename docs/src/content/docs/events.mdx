@@ -46,5 +46,6 @@ Each source delivers matching events in order and retries until the subscriber h
 | `subscriber.registered` | forge | a subscriber was added or changed |
 | `package.published` | forge | an extension package was published |
 | `extension.subscribed` | forge | an installation's subscriptions changed |
-| `extension.installed` | org or repo | an extension was installed |
+| `config.applied`, `config.refused` | org or repo | a `tartan.cue` was applied or refused (see [Configuration](/configuration/)) |
+| `extension.installed`, `.upgraded`, `.configured`, `.uninstalled` | org or repo | configuration changed an installation |
 | `x.<extension>.<type>` | extension | an extension emitted an event |

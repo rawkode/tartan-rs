@@ -9,9 +9,11 @@ use rivetkit::{Handler, action};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use std::collections::BTreeMap;
+
 use crate::actors::installations::{
-    self, INSTALLATIONS_SCHEMA, Install, InstallTarget, InstallationInfo, InstallationQuery,
-    ListInstallations,
+    self, INSTALLATIONS_SCHEMA, InstallTarget, InstallationInfo, InstallationQuery,
+    ListInstallations, Wanted,
 };
 use crate::actors::repo::Init as InitRepo;
 use crate::actors::{apply_schema, key_id};
@@ -26,6 +28,8 @@ use crate::{Envelope, Placement, RecipientScope, Slug, forge_handle, repo_handle
 pub struct Org {
     id: String,
     outbox: Arc<Outbox>,
+    // One reconciliation at a time.
+    reconciling: tokio::sync::Mutex<()>,
 }
 
 const SCHEMA: &str = "
@@ -38,6 +42,18 @@ const SCHEMA: &str = "
         id TEXT NOT NULL UNIQUE,
         pool TEXT,
         ready INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS org_config (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        sha TEXT NOT NULL,
+        config TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS contributions (
+        repo_id TEXT NOT NULL,
+        extension_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        settings TEXT NOT NULL,
+        PRIMARY KEY (repo_id, extension_id)
     );
 ";
 
@@ -110,6 +126,40 @@ impl Action for ResolveRepo {
     const NAME: &'static str = "resolveRepo";
 }
 
+/// Applies the configuration of the org's `tartan` repository at commit `sha`: it installs
+/// the org's extensions. Sent by that repository's actor.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ApplyOrgConfig {
+    /// The commit.
+    pub sha: String,
+    /// The evaluated configuration.
+    pub config: tartan_config::Config,
+}
+
+impl Action for ApplyOrgConfig {
+    type Output = ();
+
+    const NAME: &'static str = "applyOrgConfig";
+}
+
+/// Replaces what a repository contributes to the org's installations: extension id to settings.
+/// Sent by the repository's actor after it applies its configuration.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SetContributions {
+    /// The repository.
+    pub repo_id: String,
+    /// Its `org/repo` path.
+    pub path: String,
+    /// Its settings for each org extension it configures.
+    pub contributions: BTreeMap<String, serde_json::Value>,
+}
+
+impl Action for SetContributions {
+    type Output = ();
+
+    const NAME: &'static str = "setContributions";
+}
+
 /// Where the org actor runs.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct OrgStatusQuery {}
@@ -128,7 +178,8 @@ impl Actor for Org {
         CreateRepo,
         ResolveRepo,
         OrgStatusQuery,
-        Install,
+        ApplyOrgConfig,
+        SetContributions,
         InstallationQuery,
         ListInstallations,
         ReadEvents,
@@ -146,7 +197,11 @@ impl Actor for Org {
         let id = key_id(ctx.key())?;
         let outbox = Outbox::new(format!("org:{id}"));
         outbox.set_org(id.clone());
-        Ok(Self { outbox, id })
+        Ok(Self {
+            outbox,
+            id,
+            reconciling: tokio::sync::Mutex::new(()),
+        })
     }
 
     async fn on_start(self: Arc<Self>, ctx: Ctx<Self>) -> Result<()> {
@@ -330,17 +385,148 @@ impl Handler<OrgStatusQuery> for Org {
     }
 }
 
-impl Handler<Install> for Org {
-    async fn handle(self: Arc<Self>, ctx: Ctx<Self>, action: Install) -> Result<InstallationInfo> {
-        let slug = self.slug(&ctx).await?;
+impl Org {
+    /// Applies the stored org configuration with the current contributions.
+    async fn reconcile(&self, ctx: &Ctx<Self>) -> Result<()> {
+        let _reconciling = self.reconciling.lock().await;
+        let stored = ctx
+            .sql()
+            .query("SELECT sha, config FROM org_config WHERE id = 1", None)
+            .await?;
+        let Some(row) = stored.rows.first() else {
+            return Ok(());
+        };
+        let sha = text(row, 0)?;
+        let config: tartan_config::Config = serde_json::from_str(&text(row, 1)?)?;
+        let without_version: Vec<String> = config
+            .extensions
+            .iter()
+            .filter(|(_, entry)| entry.version.is_none())
+            .map(|(id, _)| format!("{id} has no version: the org's configuration installs"))
+            .collect();
+        if !without_version.is_empty() {
+            return installations::refuse(ctx, &self.outbox, &self.source(), &sha, without_version)
+                .await;
+        }
+        let contributed = ctx
+            .sql()
+            .query(
+                "SELECT repo_id, extension_id, path, settings FROM contributions
+                 ORDER BY repo_id",
+                None,
+            )
+            .await?;
+        let mut repos: BTreeMap<String, serde_json::Map<String, serde_json::Value>> =
+            BTreeMap::new();
+        for row in &contributed.rows {
+            let (repo_id, extension_id) = (text(row, 0)?, text(row, 1)?);
+            let settings: serde_json::Value = serde_json::from_str(&text(row, 3)?)?;
+            repos.entry(extension_id).or_default().insert(
+                repo_id,
+                json!({ "path": text(row, 2)?, "settings": settings }),
+            );
+        }
+        let wanted = config
+            .extensions
+            .into_iter()
+            .filter_map(|(extension_id, entry)| {
+                let version = entry.version?;
+                let mut config = match entry.settings {
+                    serde_json::Value::Object(map) => map,
+                    _ => serde_json::Map::new(),
+                };
+                let contributions = repos.remove(&extension_id).unwrap_or_default();
+                config.insert("repos".to_owned(), serde_json::Value::Object(contributions));
+                Some((
+                    extension_id,
+                    Wanted {
+                        version,
+                        config: serde_json::Value::Object(config),
+                    },
+                ))
+            })
+            .collect();
         let target = InstallTarget {
             scope: "org",
             org_id: self.id.clone(),
             repo_id: None,
-            path: slug.to_string(),
+            path: self.slug(ctx).await?.to_string(),
             receives: RecipientScope::Org(self.id.clone()),
         };
-        installations::install(&ctx, &self.outbox, &self.source(), target, action).await
+        installations::reconcile(ctx, &self.outbox, &self.source(), &target, &sha, wanted).await?;
+        Ok(())
+    }
+}
+
+impl Handler<ApplyOrgConfig> for Org {
+    async fn handle(self: Arc<Self>, ctx: Ctx<Self>, action: ApplyOrgConfig) -> Result<()> {
+        ctx.sql()
+            .execute(
+                "INSERT INTO org_config (id, sha, config) VALUES (1, ?, ?)
+                 ON CONFLICT (id) DO UPDATE SET sha = excluded.sha, config = excluded.config",
+                Some(vec![
+                    param_text(action.sha.as_str()),
+                    param_text(serde_json::to_string(&action.config)?),
+                ]),
+            )
+            .await?;
+        self.reconcile(&ctx).await
+    }
+}
+
+impl Handler<SetContributions> for Org {
+    async fn handle(self: Arc<Self>, ctx: Ctx<Self>, action: SetContributions) -> Result<()> {
+        let mut changed = false;
+        let existing = ctx
+            .sql()
+            .query(
+                "SELECT extension_id, path, settings FROM contributions WHERE repo_id = ?",
+                Some(vec![param_text(action.repo_id.as_str())]),
+            )
+            .await?;
+        let mut current = BTreeMap::new();
+        for row in &existing.rows {
+            current.insert(text(row, 0)?, (text(row, 1)?, text(row, 2)?));
+        }
+        for extension_id in current.keys() {
+            if !action.contributions.contains_key(extension_id) {
+                ctx.sql()
+                    .execute(
+                        "DELETE FROM contributions WHERE repo_id = ? AND extension_id = ?",
+                        Some(vec![
+                            param_text(action.repo_id.as_str()),
+                            param_text(extension_id.as_str()),
+                        ]),
+                    )
+                    .await?;
+                changed = true;
+            }
+        }
+        for (extension_id, settings) in &action.contributions {
+            let settings = settings.to_string();
+            if current.get(extension_id) == Some(&(action.path.clone(), settings.clone())) {
+                continue;
+            }
+            ctx.sql()
+                .execute(
+                    "INSERT INTO contributions (repo_id, extension_id, path, settings)
+                     VALUES (?, ?, ?, ?)
+                     ON CONFLICT (repo_id, extension_id) DO UPDATE SET path = excluded.path,
+                       settings = excluded.settings",
+                    Some(vec![
+                        param_text(action.repo_id.as_str()),
+                        param_text(extension_id.as_str()),
+                        param_text(action.path.as_str()),
+                        param_text(settings),
+                    ]),
+                )
+                .await?;
+            changed = true;
+        }
+        if changed {
+            self.reconcile(&ctx).await?;
+        }
+        Ok(())
     }
 }
 

@@ -52,6 +52,27 @@ impl GitHost for WalgitClient {
     fn clone_url(&self, owner: &str, name: &str) -> String {
         format!("{}/{owner}/{name}.git", self.base_url)
     }
+
+    async fn read_file(
+        &self,
+        owner: &str,
+        name: &str,
+        rev: &str,
+        path: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        // walgit's `GET /{owner}/{repo}/api/blob/{ref}/{path}?raw` answers the file's bytes.
+        let url = format!("{}/{owner}/{name}/api/blob/{rev}/{path}?raw", self.base_url);
+        let mut request = self.http.get(&url);
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await.with_context(|| format!("GET {url}"))?;
+        match response.status() {
+            reqwest::StatusCode::NOT_FOUND => Ok(None),
+            status if status.is_success() => Ok(Some(response.bytes().await?.to_vec())),
+            status => bail!("GET {url}: {status}"),
+        }
+    }
 }
 
 /// One ref event as walgit's webhook sends it (walgit `docs/EVENTS.md`). Its dedup key is

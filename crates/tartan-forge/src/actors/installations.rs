@@ -1,28 +1,36 @@
-//! Installing extensions, shared by the org and repo actors: each keeps the installations made
-//! on it in its own `installations` table.
+//! Installations, shared by the org and repo actors. They come only from configuration: each
+//! actor reconciles its `installations` table, and the extension actors behind it, with the
+//! extensions its `tartan.cue` names.
 
-use anyhow::{Result, bail};
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use anyhow::Result;
+use rivetkit::TypedClientExt;
+use rivetkit::client::GetOptions;
 use rivetkit::prelude::*;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
-use crate::actors::extension::{Init as InitExtension, InstallationSpec};
+use crate::actors::extension::{Disable, Init as InitExtension, InstallationSpec};
 use crate::event_log::append;
-use crate::outbox::{Outbox, SubscriberSource};
+use crate::outbox::{Flush, Outbox, SubscriberSource};
 use crate::sql::{integer, param_text, text};
 use crate::{
-    EventPattern, PackageQuery, RecipientScope, SubscribeInstallation, extension_handle,
-    forge_handle,
+    EventPattern, PackageInfo, PackageQuery, RecipientScope, SubscribeInstallation,
+    extension_handle, forge_handle,
 };
 
-/// The installations table.
+/// The installations table. A removed installation keeps its row (disabled), so configuring it
+/// again finds its id and its data.
 pub(crate) const INSTALLATIONS_SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS installations (
         extension_id TEXT PRIMARY KEY,
         installation_id TEXT NOT NULL UNIQUE,
         version TEXT NOT NULL,
         digest TEXT NOT NULL,
-        ready INTEGER NOT NULL DEFAULT 0
+        config TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 0
     );
 ";
 
@@ -37,24 +45,6 @@ pub struct InstallationInfo {
     pub version: String,
     /// The package digest.
     pub digest: String,
-}
-
-/// Installs a published extension package, or returns the existing installation of that
-/// extension. One version of an extension is installed at a time.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Install {
-    /// The extension's id.
-    pub extension_id: String,
-    /// The version to install.
-    pub version: String,
-    /// The installation's configuration.
-    pub config: serde_json::Value,
-}
-
-impl Action for Install {
-    type Output = InstallationInfo;
-
-    const NAME: &'static str = "install";
 }
 
 /// Finds the installation of an extension.
@@ -80,92 +70,236 @@ impl Action for ListInstallations {
     const NAME: &'static str = "listInstallations";
 }
 
-/// Where an installation is made.
+/// An extension the configuration installs.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Wanted {
+    /// The version.
+    pub(crate) version: String,
+    /// The configuration the installation gets: its settings, and for an org's installation
+    /// what its repositories contribute.
+    pub(crate) config: Value,
+}
+
+/// Where installations are made.
 pub(crate) struct InstallTarget {
-    /// `repo` or `org`: the storage scope the package must declare.
+    /// `repo` or `org`: the storage scope the packages must declare.
     pub(crate) scope: &'static str,
-    /// The org the installation belongs to.
+    /// The org the installations belong to.
     pub(crate) org_id: String,
-    /// The repository, for a repository's installation.
+    /// The repository, for a repository's installations.
     pub(crate) repo_id: Option<String>,
     /// `org` or `org/repo`.
     pub(crate) path: String,
-    /// The events the installation may receive.
+    /// The events the installations may receive.
     pub(crate) receives: RecipientScope,
 }
 
-/// Installs `action`'s package on `target`; `source` names the installing actor's event log.
-pub(crate) async fn install<A>(
+/// Makes the installations match `wanted`, the configuration at commit `sha`, all or nothing:
+/// a configuration naming an unpublished version or a package of the wrong scope is refused
+/// and changes nothing. Records `config.applied` or `config.refused` in `source`'s log, and
+/// returns whether the configuration was applied.
+pub(crate) async fn reconcile<A>(
     ctx: &Ctx<A>,
-    outbox: &std::sync::Arc<Outbox>,
+    outbox: &Arc<Outbox>,
     source: &str,
-    target: InstallTarget,
-    action: Install,
-) -> Result<InstallationInfo>
+    target: &InstallTarget,
+    sha: &str,
+    wanted: BTreeMap<String, Wanted>,
+) -> Result<bool>
 where
-    A: Actor + Handler<crate::outbox::Flush>,
+    A: Actor + Handler<Flush>,
 {
     let client = ctx.client()?;
-    let Some(package) = forge_handle(&client)?
-        .send(PackageQuery {
-            id: action.extension_id.clone(),
-            version: action.version.clone(),
-        })
-        .await?
-    else {
-        bail!(
-            "{}@{} is not published",
-            action.extension_id,
-            action.version
-        );
-    };
-    if package.manifest["storage"]["scope"] != target.scope {
-        bail!(
-            "{} is not installed per {}",
-            action.extension_id,
-            target.scope
-        );
+    let forge = forge_handle(&client)?;
+    let mut packages: BTreeMap<String, PackageInfo> = BTreeMap::new();
+    let mut problems = Vec::new();
+    for (extension_id, want) in &wanted {
+        let found = forge
+            .send(PackageQuery {
+                id: extension_id.clone(),
+                version: want.version.clone(),
+            })
+            .await?;
+        match found {
+            None => problems.push(format!("{extension_id}@{} is not published", want.version)),
+            Some(package) if package.manifest["storage"]["scope"] != target.scope => {
+                problems.push(format!(
+                    "{extension_id} installs per {}, not per {}",
+                    package.manifest["storage"]["scope"].as_str().unwrap_or("?"),
+                    target.scope
+                ));
+            }
+            Some(package) => {
+                packages.insert(extension_id.clone(), package);
+            }
+        }
     }
-    if find(ctx, &action.extension_id).await?.is_none() {
-        let installation_id = ulid::Ulid::new().to_string().to_lowercase();
+    if !problems.is_empty() {
+        refuse(ctx, outbox, source, sha, problems).await?;
+        return Ok(false);
+    }
+
+    let pool = ctx.inner().client_pool_name().map(str::to_owned);
+    let mut changes = Vec::new();
+    for (extension_id, want) in wanted {
+        let package = &packages[&extension_id];
+        let current = row(ctx, &extension_id).await?;
+        let config = want.config.to_string();
+        let installation_id = current
+            .as_ref()
+            .map(|row| row.info.installation_id.clone())
+            .unwrap_or_else(|| ulid::Ulid::new().to_string().to_lowercase());
+        let change = match &current {
+            None => "installed",
+            Some(row) if !row.enabled => "installed",
+            Some(row) if row.info.digest != package.digest => "upgraded",
+            Some(row) if row.config != config => "configured",
+            Some(_) => continue,
+        };
+        extension_handle(&client, &installation_id, pool.clone())?
+            .send(InitExtension {
+                spec: InstallationSpec {
+                    installation_id: installation_id.clone(),
+                    extension_id: extension_id.clone(),
+                    version: package.version.clone(),
+                    digest: package.digest.clone(),
+                    config: config.clone(),
+                    org_id: target.org_id.clone(),
+                    repo_id: target.repo_id.clone(),
+                    path: target.path.clone(),
+                },
+            })
+            .await?;
+        forge
+            .send(SubscribeInstallation {
+                installation_id: installation_id.clone(),
+                patterns: subscriptions(&package.manifest)?,
+                receives: target.receives.clone(),
+                pool: pool.clone(),
+            })
+            .await?;
         ctx.sql()
             .execute(
-                "INSERT OR IGNORE INTO installations
-                 (extension_id, installation_id, version, digest) VALUES (?, ?, ?, ?)",
+                "INSERT INTO installations
+                 (extension_id, installation_id, version, digest, config, enabled)
+                 VALUES (?, ?, ?, ?, ?, 1)
+                 ON CONFLICT (extension_id) DO UPDATE SET version = excluded.version,
+                   digest = excluded.digest, config = excluded.config, enabled = 1",
                 Some(vec![
-                    param_text(action.extension_id.as_str()),
-                    param_text(installation_id),
+                    param_text(extension_id.as_str()),
+                    param_text(installation_id.as_str()),
                     param_text(package.version.as_str()),
                     param_text(package.digest.as_str()),
+                    param_text(config.as_str()),
                 ]),
             )
             .await?;
-    }
-    let Some((info, ready)) = find(ctx, &action.extension_id).await? else {
-        bail!("installation of {} vanished", action.extension_id);
-    };
-    if ready {
-        return Ok(info);
+        changes.push((
+            change,
+            extension_id,
+            installation_id,
+            package.version.clone(),
+        ));
     }
 
-    // The extension actor is initialized and subscribed first, then the installation is marked
-    // ready, so a retry reuses the pending id; both steps repeat harmlessly.
-    let pool = ctx.inner().client_pool_name().map(str::to_owned);
-    extension_handle(&client, &info.installation_id, pool.clone())?
-        .send(InitExtension {
-            spec: InstallationSpec {
-                installation_id: info.installation_id.clone(),
-                extension_id: info.extension_id.clone(),
-                version: info.version.clone(),
-                digest: info.digest.clone(),
-                config: action.config.to_string(),
-                org_id: target.org_id.clone(),
-                repo_id: target.repo_id.clone(),
-                path: target.path.clone(),
+    for row in enabled_rows(ctx).await? {
+        if packages.contains_key(&row.info.extension_id) {
+            continue;
+        }
+        client
+            .get_typed::<crate::Extension>(
+                crate::actors::EXTENSION,
+                [row.info.installation_id.as_str()],
+                GetOptions::default(),
+            )?
+            .send(Disable {})
+            .await?;
+        forge
+            .send(SubscribeInstallation {
+                installation_id: row.info.installation_id.clone(),
+                patterns: Vec::new(),
+                receives: target.receives.clone(),
+                pool: pool.clone(),
+            })
+            .await?;
+        ctx.sql()
+            .execute(
+                "UPDATE installations SET enabled = 0 WHERE extension_id = ?",
+                Some(vec![param_text(row.info.extension_id.as_str())]),
+            )
+            .await?;
+        changes.push((
+            "uninstalled",
+            row.info.extension_id,
+            row.info.installation_id,
+            row.info.version,
+        ));
+    }
+
+    let source = source.to_owned();
+    let sha = sha.to_owned();
+    ctx.sql()
+        .transaction(
+            move |tx| async move {
+                let mut summary = Vec::new();
+                for (change, extension_id, installation_id, version) in changes {
+                    let data = json!({
+                        "extension_id": extension_id,
+                        "installation_id": installation_id,
+                        "version": version,
+                        "sha": sha,
+                    });
+                    append(&tx, &source, &format!("extension.{change}"), data).await?;
+                    summary.push(json!({ "extension_id": extension_id, "change": change }));
+                }
+                let data = json!({ "sha": sha, "changes": summary });
+                append(&tx, &source, "config.applied", data).await?;
+                Ok(())
             },
-        })
+            SqliteTransactionOptions {
+                name: Some("config_applied"),
+                timeout: None,
+            },
+        )
         .await?;
-    let patterns = package.manifest["subscribe"]
+    outbox.flush_later(ctx, SubscriberSource::Forge);
+    Ok(true)
+}
+
+/// Records that the configuration at `sha` was refused, and why; nothing else changes.
+pub(crate) async fn refuse<A>(
+    ctx: &Ctx<A>,
+    outbox: &Arc<Outbox>,
+    source: &str,
+    sha: &str,
+    problems: Vec<String>,
+) -> Result<()>
+where
+    A: Actor + Handler<Flush>,
+{
+    let (source, data) = (
+        source.to_owned(),
+        json!({ "sha": sha, "problems": problems }),
+    );
+    ctx.sql()
+        .transaction(
+            move |tx| async move {
+                append(&tx, &source, "config.refused", data).await?;
+                Ok(())
+            },
+            SqliteTransactionOptions {
+                name: Some("config_refused"),
+                timeout: None,
+            },
+        )
+        .await?;
+    outbox.flush_later(ctx, SubscriberSource::Forge);
+    Ok(())
+}
+
+/// The event patterns a manifest subscribes to.
+fn subscriptions(manifest: &Value) -> Result<Vec<EventPattern>> {
+    Ok(manifest["subscribe"]
         .as_array()
         .map(|entries| {
             entries
@@ -175,104 +309,70 @@ where
                 .collect::<Result<Vec<_>, _>>()
         })
         .transpose()?
-        .unwrap_or_default();
-    if !patterns.is_empty() {
-        forge_handle(&client)?
-            .send(SubscribeInstallation {
-                installation_id: info.installation_id.clone(),
-                patterns,
-                receives: target.receives,
-                pool,
-            })
-            .await?;
-    }
-
-    let source = source.to_owned();
-    let event_info = info.clone();
-    ctx.sql()
-        .transaction(
-            move |tx| async move {
-                let marked = tx
-                    .execute(
-                        "UPDATE installations SET ready = 1 WHERE extension_id = ? AND ready = 0",
-                        Some(vec![param_text(event_info.extension_id.as_str())]),
-                    )
-                    .await?;
-                if marked.changes == 1 {
-                    let data = json!({
-                        "installation_id": event_info.installation_id,
-                        "extension_id": event_info.extension_id,
-                        "version": event_info.version,
-                    });
-                    append(&tx, &source, "extension.installed", data).await?;
-                }
-                Ok(())
-            },
-            SqliteTransactionOptions {
-                name: Some("install"),
-                timeout: None,
-            },
-        )
-        .await?;
-    outbox.flush_later(ctx, SubscriberSource::Forge);
-    Ok(info)
+        .unwrap_or_default())
 }
 
-/// The installation of `extension_id`, and whether it is ready.
-pub(crate) async fn find<A: Actor>(
-    ctx: &Ctx<A>,
-    extension_id: &str,
-) -> Result<Option<(InstallationInfo, bool)>> {
+struct Row {
+    info: InstallationInfo,
+    config: String,
+    enabled: bool,
+}
+
+fn row_from(row: &[rivetkit::ColumnValue]) -> Result<Row> {
+    Ok(Row {
+        info: InstallationInfo {
+            extension_id: text(row, 0)?,
+            installation_id: text(row, 1)?,
+            version: text(row, 2)?,
+            digest: text(row, 3)?,
+        },
+        config: text(row, 4)?,
+        enabled: integer(row, 5)? != 0,
+    })
+}
+
+const ROW_COLUMNS: &str = "extension_id, installation_id, version, digest, config, enabled";
+
+async fn row<A: Actor>(ctx: &Ctx<A>, extension_id: &str) -> Result<Option<Row>> {
     let result = ctx
         .sql()
         .query(
-            "SELECT installation_id, version, digest, ready FROM installations
-             WHERE extension_id = ?",
+            format!("SELECT {ROW_COLUMNS} FROM installations WHERE extension_id = ?"),
             Some(vec![param_text(extension_id)]),
         )
         .await?;
-    let Some(row) = result.rows.first() else {
-        return Ok(None);
-    };
-    let info = InstallationInfo {
-        installation_id: text(row, 0)?,
-        extension_id: extension_id.to_owned(),
-        version: text(row, 1)?,
-        digest: text(row, 2)?,
-    };
-    Ok(Some((info, integer(row, 3)? != 0)))
+    result.rows.first().map(|r| row_from(r)).transpose()
 }
 
-/// The ready installation of `extension_id`.
+async fn enabled_rows<A: Actor>(ctx: &Ctx<A>) -> Result<Vec<Row>> {
+    let result = ctx
+        .sql()
+        .query(
+            format!(
+                "SELECT {ROW_COLUMNS} FROM installations WHERE enabled = 1 ORDER BY extension_id"
+            ),
+            None,
+        )
+        .await?;
+    result.rows.iter().map(|r| row_from(r)).collect()
+}
+
+/// The enabled installation of `extension_id`.
 pub(crate) async fn ready<A: Actor>(
     ctx: &Ctx<A>,
     extension_id: &str,
 ) -> Result<Option<InstallationInfo>> {
-    Ok(find(ctx, extension_id)
+    Ok(row(ctx, extension_id)
         .await?
-        .and_then(|(info, ready)| ready.then_some(info)))
+        .filter(|row| row.enabled)
+        .map(|row| row.info))
 }
 
-/// Every ready installation.
+/// Every enabled installation.
 pub(crate) async fn list<A: Actor>(ctx: &Ctx<A>) -> Result<Vec<InstallationInfo>> {
-    let result = ctx
-        .sql()
-        .query(
-            "SELECT installation_id, extension_id, version, digest FROM installations
-             WHERE ready = 1 ORDER BY extension_id",
-            None,
-        )
-        .await?;
-    result
-        .rows
-        .iter()
-        .map(|row| {
-            Ok(InstallationInfo {
-                installation_id: text(row, 0)?,
-                extension_id: text(row, 1)?,
-                version: text(row, 2)?,
-                digest: text(row, 3)?,
-            })
-        })
-        .collect()
+    Ok(enabled_rows(ctx)
+        .await?
+        .into_iter()
+        .map(|row| row.info)
+        .collect())
 }

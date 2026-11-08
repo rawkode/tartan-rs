@@ -1,0 +1,67 @@
+---
+title: Configuration
+description: tartan.cue — what a repository or an org installs, and how each extension is set up.
+sidebar:
+  order: 6
+---
+
+Extensions are installed and configured only by the `tartan.cue` committed at a repository's root. There is no install API: a push to `main` that changes `tartan.cue` is the only way an extension is installed, upgraded, reconfigured or removed.
+
+```cue
+package tartan
+
+extensions: "rawkode.issues": {
+	version: "0.5.0"
+	settings: fields: status: {type: "select", options: ["todo", "doing", "done"], default: "todo"}
+}
+```
+
+Each entry under `extensions` is an extension id with an optional `version` and free-form `settings`. Any other key, an invalid id or version, or CUE that does not evaluate makes the file invalid. A repository without `tartan.cue` installs nothing.
+
+## When it applies
+
+When `refs/heads/main` moves, the forge reads `tartan.cue` at the new commit and applies it. Other branches never apply. When pushes arrive quickly, the latest commit wins.
+
+The file is applied all or nothing. Every entry is checked first: its version is published and its package installs where the file lives. If anything fails, nothing changes and `config.refused` records the problems.
+
+| Change | What happens |
+| --- | --- |
+| A new entry | the extension is installed: its migrations run, then `init` |
+| A new `version` | the extension is upgraded: the new migrations run, then `init` again |
+| New `settings` | the installation's configuration changes; its data is untouched |
+| A removed entry | the extension is disabled: calls answer 404, its data is kept |
+| The entry again | the same installation comes back, with its data |
+
+## The org's configuration
+
+The repository named `tartan` in an org configures the org. Each entry there installs an `org`-scoped package on the org, and must have a `version`.
+
+```cue
+package tartan
+
+extensions: "rawkode.kanban": {
+	version: "0.2.0"
+	settings: boards: org: {name: "Everything", field: "status", columns: [{value: "todo"}, {value: "done"}]}
+}
+```
+
+## Contributing to the org's extensions
+
+An entry without a `version` in a repository's `tartan.cue` contributes settings to the org's installation of that extension:
+
+```cue
+extensions: "rawkode.kanban": settings: boards: api: {field: "status", columns: [{value: "todo"}, {value: "done"}]}
+```
+
+An org installation's configuration is its own settings plus `repos`: for each contributing repository, its id, `path` and `settings`. When a contribution changes, the org installation is reconfigured.
+
+## Events
+
+| Event | Source | When |
+| --- | --- | --- |
+| `config.applied` | repo or org | a configuration was applied; `data.changes` lists what changed |
+| `config.refused` | repo or org | a configuration was refused; `data.problems` says why |
+| `extension.installed` | repo or org | an extension was installed or re-enabled |
+| `extension.upgraded` | repo or org | an installation moved to a new version |
+| `extension.configured` | repo or org | an installation's configuration changed |
+| `extension.uninstalled` | repo or org | an installation was disabled |

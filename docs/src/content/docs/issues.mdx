@@ -2,17 +2,22 @@
 title: Issues
 description: rawkode.issues — numbered issues per repository with configured fields.
 sidebar:
-  order: 7
+  order: 8
 ---
 
-Issues installs per repository. Each repository's issues are numbered from 1, open or closed, and may be filed against a project (a root path such as `crates/lsp`).
+Issues installs per repository, from the repository's `tartan.cue`. Each repository's issues are numbered from 1, open or closed, and may be filed against a project (a root path such as `crates/lsp`).
 
 ## Fields
 
 Fields come from the installation's settings:
 
 ```cue
-fields: status: {type: "select", options: ["todo", "doing", "done"], default: "todo"}
+package tartan
+
+extensions: "rawkode.issues": {
+	version: "0.5.0"
+	settings: fields: status: {type: "select", options: ["todo", "doing", "done"], default: "todo"}
+}
 ```
 
 Types are `text`, `number`, `select`, `multiselect`, `monetary`, `date` and `boolean`. A value that does not fit its field is refused.

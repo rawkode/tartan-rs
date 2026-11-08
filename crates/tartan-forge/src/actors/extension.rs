@@ -42,7 +42,8 @@ const SCHEMA: &str = "
         config TEXT NOT NULL,
         org_id TEXT NOT NULL,
         repo_id TEXT,
-        path TEXT NOT NULL
+        path TEXT NOT NULL,
+        disabled INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS _tartan_cursors (
         source TEXT PRIMARY KEY,
@@ -94,8 +95,9 @@ pub enum CallReply {
     },
 }
 
-/// Sets the installation up: applies the package's migrations and calls `init`. Repeating it
-/// changes nothing.
+/// Applies an installation's spec: installs it (migrations, then `init`), upgrades it to a new
+/// package (the new migrations, then `init` again) or changes its configuration, and enables it
+/// if it was disabled. Repeating it changes nothing.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Init {
     /// What to install.
@@ -106,6 +108,17 @@ impl Action for Init {
     type Output = ();
 
     const NAME: &'static str = "init";
+}
+
+/// Disables the installation: its configuration removed it. Its data is kept, so configuring it
+/// again restores it; until then every call is refused.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Disable {}
+
+impl Action for Disable {
+    type Output = ();
+
+    const NAME: &'static str = "disable";
 }
 
 /// Calls one of the extension's tools.
@@ -193,6 +206,7 @@ impl Actor for Extension {
     type Input = ();
     type Actions = (
         Init,
+        Disable,
         CallTool,
         Render,
         Act,
@@ -255,10 +269,27 @@ impl Extension {
         }))
     }
 
+    async fn disabled(&self, ctx: &Ctx<Self>) -> Result<bool> {
+        let result = ctx
+            .sql()
+            .query("SELECT disabled FROM _tartan_installation", None)
+            .await?;
+        match result.rows.first() {
+            Some(row) => Ok(crate::sql::integer(row, 0)? != 0),
+            None => Ok(false),
+        }
+    }
+
     async fn installed(&self, ctx: &Ctx<Self>) -> Result<(InstallationSpec, Loaded)> {
         let Some(spec) = self.spec(ctx).await? else {
             bail!("installation {} has not been initialized", self.id);
         };
+        if self.disabled(ctx).await? {
+            bail!(
+                "{} is not installed: its configuration removed it",
+                spec.extension_id
+            );
+        }
         let loaded = services()?
             .extensions
             .load(&spec.extension_id, &spec.version, &spec.digest)
@@ -395,7 +426,9 @@ impl Handler<Init> for Extension {
             );
         }
         let _call = self.calls.lock().await;
-        if self.spec(&ctx).await?.is_some() {
+        let current = self.spec(&ctx).await?;
+        let disabled = self.disabled(&ctx).await?;
+        if current.as_ref() == Some(&spec) && !disabled {
             return Ok(());
         }
         let loaded = services()?
@@ -403,25 +436,29 @@ impl Handler<Init> for Extension {
             .load(&spec.extension_id, &spec.version, &spec.digest)
             .await?;
         self.outbox.set_org(spec.org_id.clone());
-        let sql = ActorSql(ctx.sql().clone());
-        apply_migrations(&sql, &loaded.package.migrations).await?;
-        let principal = self.own_principal();
-        let outcome = loaded
-            .component
-            .init(self.environment(&ctx, &spec, &loaded, &principal))
-            .await?;
-        if let Err(error) = outcome.result {
-            let CallReply::Failed { kind, message } = failed(error) else {
-                unreachable!("failed() returns Failed");
-            };
-            bail!("{} init failed ({kind}): {message}", spec.extension_id);
+        // A new package (or none yet) runs its migrations and `init`; a configuration change
+        // alone does not.
+        if current.as_ref().map(|c| c.digest.as_str()) != Some(spec.digest.as_str()) {
+            let sql = ActorSql(ctx.sql().clone());
+            apply_migrations(&sql, &loaded.package.migrations).await?;
+            let principal = self.own_principal();
+            let outcome = loaded
+                .component
+                .init(self.environment(&ctx, &spec, &loaded, &principal))
+                .await?;
+            if let Err(error) = outcome.result {
+                let CallReply::Failed { kind, message } = failed(error) else {
+                    unreachable!("failed() returns Failed");
+                };
+                bail!("{} init failed ({kind}): {message}", spec.extension_id);
+            }
+            self.apply_effects(&ctx, &spec, outcome.effects).await?;
         }
-        self.apply_effects(&ctx, &spec, outcome.effects).await?;
         ctx.sql()
             .execute(
-                "INSERT INTO _tartan_installation
-                 (id, extension_id, version, digest, config, org_id, repo_id, path)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO _tartan_installation
+                 (id, extension_id, version, digest, config, org_id, repo_id, path, disabled)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
                 Some(vec![
                     param_text(spec.installation_id.as_str()),
                     param_text(spec.extension_id.as_str()),
@@ -433,6 +470,16 @@ impl Handler<Init> for Extension {
                     param_text(spec.path.as_str()),
                 ]),
             )
+            .await?;
+        Ok(())
+    }
+}
+
+impl Handler<Disable> for Extension {
+    async fn handle(self: Arc<Self>, ctx: Ctx<Self>, _action: Disable) -> Result<()> {
+        let _call = self.calls.lock().await;
+        ctx.sql()
+            .execute("UPDATE _tartan_installation SET disabled = 1", None)
             .await?;
         Ok(())
     }

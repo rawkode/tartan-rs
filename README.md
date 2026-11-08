@@ -25,9 +25,11 @@ browser ──► tartan gateway ──► actors on Rivet, each with its own SQ
   `git -c http.extraHeader="Authorization: Bearer <token>" push …`. Locally walgit's event bridge wakes on a 1 s
   sweep; in production, point the object store's bucket notifications at walgit's `/_events/notify`.
 - **Extensions.** `POST /-/api/packages` publishes a package (manifest, base64 component, migrations) to object
-  storage; `POST /-/api/orgs/<org>/repos/<repo>/extensions` installs one, and
-  `…/extensions/<id>/tools/<tool>`, `…/render/<slot>` and `…/actions/<action>` call it. Every API call acts as
-  `admin` until the gateway has identities.
+  storage. Extensions are installed and configured only by the `tartan.cue` committed at a repository's root (the
+  org's in its `tartan` repository), applied on each push to `main`; `…/extensions/<id>/tools/<tool>`,
+  `…/render/<slot>` and `…/actions/<action>` call an installation. Every API call acts as `admin` until the
+  gateway has identities.
+- **Docs and specs.** `docs/` is the Nimbus documentation site; `openspec/` holds the specs and changes.
 - **Placement.** The forge actor maps `org/<org>` or `repo/<org>/<repo>` to a Rivet pool. New actors for that target
   are created in the pool, so a large org or repository runs on its own machines while staying part of the forge.
 

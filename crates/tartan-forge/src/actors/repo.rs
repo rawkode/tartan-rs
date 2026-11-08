@@ -12,10 +12,13 @@ use rivetkit::{Handler, action};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use std::collections::BTreeMap;
+
 use crate::actors::installations::{
-    self, INSTALLATIONS_SCHEMA, Install, InstallTarget, InstallationInfo, InstallationQuery,
-    ListInstallations,
+    self, INSTALLATIONS_SCHEMA, InstallTarget, InstallationInfo, InstallationQuery,
+    ListInstallations, Wanted,
 };
+use crate::actors::org::{ApplyOrgConfig, SetContributions};
 use crate::actors::{apply_schema, key_id};
 use crate::event_log::{EVENT_LOG_SCHEMA, ReadEvents, append, read};
 use crate::outbox::{Flush, FlushTree, Outbox, SubscriberSource};
@@ -29,7 +32,12 @@ use rivetkit::TypedClientExt;
 pub struct Repo {
     id: String,
     outbox: Arc<Outbox>,
+    // One reconciliation at a time; each applies the latest recorded `main`.
+    reconciling: tokio::sync::Mutex<()>,
 }
+
+/// The branch whose `tartan.cue` configures the repository.
+const CONFIG_BRANCH: &str = "refs/heads/main";
 
 const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS repo (
@@ -45,6 +53,11 @@ const SCHEMA: &str = "
         seq INTEGER NOT NULL,
         ref_name TEXT NOT NULL,
         PRIMARY KEY (seq, ref_name)
+    );
+    CREATE TABLE IF NOT EXISTS config_head (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        sha TEXT NOT NULL,
+        applied INTEGER NOT NULL DEFAULT 0
     );
 ";
 
@@ -114,7 +127,6 @@ impl Actor for Repo {
         Init,
         RecordRefEvents,
         RepoStatusQuery,
-        Install,
         InstallationQuery,
         ListInstallations,
         ReadEvents,
@@ -135,11 +147,17 @@ impl Actor for Repo {
         if let Some(row) = org.rows.first() {
             outbox.set_org(text(row, 0)?);
         }
-        Ok(Self { outbox, id })
+        Ok(Self {
+            outbox,
+            id,
+            reconciling: tokio::sync::Mutex::new(()),
+        })
     }
 
     async fn on_start(self: Arc<Self>, ctx: Ctx<Self>) -> Result<()> {
         self.outbox.flush_later(&ctx, SubscriberSource::Forge);
+        // A configuration recorded but not applied before the actor stopped is applied now.
+        self.reconcile_later(&ctx);
         Ok(())
     }
 }
@@ -225,11 +243,12 @@ impl Handler<RecordRefEvents> for Repo {
         events.sort_by_key(|(seq, _)| *seq);
 
         let source = self.source();
-        let appended = ctx
+        let (appended, config_moved) = ctx
             .sql()
             .transaction(
                 move |tx| async move {
                     let mut appended = 0_u32;
+                    let mut config_head = None;
                     for (seq, event) in events {
                         let seq_param = param_integer(i64::try_from(seq)?);
                         let new_push = tx
@@ -266,9 +285,22 @@ impl Handler<RecordRefEvents> for Repo {
                             });
                             append(&tx, &source, "ref.updated", data).await?;
                             appended += 1;
+                            let moved = event.ref_name == CONFIG_BRANCH
+                                && !event.new.bytes().all(|b| b == b'0');
+                            if moved {
+                                config_head = Some(event.new.clone());
+                            }
                         }
                     }
-                    Ok(appended)
+                    if let Some(sha) = &config_head {
+                        tx.execute(
+                            "INSERT INTO config_head (id, sha, applied) VALUES (1, ?, 0)
+                             ON CONFLICT (id) DO UPDATE SET sha = excluded.sha, applied = 0",
+                            Some(vec![param_text(sha.as_str())]),
+                        )
+                        .await?;
+                    }
+                    Ok((appended, config_head.is_some()))
                 },
                 SqliteTransactionOptions {
                     name: Some("record_ref_events"),
@@ -278,6 +310,9 @@ impl Handler<RecordRefEvents> for Repo {
             .await?;
         if appended > 0 {
             self.outbox.flush_later(&ctx, SubscriberSource::Forge);
+        }
+        if config_moved {
+            self.reconcile_later(&ctx);
         }
         Ok(appended)
     }
@@ -301,26 +336,130 @@ impl Handler<RepoStatusQuery> for Repo {
 }
 
 impl Repo {
+    /// Applies the latest recorded `main` in the background.
+    fn reconcile_later(self: &Arc<Self>, ctx: &Ctx<Self>) {
+        let repo = Arc::clone(self);
+        let ctx = ctx.clone();
+        ctx.clone().wait_until(async move {
+            if let Err(error) = repo.reconcile(&ctx).await {
+                tracing::warn!(repo = %repo.id, error = format!("{error:#}"),
+                    "could not apply the repository's configuration");
+            }
+        });
+    }
+
+    /// Applies `tartan.cue` at the latest recorded `main`, unless it is applied already. The
+    /// org's `tartan` repository configures the org instead of itself.
+    async fn reconcile(&self, ctx: &Ctx<Self>) -> Result<()> {
+        let _reconciling = self.reconciling.lock().await;
+        let head = ctx
+            .sql()
+            .query("SELECT sha, applied FROM config_head WHERE id = 1", None)
+            .await?;
+        let Some(row) = head.rows.first() else {
+            return Ok(());
+        };
+        let (sha, applied) = (text(row, 0)?, crate::sql::integer(row, 1)? != 0);
+        if applied {
+            return Ok(());
+        }
+        let (org_slug, slug) = self.path(ctx).await?;
+        let org_id = self.org_id(ctx).await?;
+        let file = services()?
+            .git_host
+            .read_file(
+                org_slug.as_str(),
+                slug.as_str(),
+                &sha,
+                tartan_config::CONFIG_FILE,
+            )
+            .await?;
+        let evaluated = match file.map(String::from_utf8).transpose() {
+            Ok(source) => tartan_config::evaluate(source.as_deref())
+                .await
+                .map_err(|error| error.to_string()),
+            Err(_) => Err(format!("{} is not UTF-8", tartan_config::CONFIG_FILE)),
+        };
+        let config = match evaluated {
+            Ok(config) => Some(config),
+            Err(problem) => {
+                installations::refuse(ctx, &self.outbox, &self.source(), &sha, vec![problem])
+                    .await?;
+                None
+            }
+        };
+        if let Some(config) = config {
+            let org = ctx.client()?.get_typed::<crate::Org>(
+                crate::actors::ORG,
+                [org_id.as_str()],
+                rivetkit::client::GetOptions::default(),
+            )?;
+            if slug.as_str() == tartan_config::ORG_CONFIG_REPO {
+                org.send(ApplyOrgConfig {
+                    sha: sha.clone(),
+                    config,
+                })
+                .await?;
+            } else {
+                let mut wanted = BTreeMap::new();
+                let mut contributions = BTreeMap::new();
+                for (extension_id, entry) in config.extensions {
+                    match entry.version {
+                        Some(version) => {
+                            wanted.insert(
+                                extension_id,
+                                Wanted {
+                                    version,
+                                    config: entry.settings,
+                                },
+                            );
+                        }
+                        None => {
+                            contributions.insert(extension_id, entry.settings);
+                        }
+                    }
+                }
+                let target = InstallTarget {
+                    scope: "repo",
+                    org_id: org_id.clone(),
+                    repo_id: Some(self.id.clone()),
+                    path: format!("{org_slug}/{slug}"),
+                    receives: RecipientScope::Source(self.source()),
+                };
+                let applied = installations::reconcile(
+                    ctx,
+                    &self.outbox,
+                    &self.source(),
+                    &target,
+                    &sha,
+                    wanted,
+                )
+                .await?;
+                if applied {
+                    org.send(SetContributions {
+                        repo_id: self.id.clone(),
+                        path: format!("{org_slug}/{slug}"),
+                        contributions,
+                    })
+                    .await?;
+                }
+            }
+        }
+        ctx.sql()
+            .execute(
+                "UPDATE config_head SET applied = 1 WHERE id = 1 AND sha = ?",
+                Some(vec![param_text(sha.as_str())]),
+            )
+            .await?;
+        Ok(())
+    }
+
     async fn org_id(&self, ctx: &Ctx<Self>) -> Result<String> {
         let result = ctx.sql().query("SELECT org_id FROM repo", None).await?;
         match result.rows.first() {
             Some(row) => text(row, 0),
             None => bail!("repository {} has not been initialized", self.id),
         }
-    }
-}
-
-impl Handler<Install> for Repo {
-    async fn handle(self: Arc<Self>, ctx: Ctx<Self>, action: Install) -> Result<InstallationInfo> {
-        let (org_slug, slug) = self.path(&ctx).await?;
-        let target = InstallTarget {
-            scope: "repo",
-            org_id: self.org_id(&ctx).await?,
-            repo_id: Some(self.id.clone()),
-            path: format!("{org_slug}/{slug}"),
-            receives: RecipientScope::Source(self.source()),
-        };
-        installations::install(&ctx, &self.outbox, &self.source(), target, action).await
     }
 }
 

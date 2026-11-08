@@ -3409,6 +3409,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tartan-config",
  "tartan-extensions",
  "thiserror 2.0.21",
  "tokio",

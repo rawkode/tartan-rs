@@ -7,6 +7,12 @@ RIVET_ENGINE_BINARY_PATH="$("$root/scripts/rivet-engine.sh")"
 export RIVET_ENGINE_BINARY_PATH
 
 cd "$root"
+
+# The documentation site builds and its pages lint clean.
+[[ -d docs/node_modules ]] || npm --prefix docs ci --silent
+npm --prefix docs run --silent build >/dev/null
+npm --prefix docs run --silent lint:docs
+
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test

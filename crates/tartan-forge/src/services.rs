@@ -13,6 +13,15 @@ pub trait GitHost: Send + Sync {
 
     /// The URL `git clone` takes for `owner/name`.
     fn clone_url(&self, owner: &str, name: &str) -> String;
+
+    /// The file at `path` in commit `rev` of `owner/name`, or `None` if there is none.
+    async fn read_file(
+        &self,
+        owner: &str,
+        name: &str,
+        rev: &str,
+        path: &str,
+    ) -> Result<Option<Vec<u8>>>;
 }
 
 /// What the actors of this process reach outside the actor system.
