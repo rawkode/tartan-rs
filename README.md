@@ -24,9 +24,9 @@ browser ──► tartan gateway ──► actors on Rivet, each with its own SQ
   `push.accepted` and `ref.updated` events on the repository actor. Git clients send their token up front:
   `git -c http.extraHeader="Authorization: Bearer <token>" push …`. Locally walgit's event bridge wakes on a 1 s
   sweep; in production, point the object store's bucket notifications at walgit's `/_events/notify`.
-- **Extensions.** `POST /-/api/packages` publishes a package (manifest, base64 component, migrations) to object
-  storage. Extensions are installed and configured only by the CUE package `tartan` committed at a repository's root (the
-  org's in its `tartan` repository), applied on each push to `main`; `…/extensions/<id>/tools/<tool>`,
+- **Extensions.** Packages arrive as CUE modules that the deployment configuration lists and the forge syncs into its
+  own registry. Extensions are installed and configured only by the CUE package `tartan` committed at a repository's
+  root, applied on each push to `main`; `…/extensions/<id>/tools/<tool>`,
   `…/render/<slot>` and `…/actions/<action>` call an installation. Every API call acts as `admin` until the
   gateway has identities.
 - **Docs and specs.** `docs/` is the Nimbus documentation site; `openspec/` holds the specs and changes.
@@ -61,11 +61,11 @@ such as Issues run unchanged.
    fails is kept as a dead letter and does not block the next; what it emits (`x.<extension>.<type>`) reaches the
    forge's subscribers. `extensions/fixture` is the test extension.
 
-4. Org installations and calls between extensions. **Done:** a package's storage scope (`org` or `repo`) decides
-   where it installs; an org installation receives matching events from the whole org, replayed from the start
-   when it subscribes. The `calls` import reaches another installation's tool as the same principal, if the
-   manifest's `permissions.calls` names it and the target is in the same org (and, for a repository's
-   installation, the same repository).
+4. Extensions working together on a repository. **Done:** every package installs on repositories
+   (`storage.scope: "repo"`). An installation receives matching events from its repository and from the other
+   extensions installed on it, including what they emitted before it subscribed. The `calls` import reaches
+   another installation's tool on the same repository as the same principal, if the manifest's
+   `permissions.calls` names it. A manifest's `requires` names extensions the same configuration must install.
 
 Not yet: gates (walgit has no pre-receive hook to call them from), `notify` and why-notes (refused as
 `unavailable`), and identities beyond `admin`.
@@ -75,7 +75,7 @@ Not yet: gates (walgit has no pre-receive hook to call them from), `notify` and 
 | Extension | Installs on | Does |
 | --- | --- | --- |
 | `extensions/issues` (`rawkode.issues`) | a repository | numbered issues with configured fields; emits `x.rawkode.issues.issue.created` and `.updated` snapshots |
-| `extensions/kanban` (`rawkode.kanban`) | an org | boards for the org, a repository or a project, each with its own field and columns; cards follow Issues' snapshots, and moving one calls Issues' `update` |
+| `extensions/kanban` (`rawkode.kanban`) | a repository | boards for the repository or a project, with columns, lanes and groups from Issues' properties; cards follow Issues' snapshots, and moving one calls Issues' `update`; requires Issues |
 | `extensions/fixture` (`tartan.fixture`) | a repository | test extension for event delivery |
 
 ### Goal 3: the web frontend

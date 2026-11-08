@@ -19,7 +19,7 @@ Tartan is three services and a set of actors.
 | Actor | One per | Holds |
 | --- | --- | --- |
 | `forge` | forge | orgs, placements, subscribers, published packages |
-| `org` | org | the org's repositories and org-wide extension installations |
+| `org` | org | the org's repositories |
 | `repo` | repository | the repository's installations and the record of its pushes |
 | `extension` | installation | the installation's own database |
 | `subscriber` | subscriber | the events it has received |
@@ -32,4 +32,4 @@ Every change appends an event to the changing actor's log in the same transactio
 
 ## Configuration lives in the repository
 
-Extensions are WebAssembly components, installed and configured by the CUE package `tartan` committed at a repository's root — never through the API. The org's own configuration lives in its `tartan` repository. See [Configuration](/configuration/) and [Extensions](/extensions/).
+Extensions are WebAssembly components, installed and configured by the CUE package `tartan` committed at a repository's root — never through the API. Every extension installs on a repository; extensions installed on the same repository receive each other's events and may call each other's tools. See [Configuration](/configuration/) and [Extensions](/extensions/).

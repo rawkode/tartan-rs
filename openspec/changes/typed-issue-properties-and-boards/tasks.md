@@ -10,10 +10,10 @@
 
 ## 2. Repository only
 
-- [ ] 2.1 Remove org installations, the org's configuration repository, contributions, org recipient scope, org `FlushTree` and the org extension routes; require `storage.scope: "repo"`; verify the forge, extension and subscription tests pass without them
-- [ ] 2.2 Accept `requires` in manifests and refuse a configuration installing a package whose requirements it does not install; verify end to end
-- [ ] 2.3 Keep calls and subscriptions inside the caller's repository (including events of other extensions on it) and verify with the subscription test
-- [ ] 2.4 Remove org configuration from the docs (Configuration, Extensions, Events, Architecture) and verify the docs build
+- [x] 2.1 Remove org installations, the org's configuration repository, contributions, org recipient scope, org `FlushTree` and the org extension routes; require `storage.scope: "repo"`; verify the forge, extension and subscription tests pass without them
+- [x] 2.2 Accept `requires` in manifests and refuse a configuration installing a package whose requirements it does not install; verify end to end
+- [x] 2.3 Keep calls and subscriptions inside the caller's repository (including events of other extensions on it) and verify with the subscription test
+- [x] 2.4 Remove org configuration from the docs (Configuration, Extensions, Events, Architecture) and verify the docs build
 
 ## 3. The types module and Issues 0.6.0
 

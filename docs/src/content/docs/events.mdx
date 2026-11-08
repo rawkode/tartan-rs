@@ -32,6 +32,10 @@ A pattern is dot-separated tokens: `*` matches one token and a final `>` matches
 
 Each source delivers matching events in order and retries until the subscriber has stored them, so delivery is at least once and the subscriber stores each `(source, seq)` once. A new subscriber receives the history it matches.
 
+## Extensions
+
+An extension installation receives the events matching its manifest's `subscribe` patterns from its repository (`repo:<id>`) and from the other extensions installed on that repository (`extension:<id>`), never its own and never another repository's. When it subscribes, those sources deliver their history at once. See [Extensions](/extensions/#events).
+
 ## Event types
 
 | Type | Source | When |
@@ -46,6 +50,6 @@ Each source delivers matching events in order and retries until the subscriber h
 | `subscriber.registered` | forge | a subscriber was added or changed |
 | `package.published` | forge | an extension package was published |
 | `extension.subscribed` | forge | an installation's subscriptions changed |
-| `config.applied`, `config.refused` | org or repo | a configuration was applied or refused (see [Configuration](/configuration/)) |
-| `extension.installed`, `.upgraded`, `.configured`, `.uninstalled` | org or repo | configuration changed an installation |
+| `config.applied`, `config.refused` | repo | a configuration was applied or refused (see [Configuration](/configuration/)) |
+| `extension.installed`, `.upgraded`, `.configured`, `.uninstalled` | repo | configuration changed an installation |
 | `x.<extension>.<type>` | extension | an extension emitted an event |

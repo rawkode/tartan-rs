@@ -84,7 +84,7 @@ The forge reads only what the package needs at the pushed commit: the root's `*.
 
 When `refs/heads/main` moves, the forge loads the configuration at the new commit and applies it. Other branches never apply. When pushes arrive quickly, the latest commit wins.
 
-The configuration is applied all or nothing. Every entry is checked first: its version's package is available on the forge. If anything fails, nothing changes and `config.refused` records the problems.
+The configuration is applied all or nothing. Every entry is checked first: its version's package is available on the forge, and the extensions its manifest `requires` are installed by the same configuration (Kanban requires Issues, for example). If anything fails, nothing changes and `config.refused` records the problems.
 
 | Change | What happens |
 | --- | --- |

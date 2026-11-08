@@ -41,7 +41,7 @@ const SCHEMA: &str = "
         name TEXT PRIMARY KEY,
         pattern TEXT NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS extension_subscriptions (
+    CREATE TABLE IF NOT EXISTS installation_subscriptions (
         installation_id TEXT NOT NULL,
         pattern TEXT NOT NULL,
         repo_id TEXT NOT NULL,
@@ -701,13 +701,13 @@ impl Handler<SubscribeInstallation> for Forge {
             .transaction(
                 move |tx| async move {
                     tx.execute(
-                        "DELETE FROM extension_subscriptions WHERE installation_id = ?",
+                        "DELETE FROM installation_subscriptions WHERE installation_id = ?",
                         Some(vec![param_text(action.installation_id.as_str())]),
                     )
                     .await?;
                     for pattern in &action.patterns {
                         tx.execute(
-                            "INSERT OR IGNORE INTO extension_subscriptions
+                            "INSERT OR IGNORE INTO installation_subscriptions
                              (installation_id, pattern, repo_id, pool) VALUES (?, ?, ?, ?)",
                             Some(vec![
                                 param_text(action.installation_id.as_str()),
@@ -765,7 +765,7 @@ async fn recipients(ctx: &Ctx<Forge>) -> Result<Vec<Recipient>> {
     let result = ctx
         .sql()
         .query(
-            "SELECT installation_id, pattern, repo_id, pool FROM extension_subscriptions
+            "SELECT installation_id, pattern, repo_id, pool FROM installation_subscriptions
              ORDER BY installation_id, pattern",
             None,
         )

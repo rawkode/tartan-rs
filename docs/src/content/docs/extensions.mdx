@@ -55,16 +55,29 @@ The module version is `v` followed by `tartan.json`'s version.
   "version": "0.6.0",
   "api": "tartan:ext@0.1.0",
   "storage": { "scope": "repo", "migrations": ["migrations/0001_init.sql"] },
-  "subscribe": [{ "event": "ref.*" }],
+  "subscribe": [{ "event": "ref.*" }]
+}
+```
+
+An extension that works with another names it in `requires`, and the tools it calls in `permissions.calls`:
+
+```json
+{
+  "id": "rawkode.kanban",
+  "requires": ["rawkode.issues"],
+  "subscribe": [{ "event": "x.rawkode.issues.issue.*" }],
   "permissions": { "calls": { "rawkode.issues": ["update"] } }
 }
 ```
+
+A configuration that installs a package without the extensions it `requires` is refused, naming them (see [Configuration](/configuration/#when-it-applies)).
 
 When the forge syncs a module that holds `tartan.json`, it checks the package before making it installable:
 
 - the manifest targets `tartan:ext@0.1.0` and its id is valid;
 - its version is the module's, without the `v`;
 - `storage.scope` is `repo`: every extension installs on repositories, with one database each;
+- `requires`, if present, lists other extension ids, each once;
 - every migration the manifest lists is in the module, and every `.sql` file in the module is listed;
 - `component.wasm` is a component of the extension world;
 - `id@version` is not already registered with other contents: an `id@version` never changes.
@@ -89,11 +102,11 @@ Each call runs in a fresh instance with its own fuel, 128 MiB of memory and 10 s
 
 ## Events
 
-The manifest's `subscribe` patterns decide what reaches `on-event`: a repository's installation receives its repository's events. Each event reaches `on-event` once, in order per source; an event the extension fails on is kept as a dead letter and does not block the next. An extension's emitted events appear as `x.<extension-id>.<type>`.
+The manifest's `subscribe` patterns decide what reaches `on-event`. An installation receives the matching events of its repository and of the other extensions installed on that repository, never its own and never another repository's; when it is installed, it receives what those sources recorded before. Each event reaches `on-event` once, in order per source; an event the extension fails on is kept as a dead letter and does not block the next. An extension's emitted events appear as `x.<extension-id>.<type>`.
 
 ## Calls between extensions
 
-The `calls` import calls another installation's tool, acting for the same principal, when the manifest's `permissions.calls` names the extension and tool and the target is a repository installation in the same org (a repository's installation may only call into its own repository).
+The `calls` import calls another installation's tool, acting for the same principal, when the manifest's `permissions.calls` names the extension and tool. The target must be installed on the caller's own repository, named by its id; a call into any other repository is refused with `denied`.
 
 ## Listing and calling installations
 
