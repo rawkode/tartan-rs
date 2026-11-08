@@ -2,8 +2,8 @@
 	"schema": 1,
 	"id": "rawkode.issues",
 	"name": "Issues",
-	"description": "Per-repository issues, optionally filed against a project; every write emits the issue as x.rawkode.issues.issue.created or .updated, so other extensions can build on them",
-	"version": "0.5.0",
+	"description": "Per-repository issues with typed properties (tartan.dev/types), optionally filed against a project; every write emits the issue as x.rawkode.issues.issue.created or .updated, so other extensions can build on them",
+	"version": "0.6.0",
 	"api": "tartan:ext@0.1.0",
 	"runtime": "wasm",
 	"storage": {
@@ -11,7 +11,8 @@
 		"migrations": [
 			"migrations/0001_init.sql",
 			"migrations/0002_project.sql",
-			"migrations/0003_fields.sql"
+			"migrations/0003_fields.sql",
+			"migrations/0004_properties.sql"
 		]
 	},
 	"permissions": {},
@@ -76,7 +77,7 @@
 						"issues",
 						"open",
 						"closed",
-						"fields",
+						"properties",
 						"nextBefore"
 					],
 					"properties": {
@@ -107,7 +108,7 @@
 									"createdAt",
 									"updatedAt",
 									"closedAt",
-									"fields",
+									"properties",
 									"version"
 								],
 								"properties": {
@@ -160,7 +161,10 @@
 											"null"
 										]
 									},
-									"fields": {
+									"version": {
+										"type": "integer"
+									},
+									"properties": {
 										"type": "object",
 										"additionalProperties": {
 											"type": [
@@ -174,9 +178,6 @@
 												"type": "string"
 											}
 										}
-									},
-									"version": {
-										"type": "integer"
 									}
 								}
 							}
@@ -187,29 +188,28 @@
 						"closed": {
 							"type": "integer"
 						},
-						"fields": {
+						"nextBefore": {
+							"type": [
+								"integer",
+								"null"
+							]
+						},
+						"properties": {
 							"type": "array",
 							"items": {
 								"type": "object",
 								"additionalProperties": false,
 								"required": [
 									"name",
-									"type"
+									"kind"
 								],
 								"properties": {
 									"name": {
 										"type": "string"
 									},
-									"type": {
-										"enum": [
-											"text",
-											"number",
-											"select",
-											"multiselect",
-											"monetary",
-											"date",
-											"boolean"
-										]
+									"kind": {
+										"type": "string",
+										"description": "One of shorttext, longtext, number, date, boolean, select, multiselect, person, url, money; a kind this version does not know holds no values"
 									},
 									"label": {
 										"type": "string"
@@ -219,6 +219,13 @@
 										"items": {
 											"type": "string"
 										}
+									},
+									"labels": {
+										"type": "object",
+										"additionalProperties": {
+											"type": "string"
+										},
+										"description": "Titles of options, by option"
 									},
 									"default": {
 										"type": [
@@ -241,16 +248,11 @@
 										"type": "integer"
 									},
 									"currency": {
-										"type": "string"
+										"type": "string",
+										"description": "ISO 4217 code; money values are integers in its minor units"
 									}
 								}
 							}
-						},
-						"nextBefore": {
-							"type": [
-								"integer",
-								"null"
-							]
 						}
 					}
 				}
@@ -300,7 +302,7 @@
 								"createdAt",
 								"updatedAt",
 								"closedAt",
-								"fields",
+								"properties",
 								"version",
 								"body"
 							],
@@ -354,7 +356,13 @@
 										"null"
 									]
 								},
-								"fields": {
+								"version": {
+									"type": "integer"
+								},
+								"body": {
+									"type": "string"
+								},
+								"properties": {
 									"type": "object",
 									"additionalProperties": {
 										"type": [
@@ -368,12 +376,6 @@
 											"type": "string"
 										}
 									}
-								},
-								"version": {
-									"type": "integer"
-								},
-								"body": {
-									"type": "string"
 								}
 							}
 						}
@@ -406,7 +408,7 @@
 							"maxLength": 512,
 							"description": "The project to file it against: a root path (crates/lsp), as the kernel passes it"
 						},
-						"fields": {
+						"properties": {
 							"type": "object",
 							"additionalProperties": {
 								"type": [
@@ -420,7 +422,7 @@
 									"type": "string"
 								}
 							},
-							"description": "Values of the fields in the repository's tartan.cue"
+							"description": "Values of the repository's properties, by name"
 						}
 					}
 				},
@@ -446,7 +448,7 @@
 								"createdAt",
 								"updatedAt",
 								"closedAt",
-								"fields",
+								"properties",
 								"version",
 								"body"
 							],
@@ -500,7 +502,13 @@
 										"null"
 									]
 								},
-								"fields": {
+								"version": {
+									"type": "integer"
+								},
+								"body": {
+									"type": "string"
+								},
+								"properties": {
 									"type": "object",
 									"additionalProperties": {
 										"type": [
@@ -514,12 +522,6 @@
 											"type": "string"
 										}
 									}
-								},
-								"version": {
-									"type": "integer"
-								},
-								"body": {
-									"type": "string"
 								}
 							}
 						}
@@ -572,7 +574,7 @@
 								"createdAt",
 								"updatedAt",
 								"closedAt",
-								"fields",
+								"properties",
 								"version"
 							],
 							"properties": {
@@ -625,7 +627,10 @@
 										"null"
 									]
 								},
-								"fields": {
+								"version": {
+									"type": "integer"
+								},
+								"properties": {
 									"type": "object",
 									"additionalProperties": {
 										"type": [
@@ -639,9 +644,6 @@
 											"type": "string"
 										}
 									}
-								},
-								"version": {
-									"type": "integer"
 								}
 							}
 						},
@@ -697,7 +699,7 @@
 								"createdAt",
 								"updatedAt",
 								"closedAt",
-								"fields",
+								"properties",
 								"version"
 							],
 							"properties": {
@@ -750,7 +752,10 @@
 										"null"
 									]
 								},
-								"fields": {
+								"version": {
+									"type": "integer"
+								},
+								"properties": {
 									"type": "object",
 									"additionalProperties": {
 										"type": [
@@ -764,9 +769,6 @@
 											"type": "string"
 										}
 									}
-								},
-								"version": {
-									"type": "integer"
 								}
 							}
 						},
@@ -778,7 +780,7 @@
 			},
 			{
 				"name": "update",
-				"description": "Change an issue's title, body, fields or state in one write. With expectedVersion, it fails if the issue changed since that version.",
+				"description": "Change an issue's title, body, properties or state in one write. With expectedVersion, it fails if the issue changed since that version.",
 				"input": {
 					"type": "object",
 					"additionalProperties": false,
@@ -800,21 +802,6 @@
 							"type": "string",
 							"maxLength": 20000
 						},
-						"fields": {
-							"type": "object",
-							"additionalProperties": {
-								"type": [
-									"string",
-									"number",
-									"boolean",
-									"array",
-									"null"
-								],
-								"items": {
-									"type": "string"
-								}
-							}
-						},
 						"state": {
 							"enum": [
 								"open",
@@ -829,6 +816,22 @@
 							"type": "string",
 							"minLength": 1,
 							"maxLength": 512
+						},
+						"properties": {
+							"type": "object",
+							"additionalProperties": {
+								"type": [
+									"string",
+									"number",
+									"boolean",
+									"array",
+									"null"
+								],
+								"items": {
+									"type": "string"
+								}
+							},
+							"description": "Values of the repository's properties, by name; null clears one"
 						}
 					}
 				},
@@ -855,7 +858,7 @@
 								"createdAt",
 								"updatedAt",
 								"closedAt",
-								"fields",
+								"properties",
 								"version"
 							],
 							"properties": {
@@ -908,7 +911,10 @@
 										"null"
 									]
 								},
-								"fields": {
+								"version": {
+									"type": "integer"
+								},
+								"properties": {
 									"type": "object",
 									"additionalProperties": {
 										"type": [
@@ -922,9 +928,6 @@
 											"type": "string"
 										}
 									}
-								},
-								"version": {
-									"type": "integer"
 								}
 							}
 						},
@@ -935,8 +938,8 @@
 				}
 			},
 			{
-				"name": "fields",
-				"description": "The issue fields this repository's tartan.cue defines.",
+				"name": "properties",
+				"description": "The typed properties this repository's configuration gives its issues (settings.properties).",
 				"input": {
 					"type": "object",
 					"additionalProperties": false,
@@ -949,32 +952,25 @@
 					"type": "object",
 					"additionalProperties": false,
 					"required": [
-						"fields"
+						"properties"
 					],
 					"properties": {
-						"fields": {
+						"properties": {
 							"type": "array",
 							"items": {
 								"type": "object",
 								"additionalProperties": false,
 								"required": [
 									"name",
-									"type"
+									"kind"
 								],
 								"properties": {
 									"name": {
 										"type": "string"
 									},
-									"type": {
-										"enum": [
-											"text",
-											"number",
-											"select",
-											"multiselect",
-											"monetary",
-											"date",
-											"boolean"
-										]
+									"kind": {
+										"type": "string",
+										"description": "One of shorttext, longtext, number, date, boolean, select, multiselect, person, url, money; a kind this version does not know holds no values"
 									},
 									"label": {
 										"type": "string"
@@ -984,6 +980,13 @@
 										"items": {
 											"type": "string"
 										}
+									},
+									"labels": {
+										"type": "object",
+										"additionalProperties": {
+											"type": "string"
+										},
+										"description": "Titles of options, by option"
 									},
 									"default": {
 										"type": [
@@ -1006,7 +1009,8 @@
 										"type": "integer"
 									},
 									"currency": {
-										"type": "string"
+										"type": "string",
+										"description": "ISO 4217 code; money values are integers in its minor units"
 									}
 								}
 							}
@@ -1021,9 +1025,5 @@
 		"render_cpu_ms": 100,
 		"action_cpu_ms": 200,
 		"tool_cpu_ms": 200
-	},
-	"config": {
-		"default": {},
-		"cue": "config/settings.cue"
 	}
 }

@@ -1,16 +1,16 @@
 //! The `issues` table (`migrations/`). Reads also run in the
 //! read-only render; writes only from tools and the tab's action.
 
-use tartan_ext::{effects, host};
 use tartan_ext::sql::{self, params, Row, Value};
 use tartan_ext::Error;
+use tartan_ext::{effects, host};
 
 use tartan_ext::serde_json::{self, Map};
 
 use crate::issue::{Author, Change, Filter, Issue, NewIssue, State};
 
 const COLUMNS: &str =
-	"number, title, body, project, state, author_kind, author_id, on_behalf_of, created_at, updated_at, closed_at, fields, version";
+	"number, title, body, project, state, author_kind, author_id, on_behalf_of, created_at, updated_at, closed_at, properties, version";
 
 fn time(row: &Row, column: &str) -> Option<u64> {
 	row.int(column).and_then(|t| u64::try_from(t).ok())
@@ -31,8 +31,8 @@ fn issue(row: &Row) -> Option<Issue> {
 		created_at: time(row, "created_at").unwrap_or(0),
 		updated_at: time(row, "updated_at").unwrap_or(0),
 		closed_at: time(row, "closed_at"),
-		fields: row
-			.text("fields")
+		properties: row
+			.text("properties")
 			.and_then(|t| serde_json::from_str(t).ok())
 			.unwrap_or_default(),
 		version: row
@@ -44,14 +44,14 @@ fn issue(row: &Row) -> Option<Issue> {
 
 /// Opens an issue with the repository's next number.
 pub fn create(new: &NewIssue, project: Option<&str>, author: &Author) -> Result<Issue, Error> {
-	let fields = serde_json::to_string(&new.fields).map_err(|e| Error::internal(e.to_string()))?;
+	let properties = serde_json::to_string(&new.properties).map_err(|e| Error::internal(e.to_string()))?;
 	let at = host::now_ms();
 	let next = sql::first("SELECT COALESCE(MAX(number), 0) + 1 AS n FROM issues", &[])?
 		.and_then(|r| r.int("n"))
 		.and_then(|n| u32::try_from(n).ok())
 		.ok_or_else(|| Error::internal("no next issue number"))?;
 	sql::execute(
-		"INSERT INTO issues (number, title, body, project, state, author_kind, author_id, on_behalf_of, created_at, updated_at, fields, version) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, 1)",
+		"INSERT INTO issues (number, title, body, project, state, author_kind, author_id, on_behalf_of, created_at, updated_at, properties, version) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, 1)",
 		&params![
 			next,
 			new.title.as_str(),
@@ -62,7 +62,7 @@ pub fn create(new: &NewIssue, project: Option<&str>, author: &Author) -> Result<
 			author.on_behalf_of.as_deref(),
 			at,
 			at,
-			fields.as_str()
+			properties.as_str()
 		],
 	)?;
 	let created = Issue {
@@ -75,7 +75,7 @@ pub fn create(new: &NewIssue, project: Option<&str>, author: &Author) -> Result<
 		created_at: at,
 		updated_at: at,
 		closed_at: None,
-		fields: new.fields.clone(),
+		properties: new.properties.clone(),
 		version: 1,
 	};
 	emit_snapshot("issue.created", &created)?;
@@ -91,7 +91,7 @@ fn emit_snapshot(kind: &str, issue: &Issue) -> Result<(), Error> {
 		"title": issue.title,
 		"project": issue.project,
 		"state": issue.state.as_str(),
-		"fields": issue.fields,
+		"properties": issue.properties,
 		"version": issue.version,
 		"updated_at": issue.updated_at,
 	});
@@ -167,19 +167,19 @@ pub fn apply(number: u32, change: &Change) -> Result<Option<(Issue, bool)>, Erro
 			)));
 		}
 	}
-	let mut fields: Map<String, serde_json::Value> = current.fields.clone();
-	for (name, value) in &change.fields {
+	let mut properties: Map<String, serde_json::Value> = current.properties.clone();
+	for (name, value) in &change.properties {
 		if value.is_null() {
-			fields.remove(name);
+			properties.remove(name);
 		} else {
-			fields.insert(name.clone(), value.clone());
+			properties.insert(name.clone(), value.clone());
 		}
 	}
 	let next = Issue {
 		title: change.title.clone().unwrap_or_else(|| current.title.clone()),
 		body: change.body.clone().unwrap_or_else(|| current.body.clone()),
 		state: change.state.unwrap_or(current.state),
-		fields,
+		properties,
 		..current.clone()
 	};
 	if next == current {
@@ -192,9 +192,9 @@ pub fn apply(number: u32, change: &Change) -> Result<Option<(Issue, bool)>, Erro
 		_ => current.closed_at,
 	};
 	let version = current.version + 1;
-	let encoded = serde_json::to_string(&next.fields).map_err(|e| Error::internal(e.to_string()))?;
+	let encoded = serde_json::to_string(&next.properties).map_err(|e| Error::internal(e.to_string()))?;
 	sql::execute(
-		"UPDATE issues SET title = ?, body = ?, state = ?, fields = ?, version = ?, updated_at = ?, closed_at = ? WHERE number = ?",
+		"UPDATE issues SET title = ?, body = ?, state = ?, properties = ?, version = ?, updated_at = ?, closed_at = ? WHERE number = ?",
 		&params![
 			next.title.as_str(),
 			next.body.as_str(),
