@@ -1,9 +1,9 @@
 [package]
 name = "kanban"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
-description = "rawkode.kanban: boards over an org's issues, for the org, a repository or a project"
+description = "rawkode.kanban: boards over a repository's issues, with columns, lanes and groups from Issues properties"
 publish = false
 
 # Built for wasm32-unknown-unknown by scripts/build-extension.sh, outside the host workspace.

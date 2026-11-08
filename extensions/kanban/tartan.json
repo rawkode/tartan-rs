@@ -2,15 +2,19 @@
 	"schema": 1,
 	"id": "rawkode.kanban",
 	"name": "Kanban",
-	"description": "Boards over the org's issues, for the org, a repository or a project, defined in tartan.cue. Cards follow Issues' events; moving one updates the issue.",
-	"version": "0.2.0",
+	"description": "Boards over a repository's issues, defined in its configuration: columns from an Issues select property or the issue's state, with optional lanes and groups. Cards follow Issues' events; moving one updates the issue.",
+	"version": "0.3.0",
 	"api": "tartan:ext@0.1.0",
 	"runtime": "wasm",
+	"requires": [
+		"rawkode.issues"
+	],
 	"storage": {
-		"scope": "org",
+		"scope": "repo",
 		"migrations": [
 			"migrations/0001_boards.sql",
-			"migrations/0002_boards_in_config.sql"
+			"migrations/0002_boards_in_config.sql",
+			"migrations/0003_repository_cards.sql"
 		]
 	},
 	"subscribe": [
@@ -24,5 +28,410 @@
 				"update"
 			]
 		}
+	},
+	"contributes": {
+		"tools": [
+			{
+				"name": "list_boards",
+				"description": "The repository's boards, and the definitions in its configuration that are not boards.",
+				"role": 20,
+				"access": "read",
+				"input": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {}
+				},
+				"output": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"boards",
+						"invalid"
+					],
+					"properties": {
+						"boards": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": [
+									"id",
+									"name",
+									"project"
+								],
+								"properties": {
+									"id": {
+										"type": "string"
+									},
+									"name": {
+										"type": "string"
+									},
+									"project": {
+										"type": [
+											"string",
+											"null"
+										]
+									}
+								}
+							}
+						},
+						"invalid": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": [
+									"id",
+									"problem"
+								],
+								"properties": {
+									"id": {
+										"type": "string"
+									},
+									"problem": {
+										"type": "string"
+									}
+								}
+							}
+						}
+					}
+				}
+			},
+			{
+				"name": "board",
+				"description": "One board's cards as lanes × columns × groups. Without lanes there is one lane, and without a group one group per cell, with a null value and an empty title; cards whose column value is no column's are unplaced.",
+				"role": 20,
+				"access": "read",
+				"input": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"board"
+					],
+					"properties": {
+						"board": {
+							"type": "string",
+							"description": "The board's id"
+						}
+					}
+				},
+				"output": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"board",
+						"lanes",
+						"unplaced"
+					],
+					"properties": {
+						"board": {
+							"type": "object",
+							"additionalProperties": false,
+							"required": [
+								"id",
+								"name",
+								"project",
+								"columns",
+								"lanes",
+								"group"
+							],
+							"properties": {
+								"id": {
+									"type": "string"
+								},
+								"name": {
+									"type": "string"
+								},
+								"project": {
+									"type": [
+										"string",
+										"null"
+									]
+								},
+								"columns": {
+									"type": "array",
+									"items": {
+										"type": "object",
+										"additionalProperties": false,
+										"required": [
+											"value",
+											"title"
+										],
+										"properties": {
+											"value": {
+												"type": "string"
+											},
+											"title": {
+												"type": "string"
+											}
+										}
+									}
+								},
+								"lanes": {
+									"type": [
+										"object",
+										"null"
+									],
+									"additionalProperties": false,
+									"required": [
+										"by"
+									],
+									"properties": {
+										"by": {
+											"type": "string",
+											"description": "project, or the property's name"
+										}
+									}
+								},
+								"group": {
+									"type": [
+										"object",
+										"null"
+									],
+									"additionalProperties": false,
+									"required": [
+										"by"
+									],
+									"properties": {
+										"by": {
+											"type": "string",
+											"description": "project, or the property's name"
+										}
+									}
+								}
+							}
+						},
+						"lanes": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": [
+									"value",
+									"title",
+									"cells"
+								],
+								"properties": {
+									"value": {
+										"type": [
+											"string",
+											"null"
+										]
+									},
+									"title": {
+										"type": "string"
+									},
+									"cells": {
+										"type": "array",
+										"items": {
+											"type": "object",
+											"additionalProperties": false,
+											"required": [
+												"column",
+												"groups"
+											],
+											"properties": {
+												"column": {
+													"type": "string"
+												},
+												"groups": {
+													"type": "array",
+													"items": {
+														"type": "object",
+														"additionalProperties": false,
+														"required": [
+															"value",
+															"title",
+															"cards"
+														],
+														"properties": {
+															"value": {
+																"type": [
+																	"string",
+																	"null"
+																]
+															},
+															"title": {
+																"type": "string"
+															},
+															"cards": {
+																"type": "array",
+																"items": {
+																	"type": "object",
+																	"additionalProperties": false,
+																	"required": [
+																		"number",
+																		"title",
+																		"state",
+																		"project",
+																		"properties",
+																		"version"
+																	],
+																	"properties": {
+																		"number": {
+																			"type": "integer"
+																		},
+																		"title": {
+																			"type": "string"
+																		},
+																		"state": {
+																			"enum": [
+																				"open",
+																				"closed"
+																			]
+																		},
+																		"project": {
+																			"type": [
+																				"string",
+																				"null"
+																			]
+																		},
+																		"properties": {
+																			"type": "object",
+																			"description": "Issues' stored property values, by name"
+																		},
+																		"version": {
+																			"type": "integer"
+																		}
+																	}
+																}
+															}
+														}
+													}
+												}
+											}
+										}
+									}
+								}
+							}
+						},
+						"unplaced": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"additionalProperties": false,
+								"required": [
+									"number",
+									"title",
+									"state",
+									"project",
+									"properties",
+									"version"
+								],
+								"properties": {
+									"number": {
+										"type": "integer"
+									},
+									"title": {
+										"type": "string"
+									},
+									"state": {
+										"enum": [
+											"open",
+											"closed"
+										]
+									},
+									"project": {
+										"type": [
+											"string",
+											"null"
+										]
+									},
+									"properties": {
+										"type": "object",
+										"description": "Issues' stored property values, by name"
+									},
+									"version": {
+										"type": "integer"
+									}
+								}
+							}
+						}
+					}
+				}
+			},
+			{
+				"name": "move",
+				"description": "Move a card to a column: sets the board's column property, or the issue's state, through Issues' update.",
+				"role": 30,
+				"access": "write",
+				"input": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"board",
+						"number",
+						"column"
+					],
+					"properties": {
+						"board": {
+							"type": "string"
+						},
+						"number": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 2147483647
+						},
+						"column": {
+							"type": "string",
+							"description": "The column's value"
+						}
+					}
+				},
+				"output": {
+					"type": "object",
+					"additionalProperties": false,
+					"required": [
+						"card"
+					],
+					"properties": {
+						"card": {
+							"type": "object",
+							"additionalProperties": false,
+							"required": [
+								"number",
+								"title",
+								"state",
+								"project",
+								"properties",
+								"version"
+							],
+							"properties": {
+								"number": {
+									"type": "integer"
+								},
+								"title": {
+									"type": "string"
+								},
+								"state": {
+									"enum": [
+										"open",
+										"closed"
+									]
+								},
+								"project": {
+									"type": [
+										"string",
+										"null"
+									]
+								},
+								"properties": {
+									"type": "object",
+									"description": "Issues' stored property values, by name"
+								},
+								"version": {
+									"type": "integer"
+								}
+							}
+						}
+					}
+				}
+			}
+		]
+	},
+	"limits": {
+		"render_cpu_ms": 100,
+		"action_cpu_ms": 200,
+		"tool_cpu_ms": 200
 	}
 }
