@@ -1,0 +1,14 @@
+{
+	"schema": 1,
+	"id": "tartan.fixture",
+	"name": "Fixture",
+	"description": "Records the ref events it receives and emits one event for each; refs/heads/fail makes on-event fail.",
+	"version": "0.1.0",
+	"api": "tartan:ext@0.1.0",
+	"runtime": "wasm",
+	"storage": {
+		"scope": "repo",
+		"migrations": ["migrations/0001_seen.sql"]
+	},
+	"subscribe": [{ "event": "ref.*" }]
+}

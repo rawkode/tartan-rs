@@ -42,6 +42,18 @@ const SCHEMA: &str = "
         repo_id TEXT NOT NULL,
         repo_path TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS _tartan_cursors (
+        source TEXT PRIMARY KEY,
+        seq INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS _tartan_dead_letters (
+        source TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        at_ms INTEGER NOT NULL,
+        PRIMARY KEY (source, seq)
+    );
 ";
 
 /// What an installation runs and where.
@@ -143,6 +155,22 @@ impl Action for Act {
     const NAME: &'static str = "act";
 }
 
+/// Events for the installation's `on-event`, in order, from one source. Each event reaches
+/// `on-event` once; one the extension fails is kept as a dead letter and the rest continue.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeliverEvents {
+    /// The source.
+    pub source: String,
+    /// The events, in order.
+    pub events: Vec<Envelope>,
+}
+
+impl Action for DeliverEvents {
+    type Output = ();
+
+    const NAME: &'static str = "deliverEvents";
+}
+
 /// A timer the extension set came due. Scheduled by the actor itself.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Timer {
@@ -159,7 +187,16 @@ impl Action for Timer {
 #[async_trait]
 impl Actor for Extension {
     type Input = ();
-    type Actions = (Init, CallTool, Render, Act, Timer, ReadEvents, Flush);
+    type Actions = (
+        Init,
+        CallTool,
+        Render,
+        Act,
+        DeliverEvents,
+        Timer,
+        ReadEvents,
+        Flush,
+    );
     type Events = ();
     type ConnParams = ();
     type Action = action::Raw;
@@ -412,6 +449,72 @@ impl Handler<Act> for Extension {
     }
 }
 
+impl Handler<DeliverEvents> for Extension {
+    async fn handle(self: Arc<Self>, ctx: Ctx<Self>, action: DeliverEvents) -> Result<()> {
+        // An installation never receives its own events, so an extension that emits what it
+        // subscribes to cannot feed itself.
+        if action.source == self.outbox_source() {
+            return Ok(());
+        }
+        let _call = self.calls.lock().await;
+        let (spec, loaded) = self.installed(&ctx).await?;
+        let mut cursor = event_cursor(&ctx, &action.source).await?;
+        for envelope in action.events {
+            if envelope.seq <= cursor {
+                continue;
+            }
+            let event = to_extension_event(&envelope, &spec);
+            let failure = match loaded
+                .component
+                .on_event(self.environment(&ctx, &spec), &event)
+                .await
+            {
+                Ok(outcome) => match outcome.result {
+                    Ok(()) => {
+                        self.apply_effects(&ctx, &spec, outcome.effects).await?;
+                        None
+                    }
+                    Err(error) => match failed(error) {
+                        CallReply::Failed { kind, message } => Some(format!("{kind}: {message}")),
+                        CallReply::Ok(_) => None,
+                    },
+                },
+                // A trap, an exhausted limit or a timeout: the same event would fail again.
+                Err(error) => Some(format!("{error:#}")),
+            };
+            if let Some(reason) = failure {
+                tracing::warn!(installation = %self.id, source = %envelope.source,
+                    seq = envelope.seq, %reason, "on-event failed; kept as a dead letter");
+                ctx.sql()
+                    .execute(
+                        "INSERT OR REPLACE INTO _tartan_dead_letters
+                         (source, seq, type, reason, at_ms) VALUES (?, ?, ?, ?, ?)",
+                        Some(vec![
+                            param_text(envelope.source.as_str()),
+                            BindParam::Integer(i64::try_from(envelope.seq)?),
+                            param_text(envelope.kind.as_str()),
+                            param_text(reason),
+                            BindParam::Integer(crate::sql::now_ms()),
+                        ]),
+                    )
+                    .await?;
+            }
+            cursor = envelope.seq;
+            ctx.sql()
+                .execute(
+                    "INSERT INTO _tartan_cursors (source, seq) VALUES (?, ?)
+                     ON CONFLICT (source) DO UPDATE SET seq = MAX(seq, excluded.seq)",
+                    Some(vec![
+                        param_text(action.source.as_str()),
+                        BindParam::Integer(i64::try_from(cursor)?),
+                    ]),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+}
+
 impl Handler<Timer> for Extension {
     async fn handle(self: Arc<Self>, ctx: Ctx<Self>, action: Timer) -> Result<()> {
         let _call = self.calls.lock().await;
@@ -436,6 +539,45 @@ impl Handler<ReadEvents> for Extension {
 impl Handler<Flush> for Extension {
     async fn handle(self: Arc<Self>, ctx: Ctx<Self>, _action: Flush) -> Result<()> {
         self.outbox.flush(&ctx, SubscriberSource::Forge).await
+    }
+}
+
+/// The last sequence number of `source` the installation has processed.
+async fn event_cursor(ctx: &Ctx<Extension>, source: &str) -> Result<u64> {
+    let result = ctx
+        .sql()
+        .query(
+            "SELECT seq FROM _tartan_cursors WHERE source = ?",
+            Some(vec![param_text(source)]),
+        )
+        .await?;
+    match result.rows.first() {
+        Some(row) => Ok(u64::try_from(crate::sql::integer(row, 0)?)?),
+        None => Ok(0),
+    }
+}
+
+/// A forge event as the extension world describes it.
+fn to_extension_event(envelope: &Envelope, spec: &InstallationSpec) -> tartan_extensions::Event {
+    tartan_extensions::Event {
+        id: envelope.id.clone(),
+        seq: envelope.seq,
+        kind: envelope.kind.clone(),
+        source: envelope.source.clone(),
+        node: spec.repo_id.clone(),
+        repo: Some(spec.repo_id.clone()),
+        subject: None,
+        actor: ExtensionActor {
+            kind: ActorKind::System,
+            id: "tartan".to_owned(),
+            on_behalf_of: None,
+        },
+        caused_by: None,
+        correlation: None,
+        time_ms: u64::try_from(envelope.at_ms).unwrap_or_default(),
+        depth: 0,
+        shadow: false,
+        data: envelope.data.to_string(),
     }
 }
 

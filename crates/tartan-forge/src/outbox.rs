@@ -13,10 +13,11 @@ use rivetkit::prelude::*;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
+use crate::actors::extension::DeliverEvents;
 use crate::actors::subscriber::Deliver;
 use crate::event_log::read;
 use crate::sql::{integer, param_integer, param_text};
-use crate::{SubscriberSpec, subscriber_handle};
+use crate::{ListRecipients, Recipient, extension_handle, subscriber_handle};
 
 /// The most events sent to a subscriber in one call.
 const BATCH: u32 = 100;
@@ -75,47 +76,74 @@ impl Outbox {
         subscribers: SubscriberSource,
     ) -> Result<()> {
         let _flushing = self.flushing.lock().await;
-        let subscribers = match subscribers {
+        let recipients = match subscribers {
             SubscriberSource::Known(list) => list,
             SubscriberSource::Forge => {
                 crate::forge_handle(&ctx.client()?)?
-                    .send(crate::ListSubscribers {})
+                    .send(ListRecipients {})
                     .await?
             }
         };
         let mut failure = None;
-        for subscriber in &subscribers {
-            if let Err(error) = self.deliver_to(ctx, subscriber).await {
-                tracing::warn!(source = %self.source, subscriber = %subscriber.name, %error,
-                    "delivery to subscriber failed");
+        for recipient in &recipients {
+            if let Err(error) = self.deliver_to(ctx, recipient).await {
+                tracing::warn!(source = %self.source, recipient = %recipient.delivery_key(),
+                    %error, "delivery failed");
                 failure = Some(error);
             }
         }
         failure.map_or(Ok(()), Err)
     }
 
-    async fn deliver_to<A: Actor>(&self, ctx: &Ctx<A>, subscriber: &SubscriberSpec) -> Result<()> {
+    async fn deliver_to<A: Actor>(&self, ctx: &Ctx<A>, recipient: &Recipient) -> Result<()> {
+        let (pattern, only_source) = match recipient {
+            Recipient::Store { subscriber } => (&subscriber.pattern, None),
+            Recipient::Installation {
+                pattern, source, ..
+            } => (pattern, Some(source)),
+        };
+        if only_source.is_some_and(|source| *source != self.source) {
+            return Ok(());
+        }
+        let key = recipient.delivery_key();
         loop {
-            let cursor = self.cursor(ctx, subscriber.name.as_str()).await?;
+            let cursor = self.cursor(ctx, &key).await?;
             let events = read(ctx.sql(), &self.source, cursor, BATCH).await?;
             let Some(last) = events.last().map(|event| event.seq) else {
                 return Ok(());
             };
             let matching: Vec<_> = events
                 .into_iter()
-                .filter(|event| subscriber.pattern.matches(&event.kind))
+                .filter(|event| pattern.matches(&event.kind))
                 .collect();
             if !matching.is_empty() {
-                subscriber_handle(&ctx.client()?, subscriber.name.as_str())?
-                    .send(Deliver {
-                        source: self.source.clone(),
-                        after: cursor,
-                        through: last,
-                        events: matching,
-                    })
-                    .await?;
+                let client = ctx.client()?;
+                match recipient {
+                    Recipient::Store { subscriber } => {
+                        subscriber_handle(&client, subscriber.name.as_str())?
+                            .send(Deliver {
+                                source: self.source.clone(),
+                                after: cursor,
+                                through: last,
+                                events: matching,
+                            })
+                            .await?;
+                    }
+                    Recipient::Installation {
+                        installation_id,
+                        pool,
+                        ..
+                    } => {
+                        extension_handle(&client, installation_id, pool.clone())?
+                            .send(DeliverEvents {
+                                source: self.source.clone(),
+                                events: matching,
+                            })
+                            .await?;
+                    }
+                }
             }
-            self.set_cursor(ctx, subscriber.name.as_str(), last).await?;
+            self.set_cursor(ctx, &key, last).await?;
         }
     }
 
@@ -164,5 +192,5 @@ pub(crate) enum SubscriberSource {
     /// Ask the forge actor.
     Forge,
     /// This list; the forge actor passes its own.
-    Known(Vec<SubscriberSpec>),
+    Known(Vec<Recipient>),
 }

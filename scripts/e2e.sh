@@ -18,8 +18,11 @@ if [[ -z "${TARTAN_ISSUES_PACKAGE:-}" ]]; then
 	TARTAN_ISSUES_PACKAGE="$("$root/scripts/build-extension.sh" "$TARTAN_ISSUES_SRC" "$root/.dev/packages/issues")"
 fi
 export TARTAN_ISSUES_PACKAGE
+TARTAN_FIXTURE_PACKAGE="$("$root/scripts/build-extension.sh" "$root/extensions/fixture" "$root/.dev/packages/fixture")"
+export TARTAN_FIXTURE_PACKAGE
 cargo test -p tartan-extensions -- --include-ignored
 cargo test -p tartan --test extensions -- --include-ignored
+cargo test -p tartan --test subscriptions -- --include-ignored
 
 # The full stack: RustFS, walgit and the git CLI. WALGIT_BIN names a walgit binary.
 if [[ -n "${WALGIT_BIN:-}" ]]; then

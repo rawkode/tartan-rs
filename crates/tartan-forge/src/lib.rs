@@ -24,11 +24,13 @@ mod slug;
 mod sql;
 mod walgit;
 
-pub use crate::actors::extension::{Act, CallReply, CallTool, Extension, InstallationSpec, Render};
+pub use crate::actors::extension::{
+    Act, CallReply, CallTool, DeliverEvents, Extension, InstallationSpec, Render,
+};
 pub use crate::actors::forge::{
-    CreateOrg, Forge, ListPackages, ListSubscribers, OrgInfo, PackageInfo, PackageQuery, Placement,
-    PublishPackage, RegisterSubscriber, ResolveOrg, SetPlacement, SubscriberSpec,
-    valid_placement_target,
+    CreateOrg, Forge, ListPackages, ListRecipients, ListSubscribers, OrgInfo, PackageInfo,
+    PackageQuery, Placement, PublishPackage, Recipient, RegisterSubscriber, ResolveOrg,
+    SetPlacement, SubscribeInstallation, SubscriberSpec, valid_placement_target,
 };
 pub use crate::actors::org::{CreateRepo, Org, OrgStatus, OrgStatusQuery, RepoInfo, ResolveRepo};
 pub use crate::actors::repo::{

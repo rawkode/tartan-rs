@@ -41,6 +41,13 @@ const SCHEMA: &str = "
         name TEXT PRIMARY KEY,
         pattern TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS extension_subscriptions (
+        installation_id TEXT NOT NULL,
+        pattern TEXT NOT NULL,
+        source TEXT NOT NULL,
+        pool TEXT,
+        PRIMARY KEY (installation_id, pattern)
+    );
     CREATE TABLE IF NOT EXISTS packages (
         id TEXT NOT NULL,
         version TEXT NOT NULL,
@@ -68,6 +75,72 @@ pub struct SubscriberSpec {
     pub name: Slug,
     /// The event types it receives.
     pub pattern: EventPattern,
+}
+
+/// Who an outbox delivers to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Recipient {
+    /// A subscriber actor, which stores what it receives.
+    Store {
+        /// The subscriber.
+        subscriber: SubscriberSpec,
+    },
+    /// An extension installation, which receives matching events of one source through
+    /// `on-event`.
+    Installation {
+        /// The installation.
+        installation_id: String,
+        /// The event types it receives.
+        pattern: EventPattern,
+        /// The only source it receives events from, such as `repo:<id>`.
+        source: String,
+        /// The pool its actor was created in.
+        pool: Option<String>,
+    },
+}
+
+impl Recipient {
+    /// The key the outbox keeps this recipient's cursor under.
+    pub(crate) fn delivery_key(&self) -> String {
+        match self {
+            Self::Store { subscriber } => subscriber.name.to_string(),
+            Self::Installation {
+                installation_id,
+                pattern,
+                ..
+            } => format!("installation:{installation_id}:{pattern}"),
+        }
+    }
+}
+
+/// Every recipient: subscribers and extension installations.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ListRecipients {}
+
+impl Action for ListRecipients {
+    type Output = Vec<Recipient>;
+
+    const NAME: &'static str = "listRecipients";
+}
+
+/// Sets the event patterns an installation receives from `source`, replacing earlier ones.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SubscribeInstallation {
+    /// The installation.
+    pub installation_id: String,
+    /// The event types it receives.
+    pub patterns: Vec<EventPattern>,
+    /// The only source it receives events from.
+    pub source: String,
+    /// The pool its actor was created in.
+    pub pool: Option<String>,
+}
+
+impl Action for SubscribeInstallation {
+    type Output = ();
+
+    const NAME: &'static str = "subscribeInstallation";
 }
 
 /// Creates an org, or returns the existing org with that slug.
@@ -211,6 +284,8 @@ impl Actor for Forge {
         Placement,
         RegisterSubscriber,
         ListSubscribers,
+        ListRecipients,
+        SubscribeInstallation,
         PublishPackage,
         PackageQuery,
         ListPackages,
@@ -237,7 +312,7 @@ impl Actor for Forge {
 
 impl Forge {
     async fn flush_later(&self, ctx: &Ctx<Self>) {
-        match subscribers(ctx).await {
+        match recipients(ctx).await {
             Ok(list) => self.outbox.flush_later(ctx, SubscriberSource::Known(list)),
             Err(error) => tracing::error!(%error, "could not list subscribers"),
         }
@@ -570,9 +645,86 @@ impl Handler<ReadEvents> for Forge {
 
 impl Handler<Flush> for Forge {
     async fn handle(self: Arc<Self>, ctx: Ctx<Self>, _action: Flush) -> Result<()> {
-        let list = subscribers(&ctx).await?;
+        let list = recipients(&ctx).await?;
         self.outbox.flush(&ctx, SubscriberSource::Known(list)).await
     }
+}
+
+impl Handler<ListRecipients> for Forge {
+    async fn handle(
+        self: Arc<Self>,
+        ctx: Ctx<Self>,
+        _action: ListRecipients,
+    ) -> Result<Vec<Recipient>> {
+        recipients(&ctx).await
+    }
+}
+
+impl Handler<SubscribeInstallation> for Forge {
+    async fn handle(self: Arc<Self>, ctx: Ctx<Self>, action: SubscribeInstallation) -> Result<()> {
+        ctx.sql()
+            .transaction(
+                move |tx| async move {
+                    tx.execute(
+                        "DELETE FROM extension_subscriptions WHERE installation_id = ?",
+                        Some(vec![param_text(action.installation_id.as_str())]),
+                    )
+                    .await?;
+                    for pattern in &action.patterns {
+                        tx.execute(
+                            "INSERT OR IGNORE INTO extension_subscriptions
+                             (installation_id, pattern, source, pool) VALUES (?, ?, ?, ?)",
+                            Some(vec![
+                                param_text(action.installation_id.as_str()),
+                                param_text(pattern.as_str()),
+                                param_text(action.source.as_str()),
+                                param_optional_text(action.pool.clone()),
+                            ]),
+                        )
+                        .await?;
+                    }
+                    let data = json!({
+                        "installation_id": action.installation_id,
+                        "patterns": action.patterns,
+                        "source": action.source,
+                    });
+                    append(&tx, SOURCE, "extension.subscribed", data).await?;
+                    Ok(())
+                },
+                SqliteTransactionOptions {
+                    name: Some("subscribe_installation"),
+                    timeout: None,
+                },
+            )
+            .await?;
+        self.flush_later(&ctx).await;
+        Ok(())
+    }
+}
+
+async fn recipients(ctx: &Ctx<Forge>) -> Result<Vec<Recipient>> {
+    let mut list: Vec<Recipient> = subscribers(ctx)
+        .await?
+        .into_iter()
+        .map(|subscriber| Recipient::Store { subscriber })
+        .collect();
+    let result = ctx
+        .sql()
+        .query(
+            "SELECT installation_id, pattern, source, pool FROM extension_subscriptions
+             ORDER BY installation_id, pattern",
+            None,
+        )
+        .await?;
+    for row in &result.rows {
+        list.push(Recipient::Installation {
+            installation_id: text(row, 0)?,
+            pattern: text(row, 1)?.parse()?,
+            source: text(row, 2)?,
+            pool: optional_text(row, 3)?,
+        });
+    }
+    Ok(list)
 }
 
 async fn subscribers(ctx: &Ctx<Forge>) -> Result<Vec<SubscriberSpec>> {

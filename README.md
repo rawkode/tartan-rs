@@ -54,7 +54,13 @@ such as Issues run unchanged.
 2. Packages in object storage and installations on a repository, each an `extension` actor with its own SQLite;
    tools, render and actions over the API. **Done:** Issues is published, installed on a repository and used over
    HTTP. Packages are immutable per `id@version`.
-3. `on-event` subscriptions and `effects.emit` through the outbox. Not started.
+3. `on-event` subscriptions and `effects.emit` through the outbox. **Done:** an installation receives the events of
+   its repository that match its manifest's `subscribe` patterns, once each and in order; an event the extension
+   fails is kept as a dead letter and does not block the next; what it emits (`x.<extension>.<type>`) reaches the
+   forge's subscribers. `extensions/fixture` is the test extension.
+
+Not yet: gates (walgit has no pre-receive hook to call them from), `notify` and why-notes (refused as
+`unavailable`), org-scoped installations, and identities beyond `admin`.
 
 ### Goal 3: the web frontend
 

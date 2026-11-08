@@ -18,7 +18,10 @@ use crate::event_log::{EVENT_LOG_SCHEMA, ReadEvents, append, read};
 use crate::outbox::{Flush, Outbox, SubscriberSource};
 use crate::services::services;
 use crate::sql::{param_integer, param_text, text};
-use crate::{Envelope, PackageQuery, RefEvent, Slug, extension_handle, forge_handle};
+use crate::{
+    Envelope, EventPattern, PackageQuery, RefEvent, Slug, SubscribeInstallation, extension_handle,
+    forge_handle,
+};
 
 /// The repository actor.
 #[derive(Debug)]
@@ -438,6 +441,37 @@ impl Handler<Install> for Repo {
                 },
             })
             .await?;
+
+        let client = ctx.client()?;
+        let manifest = forge_handle(&client)?
+            .send(PackageQuery {
+                id: info.extension_id.clone(),
+                version: info.version.clone(),
+            })
+            .await?
+            .map(|package| package.manifest)
+            .unwrap_or_default();
+        let patterns = manifest["subscribe"]
+            .as_array()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| entry["event"].as_str())
+                    .map(str::parse::<EventPattern>)
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        if !patterns.is_empty() {
+            forge_handle(&client)?
+                .send(SubscribeInstallation {
+                    installation_id: info.installation_id.clone(),
+                    patterns,
+                    source: self.source(),
+                    pool: ctx.inner().client_pool_name().map(str::to_owned),
+                })
+                .await?;
+        }
 
         let source = self.source();
         let event_info = info.clone();
