@@ -12,13 +12,10 @@ use rivetkit::{Handler, action};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use std::collections::BTreeMap;
-
 use crate::actors::installations::{
     self, INSTALLATIONS_SCHEMA, InstallTarget, InstallationInfo, InstallationQuery,
     ListInstallations, Wanted,
 };
-use crate::actors::org::{ApplyOrgConfig, SetContributions};
 use crate::actors::{apply_schema, key_id};
 use crate::event_log::{EVENT_LOG_SCHEMA, ReadEvents, append, read};
 use crate::outbox::{Flush, FlushTree, Outbox, SubscriberSource};
@@ -372,8 +369,7 @@ impl Repo {
         });
     }
 
-    /// Applies `tartan.cue` at the latest recorded `main`, unless it is applied already. The
-    /// org's `tartan` repository configures the org instead of itself.
+    /// Applies the configuration at the latest recorded `main`, unless it is applied already.
     async fn reconcile(&self, ctx: &Ctx<Self>) -> Result<()> {
         let _reconciling = self.reconciling.lock().await;
         let head = ctx
@@ -409,61 +405,26 @@ impl Repo {
             }
         };
         if let Some(config) = config {
-            let org = ctx.client()?.get_typed::<crate::Org>(
-                crate::actors::ORG,
-                [org_id.as_str()],
-                rivetkit::client::GetOptions::default(),
-            )?;
-            if slug.as_str() == tartan_config::ORG_CONFIG_REPO {
-                org.send(ApplyOrgConfig {
-                    sha: sha.clone(),
-                    config,
+            let wanted = config
+                .extensions
+                .into_iter()
+                .map(|(extension_id, entry)| {
+                    let wanted = Wanted {
+                        version: entry.version,
+                        config: entry.settings,
+                    };
+                    (extension_id, wanted)
                 })
+                .collect();
+            let target = InstallTarget {
+                scope: "repo",
+                org_id: org_id.clone(),
+                repo_id: Some(self.id.clone()),
+                path: format!("{org_slug}/{slug}"),
+                receives: RecipientScope::Source(self.source()),
+            };
+            installations::reconcile(ctx, &self.outbox, &self.source(), &target, &sha, wanted)
                 .await?;
-            } else {
-                let mut wanted = BTreeMap::new();
-                let mut contributions = BTreeMap::new();
-                for (extension_id, entry) in config.extensions {
-                    match entry.version {
-                        Some(version) => {
-                            wanted.insert(
-                                extension_id,
-                                Wanted {
-                                    version,
-                                    config: entry.settings,
-                                },
-                            );
-                        }
-                        None => {
-                            contributions.insert(extension_id, entry.settings);
-                        }
-                    }
-                }
-                let target = InstallTarget {
-                    scope: "repo",
-                    org_id: org_id.clone(),
-                    repo_id: Some(self.id.clone()),
-                    path: format!("{org_slug}/{slug}"),
-                    receives: RecipientScope::Source(self.source()),
-                };
-                let applied = installations::reconcile(
-                    ctx,
-                    &self.outbox,
-                    &self.source(),
-                    &target,
-                    &sha,
-                    wanted,
-                )
-                .await?;
-                if applied {
-                    org.send(SetContributions {
-                        repo_id: self.id.clone(),
-                        path: format!("{org_slug}/{slug}"),
-                        contributions,
-                    })
-                    .await?;
-                }
-            }
         }
         ctx.sql()
             .execute(

@@ -1,8 +1,11 @@
 //! Git through the whole stack: RustFS, walgit, the Rivet engine and the gateway, driven by the
 //! `git` CLI.
 //!
-//! Needs `WALGIT_BIN`, `RIVET_ENGINE_BINARY_PATH`, and `rustfs`, `rclone` and `git` on `PATH`;
+//! Needs `WALGIT_BIN`, `RIVET_ENGINE_BINARY_PATH`, `TARTAN_ISSUES_PACKAGE`, the module source
+//! (`TARTAN_MODULE_SOURCE`, `CUE_BIN`), and `rustfs`, `rclone` and `git` on `PATH`;
 //! `scripts/e2e.sh` provides them.
+
+mod common;
 
 use std::net::TcpListener as StdListener;
 use std::path::{Path, PathBuf};
@@ -12,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use rivetkit::Registry;
 use serde_json::{Value, json};
-use tartan::{GatewayState, router};
+use tartan::{GatewayState, RegistryStore, router};
 use tartan_forge::{
     Extensions, GitHost, Services, WalgitClient, install_services, register_actors,
 };
@@ -194,9 +197,7 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
     assert!(made.success(), "create the bucket");
 
     // The gateway's listener first, so walgit can be told where to post events.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
+    let listener = common::gateway_listener().await;
     let gateway_port = listener.local_addr().expect("address").port();
     let base = format!("http://127.0.0.1:{gateway_port}");
 
@@ -211,9 +212,11 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("after 1970")
         .as_nanos();
+    let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let registry = RegistryStore::new(store.clone());
     let extensions = Arc::new(Extensions::new(
         tartan_extensions::ExtensionRuntime::new().expect("runtime"),
-        Arc::new(object_store::memory::InMemory::new()),
+        store,
     ));
     install_services(Services {
         extensions: extensions.clone(),
@@ -224,16 +227,17 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
         )),
     })
     .expect("installed once");
-    let mut registry = Registry::new();
-    register_actors(&mut registry);
-    let actors = rivetkit::test::setup(registry)
+    let mut actor_registry = Registry::new();
+    register_actors(&mut actor_registry);
+    let actors = rivetkit::test::setup(actor_registry)
         .await
         .expect("engine and registry");
+    let client = actors.client().clone();
     let state = GatewayState {
-        client: actors.client().clone(),
+        client: client.clone(),
         admin_token: Arc::from(ADMIN_TOKEN),
         webhook_secret: Arc::from(WEBHOOK_SECRET.as_bytes()),
-        extensions,
+        registry: registry.clone(),
     };
     tokio::spawn(async move { axum::serve(listener, router(state)).await });
 
@@ -403,24 +407,21 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
         .expect("read a missing file");
     assert_eq!(missing, None);
 
-    // A tartan.cue pushed to main installs Issues from its published package.
+    // A tartan.cue pushed to main installs Issues from the module the forge synced.
     let issues = tartan_extensions::ExtensionPackage::from_dir(
         std::env::var("TARTAN_ISSUES_PACKAGE")
             .expect("TARTAN_ISSUES_PACKAGE names the Issues package")
             .as_ref(),
     )
     .expect("the Issues package");
-    let upload = json!({
-        "manifest": issues.manifest.raw,
-        "component": base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            &issues.component
-        ),
-        "migrations": issues.migrations.iter()
-            .map(|(path, sql)| json!({"path": path, "sql": sql}))
-            .collect::<Vec<_>>(),
-    });
-    api(&http, &base, "/-/api/packages", upload).await;
+    let modules = common::ModuleSource::default();
+    modules.publish(&issues, &issues.manifest.raw, None).await;
+    let report = common::sync(&modules.deployment(), &registry, &client, &extensions).await;
+    assert_eq!(
+        report.registered,
+        vec![format!("rawkode.issues@{}", issues.manifest.version)],
+        "{report:?}"
+    );
     let config = format!(
         "package tartan\n\nextensions: \"rawkode.issues\": version: \"{}\"\n",
         issues.manifest.version

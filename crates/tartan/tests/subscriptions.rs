@@ -1,12 +1,12 @@
-//! An installed extension receives the events its scope covers through `on-event`, and what it
-//! emits reaches the forge's subscribers. Installations come from pushed `tartan.cue`.
+//! An installed extension receives its repository's events through `on-event`, and what it
+//! emits reaches the forge's subscribers. Installations come from pushed `tartan.cue`, and the
+//! package from the fixture's module, synced into the forge.
 //!
-//! Needs `RIVET_ENGINE_BINARY_PATH` and `TARTAN_FIXTURE_PACKAGE`, the package of
-//! `extensions/fixture` (see `scripts/e2e.sh`).
+//! Needs `RIVET_ENGINE_BINARY_PATH`, `TARTAN_FIXTURE_PACKAGE` (the module directory of
+//! `extensions/fixture`), `TARTAN_MODULE_SOURCE` and `CUE_BIN` (see `scripts/e2e.sh`).
 
 mod common;
 
-use std::collections::BTreeSet;
 use std::time::Duration;
 
 use common::{Forge, package, ref_event};
@@ -17,7 +17,7 @@ fn install(id: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "needs TARTAN_FIXTURE_PACKAGE and a Rivet engine; run scripts/e2e.sh"]
+#[ignore = "needs TARTAN_FIXTURE_PACKAGE, the module source and a Rivet engine; run scripts/e2e.sh"]
 async fn an_extension_receives_its_scope_and_emits_its_own() {
     let fixture = package("TARTAN_FIXTURE_PACKAGE");
     let forge = Forge::start("subscriptions-test").await;
@@ -27,16 +27,17 @@ async fn an_extension_receives_its_scope_and_emits_its_own() {
         .await;
     assert_eq!(status, 204);
     forge.ok("/-/api/orgs", json!({"slug": "acme"})).await;
-    for repo in ["api", "other", "tartan"] {
+    for repo in ["api", "other"] {
         forge
             .ok("/-/api/orgs/acme/repos", json!({"slug": repo}))
             .await;
     }
-    forge.publish(&fixture, &fixture.manifest.raw).await;
-    let mut org_manifest = fixture.manifest.raw.clone();
-    org_manifest["id"] = json!("tartan.fixture-org");
-    org_manifest["storage"]["scope"] = json!("org");
-    forge.publish(&fixture, &org_manifest).await;
+    let report = forge.publish(&fixture, &fixture.manifest.raw).await;
+    assert_eq!(
+        report.registered,
+        vec!["tartan.fixture@0.1.0"],
+        "{report:?}"
+    );
 
     // The configuration push is itself a ref update the fixture then receives.
     forge
@@ -114,32 +115,6 @@ async fn an_extension_receives_its_scope_and_emits_its_own() {
         assert_eq!(event["type"], "x.tartan.fixture.seen");
         assert_eq!(event["data"]["data"]["type"], "ref.updated");
     }
-
-    // The org's tartan repository installs the same component on the org: it receives every
-    // repository's events, including those recorded before it was installed.
-    forge
-        .push_config("acme/tartan", Some(&install("tartan.fixture-org")))
-        .await;
-    forge
-        .until_installed("acme", &["tartan.fixture-org@0.1.0"])
-        .await;
-    let org_tool = "/-/api/orgs/acme/extensions/tartan.fixture-org/tools/seen";
-    let org_seen = forge
-        .until(
-            "the org fixture's seen tool",
-            async || forge.post(org_tool, json!({})).await.1,
-            |value| value["seen"].as_array().is_some_and(|seen| seen.len() >= 5),
-        )
-        .await;
-    let org_seen = org_seen["seen"].as_array().expect("a list");
-    // api: its configuration push and two feature updates; other: one; tartan: its push.
-    assert_eq!(org_seen.len(), 5, "{org_seen:#?}");
-    let sources: BTreeSet<&str> = org_seen
-        .iter()
-        .filter_map(|s| s["source"].as_str())
-        .collect();
-    assert_eq!(sources.len(), 3, "every repository's events: {sources:?}");
-    assert!(sources.contains(repo_source.as_str()));
 
     forge.stop().await;
 }

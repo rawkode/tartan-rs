@@ -100,7 +100,7 @@ fn card_count(view: &Value) -> usize {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "needs the Issues and Kanban packages and a Rivet engine; run scripts/e2e.sh"]
+#[ignore = "migrated in integration"]
 async fn boards_for_the_org_a_repository_and_a_project_from_configuration() {
     let issues_package = package("TARTAN_ISSUES_PACKAGE");
     let kanban_package = package("TARTAN_KANBAN_PACKAGE");

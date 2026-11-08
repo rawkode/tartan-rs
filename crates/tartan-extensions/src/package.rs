@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -79,6 +80,9 @@ pub enum PackageError {
     /// The manifest is invalid.
     #[error("tartan.json: {0}")]
     Manifest(String),
+    /// The package's files do not match its manifest.
+    #[error("{0}")]
+    Files(String),
 }
 
 /// The component's file name in a package directory.
@@ -108,6 +112,53 @@ impl ExtensionPackage {
             component,
             migrations,
         })
+    }
+
+    /// Reads a package from a CUE module's files, by path: `tartan.json`, `component.wasm` and
+    /// the manifest's migrations. Other files belong to the module, but every `.sql` file must
+    /// be one of the manifest's migrations, so none is silently left out of the package.
+    pub fn from_module_files(files: &BTreeMap<String, Vec<u8>>) -> Result<Self, PackageError> {
+        let read = |path: &str| {
+            files
+                .get(path)
+                .cloned()
+                .ok_or_else(|| PackageError::Files(format!("the module has no {path}")))
+        };
+        let manifest = Manifest::parse(&read("tartan.json")?)?;
+        let component = read(COMPONENT_FILE)?;
+        let unlisted: Vec<&String> = files
+            .keys()
+            .filter(|path| path.ends_with(".sql") && !manifest.storage.migrations.contains(path))
+            .collect();
+        if !unlisted.is_empty() {
+            return Err(PackageError::Files(format!(
+                "migrations {unlisted:?} are not in the manifest's {:?}",
+                manifest.storage.migrations
+            )));
+        }
+        let mut migrations = Vec::new();
+        for path in &manifest.storage.migrations {
+            let script = String::from_utf8(read(path)?)
+                .map_err(|_| PackageError::Files(format!("{path} is not UTF-8")))?;
+            migrations.push((path.clone(), script));
+        }
+        Ok(Self {
+            manifest,
+            component,
+            migrations,
+        })
+    }
+
+    /// Checks what the forge requires of a package it makes available: every package installs
+    /// on repositories, so `storage.scope` is `repo`.
+    pub fn check_installable(&self) -> Result<(), PackageError> {
+        if self.manifest.storage.scope != StorageScope::Repo {
+            return Err(PackageError::Manifest(format!(
+                "storage.scope is {:?}: every package installs on repositories, so it must be \"repo\"",
+                self.manifest.storage.scope
+            )));
+        }
+        Ok(())
     }
 
     /// The SHA-256 of the manifest, the component and the migrations, hex-encoded. Each part is
@@ -186,5 +237,49 @@ mod tests {
         let escaping = br#"{"id":"a","name":"A","version":"1.0.0","api":"tartan:ext@0.1.0",
             "storage":{"scope":"repo","migrations":["../x.sql"]}}"#;
         assert!(Manifest::parse(escaping).is_err());
+    }
+
+    fn module(manifest: &str, extra: &[(&str, &str)]) -> BTreeMap<String, Vec<u8>> {
+        let mut files: BTreeMap<String, Vec<u8>> = [
+            ("tartan.json", manifest),
+            ("component.wasm", "\0asm"),
+            ("cue.mod/module.cue", "module: \"example.com/x@v0\""),
+            ("x.cue", "package x"),
+        ]
+        .iter()
+        .map(|(p, c)| ((*p).to_owned(), c.as_bytes().to_vec()))
+        .collect();
+        files.extend(
+            extra
+                .iter()
+                .map(|(p, c)| ((*p).to_owned(), c.as_bytes().to_vec())),
+        );
+        files
+    }
+
+    #[test]
+    fn reads_a_module_and_refuses_unlisted_or_missing_migrations() {
+        let manifest = r#"{"id":"a","name":"A","version":"1.0.0","api":"tartan:ext@0.1.0",
+            "storage":{"scope":"repo","migrations":["migrations/0001.sql","migrations/0002.sql"]}}"#;
+        let both = [
+            ("migrations/0002.sql", "two"),
+            ("migrations/0001.sql", "one"),
+        ];
+        let package = ExtensionPackage::from_module_files(&module(manifest, &both)).expect("valid");
+        let paths: Vec<&str> = package.migrations.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(paths, vec!["migrations/0001.sql", "migrations/0002.sql"]);
+        assert!(package.check_installable().is_ok());
+
+        let missing = module(manifest, &both[..1]);
+        assert!(ExtensionPackage::from_module_files(&missing).is_err());
+        let extra = module(
+            manifest,
+            &[both[0], both[1], ("migrations/0003.sql", "three")],
+        );
+        assert!(ExtensionPackage::from_module_files(&extra).is_err());
+
+        let org = manifest.replace("\"repo\"", "\"org\"");
+        let package = ExtensionPackage::from_module_files(&module(&org, &both)).expect("parses");
+        assert!(package.check_installable().is_err());
     }
 }

@@ -11,13 +11,13 @@ use axum::{Json, Router};
 use rivetkit::client::Client;
 use serde::{Deserialize, Serialize};
 use tartan_forge::{
-    CreateOrg, CreateRepo, EventPattern, Extensions, OrgInfo, OrgStatus, OrgStatusQuery, Placement,
-    Received, ReceivedEvent, RecordRefEvents, RefEvent, RegisterSubscriber, RepoInfo,
+    CreateOrg, CreateRepo, EventPattern, ListOrgs, ListRepos, OrgInfo, OrgStatus, OrgStatusQuery,
+    Placement, Received, ReceivedEvent, RecordRefEvents, RefEvent, RegisterSubscriber, RepoInfo,
     RepoStatusQuery, ResolveOrg, ResolveRepo, SetPlacement, Slug, SubscriberSpec, forge_handle,
     org_handle, repo_handle, subscriber_handle, valid_placement_target, verify_signature,
 };
 
-use crate::ApiError;
+use crate::{ApiError, RegistryStore};
 
 /// The header carrying the Git host's webhook signature.
 const SIGNATURE_HEADER: &str = "x-walgit-signature";
@@ -31,16 +31,16 @@ pub struct GatewayState {
     pub admin_token: Arc<str>,
     /// The key the Git host signs webhook bodies with.
     pub webhook_secret: Arc<[u8]>,
-    /// Extension packages and their runtime.
-    pub extensions: Arc<Extensions>,
+    /// The forge's CUE registry, served read only at `/v2/`.
+    pub registry: RegistryStore,
 }
 
 /// The gateway's routes.
 pub fn router(state: GatewayState) -> Router {
     let api = Router::new()
-        .route("/orgs", post(create_org))
+        .route("/orgs", post(create_org).get(list_orgs))
         .route("/orgs/{org}", get(org_status))
-        .route("/orgs/{org}/repos", post(create_repo))
+        .route("/orgs/{org}/repos", post(create_repo).get(list_repos))
         .route("/orgs/{org}/repos/{repo}", get(repo_status))
         .route("/placements", put(set_placement))
         .route("/placements/{*target}", get(placement))
@@ -52,6 +52,7 @@ pub fn router(state: GatewayState) -> Router {
         .nest("/-/api", api)
         .route("/-/hooks/git-host", post(git_host_events))
         .route("/-/health", get(|| async { "ok" }))
+        .merge(crate::registry::routes())
         .with_state(state)
 }
 
@@ -87,6 +88,50 @@ async fn create_org(
         .send(CreateOrg { slug })
         .await?;
     Ok((StatusCode::CREATED, Json(info)))
+}
+
+/// An org in the forge's listing.
+#[derive(Debug, Serialize)]
+struct OrgSummary {
+    slug: Slug,
+}
+
+async fn list_orgs(State(state): State<GatewayState>) -> Result<Json<Vec<OrgSummary>>, ApiError> {
+    let orgs = forge_handle(&state.client)?.send(ListOrgs {}).await?;
+    Ok(Json(
+        orgs.into_iter()
+            .map(|org| OrgSummary { slug: org.slug })
+            .collect(),
+    ))
+}
+
+/// A repository in its org's listing.
+#[derive(Debug, Serialize)]
+struct RepoSummary {
+    slug: Slug,
+    /// `org/repo`.
+    path: String,
+    clone_url: String,
+}
+
+async fn list_repos(
+    State(state): State<GatewayState>,
+    Path(org): Path<String>,
+) -> Result<Json<Vec<RepoSummary>>, ApiError> {
+    let org = resolve_org(&state.client, &org).await?;
+    let repos = org_handle(&state.client, &org.id, org.pool)?
+        .send(ListRepos {})
+        .await?;
+    Ok(Json(
+        repos
+            .into_iter()
+            .map(|repo| RepoSummary {
+                path: format!("{}/{}", repo.org_slug, repo.slug),
+                slug: repo.slug,
+                clone_url: repo.clone_url,
+            })
+            .collect(),
+    ))
 }
 
 async fn org_status(

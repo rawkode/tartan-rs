@@ -12,7 +12,7 @@ use hmac::{Hmac, Mac};
 use rivetkit::{EngineSpawnMode, Registry, ServeConfig};
 use serde_json::{Value, json};
 use sha2::Sha256;
-use tartan::{GatewayState, router};
+use tartan::{GatewayState, RegistryStore, router};
 use tartan_forge::{Extensions, GitHost, Services, install_services, register_actors};
 use tokio_util::sync::CancellationToken;
 
@@ -169,9 +169,10 @@ async fn forge_end_to_end() {
         .duration_since(std::time::UNIX_EPOCH)
         .expect("after 1970")
         .as_nanos();
+    let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
     let extensions = Arc::new(Extensions::new(
         tartan_extensions::ExtensionRuntime::new().expect("runtime"),
-        Arc::new(object_store::memory::InMemory::new()),
+        store.clone(),
     ));
     install_services(Services {
         extensions: extensions.clone(),
@@ -205,7 +206,7 @@ async fn forge_end_to_end() {
         client: actors.client().clone(),
         admin_token: Arc::from(ADMIN_TOKEN),
         webhook_secret: Arc::from(WEBHOOK_SECRET),
-        extensions,
+        registry: RegistryStore::new(store),
     };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -273,6 +274,18 @@ async fn orgs_and_repositories_emit_events(forge: &Forge, git_host: &FakeGitHost
     );
 
     let (status, _) = forge.get("/-/api/orgs/acme/repos/nope").await;
+    assert_eq!(status, 404);
+
+    let (status, orgs) = forge.get("/-/api/orgs").await;
+    assert_eq!(status, 200);
+    assert_eq!(orgs, json!([{"slug": "acme"}]));
+    let (status, repos) = forge.get("/-/api/orgs/acme/repos").await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        repos,
+        json!([{"slug": "api", "path": "acme/api", "clone_url": "http://git.test/acme/api.git"}])
+    );
+    let (status, _) = forge.get("/-/api/orgs/nope/repos").await;
     assert_eq!(status, 404);
 
     let wanted = ["org.created", "org.ready", "repo.created", "repo.ready"];

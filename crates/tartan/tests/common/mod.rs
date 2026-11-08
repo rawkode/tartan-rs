@@ -1,26 +1,35 @@
-//! The forge for end-to-end tests: the real Rivet engine and gateway, packages in memory, and a
-//! Git host whose pushes are simulated: a pushed `tartan.cue` is stored per commit and announced
-//! with a signed ref event for `main`.
+//! The forge for end-to-end tests: the real Rivet engine and gateway, the registry and packages
+//! in memory, and a Git host whose pushes are simulated: a pushed `tartan.cue` is stored per
+//! commit and announced with a signed ref event for `main`.
+//!
+//! Extension packages reach the forge as they do in a deployment: each is published as a CUE
+//! module (`cue mod publish`, with the `cue` in `CUE_BIN`) to the source registry at
+//! `TARTAN_MODULE_SOURCE` (a test-only CNCF distribution that `scripts/e2e.sh` starts), then the
+//! forge syncs the modules published so far. The gateway listens on the address in
+//! `CUE_REGISTRY` when it is set, so the CUE evaluator in the test process resolves imports
+//! against this forge's registry.
 
 // Each test binary uses part of this module.
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use base64::Engine;
 use hmac::{Hmac, Mac};
 use rivetkit::Registry;
+use rivetkit::client::Client;
 use rivetkit::test::TestHandle;
 use serde_json::{Value, json};
 use sha2::Sha256;
-use tartan::{GatewayState, router};
+use tartan::{GatewayState, RegistryStore, SyncReport, SyncTargets, router, sync_modules};
 use tartan_config::DirEntry;
-use tartan_extensions::{ExtensionPackage, ExtensionRuntime};
+use tartan_config::deployment::{Deployment, ModuleVersion};
+use tartan_extensions::{COMPONENT_FILE, ExtensionPackage, ExtensionRuntime};
 use tartan_forge::{Extensions, GitHost, Services, install_services, register_actors};
 
 pub const ADMIN_TOKEN: &str = "test-admin-token";
@@ -100,11 +109,167 @@ impl GitHost for FakeGitHost {
     }
 }
 
+/// The prefix of the module paths test packages are published under.
+pub const MODULE_PREFIX: &str = "tartan.test";
+
+/// The module path a test package with extension id `id` is published under:
+/// `tartan.test/<id's dot-separated parts>`, with `-` as `_`.
+pub fn module_path(id: &str) -> String {
+    format!("{MODULE_PREFIX}/{}", id.replace('.', "/").replace('-', "_"))
+}
+
+/// The CUE package name of the module for extension `id`: its path's last element.
+pub fn module_package(id: &str) -> String {
+    module_path(id)
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// The source registry test modules are published to, and the modules published so far.
+#[derive(Default)]
+pub struct ModuleSource {
+    published: Mutex<Vec<ModuleVersion>>,
+}
+
+impl ModuleSource {
+    /// The source registry's `host:port`.
+    pub fn address() -> String {
+        std::env::var("TARTAN_MODULE_SOURCE")
+            .expect("TARTAN_MODULE_SOURCE names the source registry (see scripts/e2e.sh)")
+    }
+
+    /// Publishes `package`, with `manifest` in place of its own, as module version `version`
+    /// (`v` and the manifest's version unless given), and remembers it for the next sync.
+    pub async fn publish(
+        &self,
+        package: &ExtensionPackage,
+        manifest: &Value,
+        version: Option<&str>,
+    ) -> ModuleVersion {
+        let id = manifest["id"].as_str().expect("a manifest id");
+        let version = match version {
+            Some(version) => version.to_owned(),
+            None => format!("v{}", manifest["version"].as_str().expect("a version")),
+        };
+        let module = ModuleVersion {
+            path: module_path(id),
+            version,
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let write = |path: &str, bytes: &[u8]| {
+            let path = dir.path().join(path);
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+            std::fs::write(path, bytes).expect("write");
+        };
+        write(
+            "cue.mod/module.cue",
+            format!(
+                "module: \"{}@{}\"\nlanguage: version: \"v0.14.1\"\nsource: kind: \"self\"\n",
+                module.path,
+                module.major()
+            )
+            .as_bytes(),
+        );
+        let package_name = module_package(id);
+        let manifest_version = manifest["version"].as_str().unwrap_or_default();
+        write(
+            &format!("{package_name}.cue"),
+            format!(
+                "package {package_name}\n\n#Extension: {{\n\tid: \"{id}\"\n\tversion: \"{manifest_version}\"\n\tsettings: {{...}}\n}}\n"
+            )
+            .as_bytes(),
+        );
+        write(
+            "tartan.json",
+            &serde_json::to_vec_pretty(manifest).expect("encode"),
+        );
+        write(COMPONENT_FILE, &package.component);
+        for (path, sql) in &package.migrations {
+            write(path, sql.as_bytes());
+        }
+        cue_mod_publish(dir.path(), &module.version).await;
+        let mut published = self.published.lock().expect("never poisoned");
+        if !published.contains(&module) {
+            published.push(module.clone());
+        }
+        module
+    }
+
+    /// A deployment listing every module published so far, from the source registry.
+    pub fn deployment(&self) -> Deployment {
+        Deployment {
+            modules: self.published.lock().expect("never poisoned").clone(),
+            sources: BTreeMap::from([(
+                MODULE_PREFIX.to_owned(),
+                format!("{}+insecure", Self::address())
+                    .parse()
+                    .expect("a source"),
+            )]),
+        }
+    }
+}
+
+/// Runs `cue mod publish <version>` in `dir` against the source registry.
+pub async fn cue_mod_publish(dir: &Path, version: &str) {
+    let cue = std::env::var("CUE_BIN").unwrap_or_else(|_| "cue".to_owned());
+    let output = tokio::process::Command::new(&cue)
+        .args(["mod", "publish", version])
+        .current_dir(dir)
+        .env(
+            "CUE_REGISTRY",
+            format!("{}+insecure", ModuleSource::address()),
+        )
+        .output()
+        .await
+        .unwrap_or_else(|error| panic!("run {cue}: {error}"));
+    assert!(
+        output.status.success(),
+        "cue mod publish {version}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// The gateway's listener: the address in `CUE_REGISTRY` when it is set, so the CUE evaluator
+/// in this process resolves modules against this forge's registry, otherwise any free port.
+pub async fn gateway_listener() -> tokio::net::TcpListener {
+    let address = match std::env::var("CUE_REGISTRY") {
+        Ok(registry) if !registry.is_empty() => {
+            let location = registry.split('+').next().unwrap_or_default();
+            location.split('/').next().unwrap_or_default().to_owned()
+        }
+        _ => "127.0.0.1:0".to_owned(),
+    };
+    tokio::net::TcpListener::bind(&address)
+        .await
+        .unwrap_or_else(|error| panic!("bind the gateway to {address}: {error}"))
+}
+
+/// Syncs `deployment`'s modules into a forge's registry, as the forge does at startup.
+pub async fn sync(
+    deployment: &Deployment,
+    registry: &RegistryStore,
+    client: &Client,
+    extensions: &Extensions,
+) -> SyncReport {
+    let targets = SyncTargets {
+        registry,
+        client,
+        extensions,
+    };
+    sync_modules(deployment, &targets).await
+}
+
 /// A running forge.
 pub struct Forge {
     pub base: String,
     pub http: reqwest::Client,
     pub git: Arc<FakeGitHost>,
+    pub registry: RegistryStore,
+    pub extensions: Arc<Extensions>,
+    pub modules: ModuleSource,
+    client: Client,
     actors: Option<TestHandle>,
     seq: AtomicU64,
     heads: Mutex<HashMap<String, String>>,
@@ -124,9 +289,12 @@ impl Forge {
             .expect("after 1970")
             .as_nanos();
         let git = Arc::new(FakeGitHost::default());
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let registry = RegistryStore::new(store.clone());
         let extensions = Arc::new(Extensions::new(
             ExtensionRuntime::new().expect("runtime"),
-            Arc::new(object_store::memory::InMemory::new()),
+            store,
         ));
         install_services(Services {
             forge_id: format!("{name}-{nanos}"),
@@ -134,26 +302,29 @@ impl Forge {
             extensions: extensions.clone(),
         })
         .expect("installed once");
-        let mut registry = Registry::new();
-        register_actors(&mut registry);
-        let actors = rivetkit::test::setup(registry)
+        let mut actor_registry = Registry::new();
+        register_actors(&mut actor_registry);
+        let actors = rivetkit::test::setup(actor_registry)
             .await
             .expect("engine and registry");
+        let client = actors.client().clone();
         let state = GatewayState {
-            client: actors.client().clone(),
+            client: client.clone(),
             admin_token: Arc::from(ADMIN_TOKEN),
             webhook_secret: Arc::from(WEBHOOK_SECRET),
-            extensions,
+            registry: registry.clone(),
         };
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind");
+        let listener = gateway_listener().await;
         let base = format!("http://{}", listener.local_addr().expect("address"));
         tokio::spawn(async move { axum::serve(listener, router(state)).await });
         Self {
             base,
             http: reqwest::Client::new(),
             git,
+            registry,
+            extensions,
+            modules: ModuleSource::default(),
+            client,
             actors: Some(actors),
             seq: AtomicU64::new(1),
             heads: Mutex::new(HashMap::new()),
@@ -225,16 +396,21 @@ impl Forge {
         }
     }
 
-    /// Publishes `package`, with `manifest` in place of its own.
-    pub async fn publish(&self, package: &ExtensionPackage, manifest: &Value) -> Value {
-        let upload = json!({
-            "manifest": manifest,
-            "component": base64::engine::general_purpose::STANDARD.encode(&package.component),
-            "migrations": package.migrations.iter()
-                .map(|(path, sql)| json!({"path": path, "sql": sql}))
-                .collect::<Vec<_>>(),
-        });
-        self.ok("/-/api/packages", upload).await
+    /// Publishes `package` as a module, with `manifest` in place of its own, and syncs every
+    /// module published so far into the forge, as a restart with them listed would.
+    pub async fn publish(&self, package: &ExtensionPackage, manifest: &Value) -> SyncReport {
+        self.modules.publish(package, manifest, None).await;
+        self.sync().await
+    }
+
+    /// Syncs every module published so far.
+    pub async fn sync(&self) -> SyncReport {
+        self.sync_deployment(&self.modules.deployment()).await
+    }
+
+    /// Syncs `deployment`'s modules.
+    pub async fn sync_deployment(&self, deployment: &Deployment) -> SyncReport {
+        sync(deployment, &self.registry, &self.client, &self.extensions).await
     }
 
     /// Pushes a commit to `repo`'s `main` with `config` as its `tartan.cue` (no file for `None`),
@@ -302,12 +478,10 @@ impl Forge {
             .as_u16()
     }
 
-    /// The installations on `path` (`org` or `org/repo`), as `id@version`.
+    /// The installations on repository `path` (`org/repo`), as `id@version`.
     pub async fn installed(&self, path: &str) -> Vec<String> {
-        let route = match path.split_once('/') {
-            Some((org, repo)) => format!("/-/api/orgs/{org}/repos/{repo}/extensions"),
-            None => format!("/-/api/orgs/{path}/extensions"),
-        };
+        let (org, repo) = path.split_once('/').expect("org/repo");
+        let route = format!("/-/api/orgs/{org}/repos/{repo}/extensions");
         let (status, list) = self.get(&route).await;
         assert_eq!(status, 200, "{list}");
         list.as_array()

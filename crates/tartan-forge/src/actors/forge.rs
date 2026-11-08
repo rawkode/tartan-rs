@@ -178,6 +178,16 @@ impl Action for ResolveOrg {
     const NAME: &'static str = "resolveOrg";
 }
 
+/// Every org of the forge, by slug.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ListOrgs {}
+
+impl Action for ListOrgs {
+    type Output = Vec<OrgInfo>;
+
+    const NAME: &'static str = "listOrgs";
+}
+
 /// Names the pool new actors for `target` are created in: `org/<org>` covers the org and its
 /// repositories, `repo/<org>/<repo>` one repository. `None` removes the entry. Actors that
 /// already exist stay where they are.
@@ -289,6 +299,7 @@ impl Actor for Forge {
     type Actions = (
         CreateOrg,
         ResolveOrg,
+        ListOrgs,
         SetPlacement,
         Placement,
         RegisterSubscriber,
@@ -443,6 +454,29 @@ impl Handler<ResolveOrg> for Forge {
         Ok(Self::org_by_slug(&ctx, &action.slug)
             .await?
             .and_then(|(info, ready)| ready.then_some(info)))
+    }
+}
+
+impl Handler<ListOrgs> for Forge {
+    async fn handle(self: Arc<Self>, ctx: Ctx<Self>, _action: ListOrgs) -> Result<Vec<OrgInfo>> {
+        let result = ctx
+            .sql()
+            .query(
+                "SELECT slug, id, pool FROM orgs WHERE ready = 1 ORDER BY slug",
+                None,
+            )
+            .await?;
+        result
+            .rows
+            .iter()
+            .map(|row| {
+                Ok(OrgInfo {
+                    slug: text(row, 0)?.parse()?,
+                    id: text(row, 1)?,
+                    pool: optional_text(row, 2)?,
+                })
+            })
+            .collect()
     }
 }
 

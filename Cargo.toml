@@ -17,6 +17,8 @@ cuengine = "0.40.6"
 hex = "0.4"
 hmac = "0.12"
 object_store = { version = "0.14.2", features = ["aws"] }
+oci-client = { version = "0.18.0", default-features = false, features = ["rustls-tls"] }
+oci-spec = { version = "0.10.0", default-features = false, features = ["distribution", "image"] }
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rivetkit = "3.0.6"
@@ -30,6 +32,7 @@ tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ulid = "1"
+zip = { version = "9.4.2", default-features = false, features = ["deflate"] }
 tartan-config = { path = "crates/tartan-config" }
 tartan-extensions = { path = "crates/tartan-extensions" }
 tartan-forge = { path = "crates/tartan-forge" }

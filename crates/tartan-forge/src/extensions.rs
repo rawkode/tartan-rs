@@ -1,4 +1,5 @@
-//! Extension packages in object storage, and their compiled components.
+//! Extension packages in object storage, their compiled components, and registering a package
+//! with the forge.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -6,8 +7,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
+use rivetkit::client::Client;
 use tartan_extensions::{ExtensionComponent, ExtensionPackage, ExtensionRuntime, Manifest};
 use tokio::sync::Mutex;
+
+use crate::{PackageInfo, PackageQuery, PublishPackage, forge_handle};
 
 /// Stores packages and runs their components. One per process; cloning is cheap.
 pub struct Extensions {
@@ -35,10 +39,9 @@ impl Extensions {
         }
     }
 
-    /// Checks that `package`'s component fits the extension world, then stores the package
-    /// under its id, version and digest. Returns the digest.
-    pub async fn store(&self, package: &ExtensionPackage) -> Result<String> {
-        self.runtime.compile(&package.component)?;
+    /// Stores `package` under its id, version and digest, and returns the digest.
+    /// [`register_package`] checks a package before storing it.
+    async fn store(&self, package: &ExtensionPackage) -> Result<String> {
         let digest = package.digest();
         let dir = package_dir(&package.manifest.id, &package.manifest.version, &digest);
         let migrations = serde_json::to_vec(&package.migrations)?;
@@ -108,4 +111,71 @@ impl Extensions {
 
 fn package_dir(id: &str, version: &str, digest: &str) -> String {
     format!("packages/{id}/{version}/{digest}")
+}
+
+/// Why a package was not registered.
+#[derive(Debug, thiserror::Error)]
+pub enum RegisterError {
+    /// The package does not meet the forge's checks.
+    #[error("{0}")]
+    Refused(String),
+    /// Its `id@version` is registered with other contents.
+    #[error("{0}")]
+    Conflict(String),
+    /// Storage or the forge actor failed; registering again may succeed.
+    #[error("{0:#}")]
+    Unavailable(anyhow::Error),
+}
+
+/// Registers `package` with the forge, making `id@version` installable, after checking it: its
+/// manifest targets this host's extension API (checked when it was parsed), it installs on
+/// repositories, its component fits the extension world, and `id@version` is not registered
+/// with other contents. Registering the same package again returns it unchanged.
+pub async fn register_package(
+    client: &Client,
+    extensions: &Extensions,
+    package: &ExtensionPackage,
+) -> Result<PackageInfo, RegisterError> {
+    package
+        .check_installable()
+        .map_err(|error| RegisterError::Refused(error.to_string()))?;
+    let digest = package.digest();
+    let forge = forge_handle(client).map_err(RegisterError::Unavailable)?;
+    let existing = forge
+        .send(PackageQuery {
+            id: package.manifest.id.clone(),
+            version: package.manifest.version.clone(),
+        })
+        .await
+        .map_err(RegisterError::Unavailable)?;
+    match existing {
+        Some(found) if found.digest == digest => return Ok(found),
+        Some(found) => {
+            return Err(RegisterError::Conflict(format!(
+                "{}@{} is already registered with other contents",
+                found.id, found.version
+            )));
+        }
+        None => {}
+    }
+    if let Err(error) = extensions.runtime.compile(&package.component) {
+        return Err(RegisterError::Refused(format!(
+            "component.wasm is not a component of the extension world: {error:#}"
+        )));
+    }
+    extensions
+        .store(package)
+        .await
+        .map_err(RegisterError::Unavailable)?;
+    forge
+        .send(PublishPackage {
+            package: PackageInfo {
+                id: package.manifest.id.clone(),
+                version: package.manifest.version.clone(),
+                digest,
+                manifest: package.manifest.raw.clone(),
+            },
+        })
+        .await
+        .map_err(RegisterError::Unavailable)
 }

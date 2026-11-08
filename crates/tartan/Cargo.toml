@@ -10,25 +10,28 @@ license.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 axum.workspace = true
-base64.workspace = true
+hex.workspace = true
 object_store.workspace = true
+oci-client.workspace = true
+oci-spec.workspace = true
+regex.workspace = true
 rivetkit.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+tartan-config.workspace = true
 tartan-extensions.workspace = true
 tartan-forge.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
-tartan-config.workspace = true
 async-trait.workspace = true
-hex.workspace = true
 hmac.workspace = true
 reqwest.workspace = true
-sha2.workspace = true
 tempfile = "3"
 
 [lints]
