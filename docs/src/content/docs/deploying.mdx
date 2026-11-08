@@ -1,0 +1,65 @@
+---
+title: Deploying
+description: The deployment configuration, the modules it makes available, and the forge's own CUE registry.
+sidebar:
+  order: 2.5
+---
+
+A forge is one process: the gateway, its share of the actors, and the forge's CUE registry. What it needs besides the variables in [Running locally](/running-locally/#configuration) is a deployment configuration listing the CUE modules it makes available, and `CUE_REGISTRY` pointing at itself.
+
+## The deployment configuration
+
+`TARTAN_CONFIG` names a CUE file, or a directory such as a mounted config map, holding the package `forge`:
+
+```cue
+package forge
+
+sources: {
+	"tartan.dev":         "ghcr.io/rawkode/cue"
+	"github.com/rawkode": "ghcr.io/rawkode/cue"
+}
+modules: [
+	"tartan.dev/types@v0.1.0",
+	"github.com/rawkode/tartan-ext/issues@v0.6.0",
+	"github.com/rawkode/tartan-ext/kanban@v0.3.0",
+]
+```
+
+| Field | Meaning |
+| --- | --- |
+| `modules` | each module version the forge makes available, fully qualified as `path@vX.Y.Z` |
+| `sources` | module path prefixes and the OCI registry each is copied from, written as `CUE_REGISTRY` writes one: `host[:port][/repository-prefix]`, with `+insecure` for plain HTTP |
+
+A module comes from the source whose prefix matches the most whole elements of its path, and its repository there is the source's prefix followed by the module path. A registry on `localhost` or `127.0.0.1` is reached over plain HTTP unless it says `+secure`.
+
+The file is evaluated as `cue export` evaluates it, without a registry. The forge does not start when it does not evaluate, has a field other than `modules` and `sources`, lists a module without a full version (`@v0` is not one) or lists a module no source serves; the log names the problem. Without `TARTAN_CONFIG` the forge starts with no modules.
+
+## The forge's registry
+
+The gateway serves the read half of the OCI Distribution API at `/v2/`: manifests, blobs and tag lists, `GET` and `HEAD`. It is what `CUE_REGISTRY` points at, both for the forge and for people:
+
+```sh
+export CUE_REGISTRY=forge.example.com
+cue mod tidy
+cue export
+```
+
+Every write answers 405: only the forge fills its registry. Modules hold schemas and extension packages, never repository data, so the registry needs no token.
+
+The forge's process must start with `CUE_REGISTRY` set to its own registry, such as `127.0.0.1:8080+insecure` or its public host. The CUE evaluator reads it once, at startup, and resolves every repository's imports through it, so a configuration that `cue export` accepts against the forge's registry is the configuration the forge applies. The forge refuses to start without it.
+
+## Syncing modules
+
+At startup the forge copies each listed module from its source into its registry, under `registry/` in its object store, and then serves it.
+
+- A version the registry already holds with the source's digest is not copied again.
+- A version the registry holds is never replaced. If its source now serves other contents, the forge keeps its copy and logs the mismatch.
+- A source that cannot be reached is logged; the forge starts with the modules it holds and tries again at the next start.
+
+A module whose files include `tartan.json` is an extension. Its package becomes installable once it passes the checks in [Extensions](/extensions/#packages), and the forge's log records `package.published`. A module that fails them stays in the registry for `cue`, but its package is not available, and the log says why.
+
+Removing a module from `modules` stops the forge from copying it at startup. What the registry already holds stays, and a package already registered stays installable.
+
+## Upgrading an extension
+
+Publish the new version of its module to a source, add it to `modules`, and restart the forge. Repositories move to it by changing the version their `cue.mod/module.cue` depends on (`cue mod get github.com/rawkode/tartan-ext/issues@v0.7.0`) and pushing to `main`.

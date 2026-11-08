@@ -1,6 +1,6 @@
 ---
 title: Configuration
-description: The CUE package tartan — what a repository or an org installs, and how each extension is set up.
+description: The CUE package tartan — what a repository installs, and how each extension is set up, evaluated exactly as cue evaluates it.
 sidebar:
   order: 6
 ---
@@ -8,47 +8,83 @@ sidebar:
 Extensions are installed and configured only by the CUE package `tartan` committed at a repository's root. There is no install API: a push to `main` that changes it is the only way an extension is installed, upgraded, reconfigured or removed.
 
 ```cue
-package tartan
-
-extensions: "rawkode.issues": {
-	version: "0.5.0"
-	settings: fields: status: {type: "select", options: ["todo", "doing", "done"], default: "todo"}
-}
-```
-
-Each entry under `extensions` is an extension id with an optional `version` and free-form `settings`. Any other key, an invalid id or version, or CUE that does not evaluate makes the configuration invalid.
-
-## A package, not a file
-
-The configuration is every root `*.cue` file that declares `package tartan`, evaluated together the way `cue eval` evaluates a package directory. Name the files as you like and split them as you like; `tartan.cue` is only a convention. Root files of other packages, such as a cuenv `env.cue`, are not part of it, and a repository with no `package tartan` file at its root installs nothing.
-
-With `cue.mod/module.cue`, your module path and language version are used and packages of your module can be imported:
-
-```cue
 // cue.mod/module.cue
 module: "example.com/acme-api"
 language: version: "v0.14.1"
+deps: {
+	"tartan.dev/types@v0":                     v: "v0.1.0"
+	"github.com/rawkode/tartan-ext/issues@v0": v: "v0.6.0"
+}
 
-// config/fields/fields.cue
-package fields
-
-all: status: {type: "select", options: ["todo", "done"], default: "todo"}
-
-// issues.cue
+// tartan.cue
 package tartan
 
-import defs "example.com/acme-api/config/fields"
+import (
+	"tartan.dev/types"
+	"github.com/rawkode/tartan-ext/issues"
+)
 
-extensions: "rawkode.issues": {version: "0.5.0", settings: fields: defs.all}
+extensions: "rawkode.issues": issues.#Extension & {settings: properties: {
+	status:   types.#Select & {options: ["todo", "doing", "done"], default: "todo"}
+	priority: types.#Select & {options: ["p1", "p2", "p3"]}
+}}
 ```
 
-The forge reads only what the package needs at the pushed commit: the root's `*.cue` files, `cue.mod/`, and the directories of the module's packages that are imported. Imports of other modules resolve through the forge's CUE registry configuration (`CUE_REGISTRY`). A configuration may read at most 500 files, 64 directories and 4 MiB of CUE.
+Each extension is a CUE module, and its `#Extension` fixes the extension's id and version and types its settings, so a typo or a setting of the wrong kind fails in `cue` before it is pushed. The module's version in `cue.mod/module.cue` is the version installed.
+
+## Exactly what cue evaluates
+
+The forge applies exactly what `cue export` gives for the repository's root package `tartan`, with `CUE_REGISTRY` set to the forge (see [Deploying](/deploying/#the-forges-registry)). It adds no file to the evaluation: no schema and no module. Check a configuration before pushing it with:
+
+```sh
+export CUE_REGISTRY=forge.example.com
+cue export
+```
+
+After evaluation the forge checks the exported value: `extensions` maps each extension id to an entry with a semver `version` (`0.6.0`, without a `v`), `settings` that is a struct (`{}` when left out), and optionally `id` equal to its key. Any other key in an entry, an entry without a version, an invalid id, a conflict, or CUE that does not evaluate makes the configuration invalid. Other top-level fields are yours, for helpers and shared values.
+
+An entry does not have to come from a module; plain CUE works too, though nothing then checks its settings before they reach the extension:
+
+```cue
+package tartan
+
+extensions: "rawkode.issues": {version: "0.6.0", settings: properties: {}}
+```
+
+## A package, not a file
+
+The configuration is every root `*.cue` file that declares `package tartan`, evaluated together the way `cue export` evaluates a package directory. Name the files as you like and split them as you like; `tartan.cue` is only a convention. Root files of other packages, such as a cuenv `env.cue`, are not part of it, and a repository with no `package tartan` file at its root installs nothing.
+
+With `cue.mod/module.cue`, the repository is a CUE module: its dependencies resolve through the forge's registry, and packages of the module itself can be imported:
+
+```cue
+// config/props/props.cue
+package props
+
+import "tartan.dev/types"
+
+all: status: types.#Select & {options: ["todo", "done"], default: "todo"}
+
+// tartan.cue
+package tartan
+
+import (
+	"example.com/acme-api/config/props"
+	"github.com/rawkode/tartan-ext/issues"
+)
+
+extensions: "rawkode.issues": issues.#Extension & {settings: properties: props.all}
+```
+
+Without `cue.mod/module.cue`, the root is evaluated as a directory outside any module, as `cue` does: only the standard library can be imported.
+
+The forge reads only what the package needs at the pushed commit: the root's `*.cue` files, `cue.mod/`, and the directories of the module's packages that are imported. A configuration may read at most 500 files, 64 directories and 4 MiB of CUE. A dependency the forge's registry does not serve cannot be resolved, so a configuration depending on a module the deployment does not list is refused.
 
 ## When it applies
 
 When `refs/heads/main` moves, the forge loads the configuration at the new commit and applies it. Other branches never apply. When pushes arrive quickly, the latest commit wins.
 
-The file is applied all or nothing. Every entry is checked first: its version is published and its package installs where the file lives. If anything fails, nothing changes and `config.refused` records the problems.
+The configuration is applied all or nothing. Every entry is checked first: its version's package is available on the forge. If anything fails, nothing changes and `config.refused` records the problems.
 
 | Change | What happens |
 | --- | --- |
@@ -58,36 +94,15 @@ The file is applied all or nothing. Every entry is checked first: its version is
 | A removed entry | the extension is disabled: calls answer 404, its data is kept |
 | The entry again | the same installation comes back, with its data |
 
-## The org's configuration
-
-The repository named `tartan` in an org configures the org, with the same kind of package. Each entry there installs an `org`-scoped package on the org, and must have a `version`.
-
-```cue
-package tartan
-
-extensions: "rawkode.kanban": {
-	version: "0.2.0"
-	settings: boards: org: {name: "Everything", field: "status", columns: [{value: "todo"}, {value: "done"}]}
-}
-```
-
-## Contributing to the org's extensions
-
-An entry without a `version` in a repository's configuration contributes settings to the org's installation of that extension:
-
-```cue
-extensions: "rawkode.kanban": settings: boards: api: {field: "status", columns: [{value: "todo"}, {value: "done"}]}
-```
-
-An org installation's configuration is its own settings plus `repos`: for each contributing repository, its id, `path` and `settings`. When a contribution changes, the org installation is reconfigured.
+Every extension installs on the repository whose configuration names it.
 
 ## Events
 
 | Event | Source | When |
 | --- | --- | --- |
-| `config.applied` | repo or org | a configuration was applied; `data.changes` lists what changed |
-| `config.refused` | repo or org | a configuration was refused; `data.problems` says why |
-| `extension.installed` | repo or org | an extension was installed or re-enabled |
-| `extension.upgraded` | repo or org | an installation moved to a new version |
-| `extension.configured` | repo or org | an installation's configuration changed |
-| `extension.uninstalled` | repo or org | an installation was disabled |
+| `config.applied` | repo | a configuration was applied; `data.changes` lists what changed |
+| `config.refused` | repo | a configuration was refused; `data.problems` says why |
+| `extension.installed` | repo | an extension was installed or re-enabled |
+| `extension.upgraded` | repo | an installation moved to a new version |
+| `extension.configured` | repo | an installation's configuration changed |
+| `extension.uninstalled` | repo | an installation was disabled |

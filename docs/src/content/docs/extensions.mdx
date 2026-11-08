@@ -5,17 +5,54 @@ sidebar:
   order: 7
 ---
 
-An extension is a WebAssembly component of the `tartan:ext@0.1.0` world (`wit/tartan.wit`), published as a package and installed on a repository or an org by its [configuration](/configuration/).
+An extension is a WebAssembly component of the `tartan:ext@0.1.0` world (`wit/tartan.wit`), shipped as a CUE module and installed on a repository by its [configuration](/configuration/).
+
+## An extension is a CUE module
+
+One module carries both halves of an extension version: the settings schema a repository's configuration imports, and the package the forge runs. A module version is published to an OCI registry with `cue mod publish`, and a forge makes it available by listing it in its [deployment configuration](/deploying/).
+
+```
+cue.mod/module.cue      module: "github.com/rawkode/tartan-ext/issues@v0", source: kind: "self"
+issues.cue              package issues, with #Extension
+tartan.json             the manifest
+component.wasm          the component
+migrations/0001_init.sql
+```
+
+`source: kind: "self"` makes `cue mod publish` include every file in the directory, the component and migrations included. The module's `#Extension` fixes the extension's id and version and types its settings:
+
+```cue
+package issues
+
+import "tartan.dev/types"
+
+#Extension: {
+	id:      "rawkode.issues"
+	version: "0.6.0"
+	settings: properties: [N=string]: types.#Property & {name: N}
+}
+```
+
+A module can import other extensions' modules, so one extension's settings can refer to another's: Kanban's `#Extension` takes the repository's Issues entry and only accepts columns that are its select properties.
+
+## Building and publishing
+
+In this repository an extension crate keeps its module source in `cue/` (`cue.mod/module.cue` and the `#Extension` package). `scripts/build-extension.sh <crate> <out>` builds the component and assembles the module directory: the `cue/` tree, `component.wasm`, `tartan.json` and the manifest's migrations. A crate without `cue/` gets a minimal module, `github.com/rawkode/tartan-ext/<dir>`, whose `#Extension` fixes the id and version and accepts any settings.
+
+```sh
+scripts/build-extension.sh extensions/issues out/issues
+cd out/issues && CUE_REGISTRY=registry.example.com cue mod publish v0.6.0
+```
+
+The module version is `v` followed by `tartan.json`'s version.
 
 ## Packages
-
-A package is a directory with `tartan.json`, `component.wasm` and the migrations its manifest names. `scripts/build-extension.sh <crate> <out>` builds one from a Rust crate.
 
 ```json
 {
   "id": "rawkode.issues",
   "name": "Issues",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "api": "tartan:ext@0.1.0",
   "storage": { "scope": "repo", "migrations": ["migrations/0001_init.sql"] },
   "subscribe": [{ "event": "ref.*" }],
@@ -23,7 +60,16 @@ A package is a directory with `tartan.json`, `component.wasm` and the migrations
 }
 ```
 
-`storage.scope` is `repo` (one database per repository, installed by a repository's configuration) or `org` (one per org, installed by the org's `tartan` repository). Publish with `POST /-/api/packages` (`manifest`, base64 `component`, `migrations`). An `id@version` never changes: publishing other contents under it answers 409.
+When the forge syncs a module that holds `tartan.json`, it checks the package before making it installable:
+
+- the manifest targets `tartan:ext@0.1.0` and its id is valid;
+- its version is the module's, without the `v`;
+- `storage.scope` is `repo`: every extension installs on repositories, with one database each;
+- every migration the manifest lists is in the module, and every `.sql` file in the module is listed;
+- `component.wasm` is a component of the extension world;
+- `id@version` is not already registered with other contents: an `id@version` never changes.
+
+`GET /-/api/packages` lists the available packages. There is no publish route: packages come only from the modules the forge syncs.
 
 ## What an extension can do
 
@@ -43,7 +89,7 @@ Each call runs in a fresh instance with its own fuel, 128 MiB of memory and 10 s
 
 ## Events
 
-The manifest's `subscribe` patterns decide what reaches `on-event`: a repository's installation receives its repository's events, an org's installation every event in the org. Each event reaches `on-event` once, in order per source; an event the extension fails on is kept as a dead letter and does not block the next. An extension's emitted events appear as `x.<extension-id>.<type>`.
+The manifest's `subscribe` patterns decide what reaches `on-event`: a repository's installation receives its repository's events. Each event reaches `on-event` once, in order per source; an event the extension fails on is kept as a dead letter and does not block the next. An extension's emitted events appear as `x.<extension-id>.<type>`.
 
 ## Calls between extensions
 
@@ -56,4 +102,4 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
   localhost:8080/-/api/orgs/acme/repos/api/extensions/rawkode.issues/tools/list -d '{}'
 ```
 
-`GET /-/api/orgs/<org>/repos/<repo>/extensions` lists a repository's installations and `GET /-/api/orgs/<org>/extensions` the org's. Org installations are called under `/-/api/orgs/<org>/extensions/<id>/…`. Besides `tools/<tool>` there are `render/<slot>` and `actions/<action>`. Extension errors map to statuses: `denied` 403, `not_found` 404, `invalid` 400, `conflict` 409, `unavailable` 503.
+`GET /-/api/orgs/<org>/repos/<repo>/extensions` lists a repository's installations. Besides `tools/<tool>` there are `render/<slot>` and `actions/<action>`. Extension errors map to statuses: `denied` 403, `not_found` 404, `invalid` 400, `conflict` 409, `unavailable` 503.
