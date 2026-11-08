@@ -1,6 +1,6 @@
-//! Installations, shared by the org and repo actors. They come only from configuration: each
-//! actor reconciles its `installations` table, and the extension actors behind it, with the
-//! extensions its `tartan.cue` names.
+//! A repository's installations. They come only from configuration: the repository actor
+//! reconciles its `installations` table, and the extension actors behind it, with the
+//! extensions its committed package `tartan` names.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -17,8 +17,7 @@ use crate::event_log::append;
 use crate::outbox::{Flush, Outbox, SubscriberSource};
 use crate::sql::{integer, param_text, text};
 use crate::{
-    EventPattern, PackageInfo, PackageQuery, RecipientScope, SubscribeInstallation,
-    extension_handle, forge_handle,
+    EventPattern, PackageInfo, PackageQuery, SubscribeInstallation, extension_handle, forge_handle,
 };
 
 /// The installations table. A removed installation keeps its row (disabled), so configuring it
@@ -34,7 +33,7 @@ pub(crate) const INSTALLATIONS_SCHEMA: &str = "
     );
 ";
 
-/// An extension installed on an org or a repository.
+/// An extension installed on a repository.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallationInfo {
     /// The installation's id: its extension actor's key.
@@ -75,29 +74,24 @@ impl Action for ListInstallations {
 pub(crate) struct Wanted {
     /// The version.
     pub(crate) version: String,
-    /// The configuration the installation gets: its settings, and for an org's installation
-    /// what its repositories contribute.
+    /// The configuration the installation gets: its settings.
     pub(crate) config: Value,
 }
 
-/// Where installations are made.
+/// The repository installations are made on.
 pub(crate) struct InstallTarget {
-    /// `repo` or `org`: the storage scope the packages must declare.
-    pub(crate) scope: &'static str,
-    /// The org the installations belong to.
+    /// The org the repository belongs to.
     pub(crate) org_id: String,
-    /// The repository, for a repository's installations.
-    pub(crate) repo_id: Option<String>,
-    /// `org` or `org/repo`.
+    /// The repository.
+    pub(crate) repo_id: String,
+    /// `org/repo`.
     pub(crate) path: String,
-    /// The events the installations may receive.
-    pub(crate) receives: RecipientScope,
 }
 
 /// Makes the installations match `wanted`, the configuration at commit `sha`, all or nothing:
-/// a configuration naming an unpublished version or a package of the wrong scope is refused
-/// and changes nothing. Records `config.applied` or `config.refused` in `source`'s log, and
-/// returns whether the configuration was applied.
+/// a configuration naming a version that is not available, or a package whose `requires` it
+/// does not also install, is refused and changes nothing. Records `config.applied` or
+/// `config.refused` in `source`'s log, and returns whether the configuration was applied.
 pub(crate) async fn reconcile<A>(
     ctx: &Ctx<A>,
     outbox: &Arc<Outbox>,
@@ -122,14 +116,8 @@ where
             .await?;
         match found {
             None => problems.push(format!("{extension_id}@{} is not published", want.version)),
-            Some(package) if package.manifest["storage"]["scope"] != target.scope => {
-                problems.push(format!(
-                    "{extension_id} installs per {}, not per {}",
-                    package.manifest["storage"]["scope"].as_str().unwrap_or("?"),
-                    target.scope
-                ));
-            }
             Some(package) => {
+                problems.extend(missing_requirements(&package, &wanted));
                 packages.insert(extension_id.clone(), package);
             }
         }
@@ -174,7 +162,7 @@ where
             .send(SubscribeInstallation {
                 installation_id: installation_id.clone(),
                 patterns: subscriptions(&package.manifest)?,
-                receives: target.receives.clone(),
+                repo_id: target.repo_id.clone(),
                 pool: pool.clone(),
             })
             .await?;
@@ -218,7 +206,7 @@ where
             .send(SubscribeInstallation {
                 installation_id: row.info.installation_id.clone(),
                 patterns: Vec::new(),
-                receives: target.receives.clone(),
+                repo_id: target.repo_id.clone(),
                 pool: pool.clone(),
             })
             .await?;
@@ -295,6 +283,23 @@ where
         .await?;
     outbox.flush_later(ctx, SubscriberSource::Forge);
     Ok(())
+}
+
+/// A problem for each extension `package`'s manifest `requires` that `wanted` does not install.
+fn missing_requirements(package: &PackageInfo, wanted: &BTreeMap<String, Wanted>) -> Vec<String> {
+    package.manifest["requires"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|required| !wanted.contains_key(*required))
+        .map(|required| {
+            format!(
+                "{} requires {required}, which the configuration does not install",
+                package.id
+            )
+        })
+        .collect()
 }
 
 /// The event patterns a manifest subscribes to.
@@ -375,4 +380,47 @@ pub(crate) async fn list<A: Actor>(ctx: &Ctx<A>) -> Result<Vec<InstallationInfo>
         .into_iter()
         .map(|row| row.info)
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn package(id: &str, requires: Value) -> PackageInfo {
+        PackageInfo {
+            id: id.to_owned(),
+            version: "0.1.0".to_owned(),
+            digest: "d".to_owned(),
+            manifest: json!({ "id": id, "requires": requires }),
+        }
+    }
+
+    fn wanted(ids: &[&str]) -> BTreeMap<String, Wanted> {
+        ids.iter()
+            .map(|id| {
+                let want = Wanted {
+                    version: "0.1.0".to_owned(),
+                    config: json!({}),
+                };
+                ((*id).to_owned(), want)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn requirements_must_be_installed_by_the_same_configuration() {
+        let kanban = package("rawkode.kanban", json!(["rawkode.issues"]));
+        assert!(
+            missing_requirements(&kanban, &wanted(&["rawkode.kanban", "rawkode.issues"]))
+                .is_empty()
+        );
+        assert_eq!(
+            missing_requirements(&kanban, &wanted(&["rawkode.kanban"])),
+            vec![
+                "rawkode.kanban requires rawkode.issues, which the configuration does not install"
+            ]
+        );
+        let alone = package("rawkode.issues", Value::Null);
+        assert!(missing_requirements(&alone, &wanted(&["rawkode.issues"])).is_empty());
+    }
 }

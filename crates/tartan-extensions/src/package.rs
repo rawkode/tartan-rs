@@ -20,6 +20,10 @@ pub struct Manifest {
     pub api: String,
     /// Where the extension's data lives.
     pub storage: Storage,
+    /// The extensions this one needs installed beside it on the same repository, by id. A
+    /// configuration installing this package without them is refused.
+    #[serde(default)]
+    pub requires: Vec<String>,
     /// The events the extension receives through `on-event`.
     #[serde(default)]
     pub subscribe: Vec<Subscription>,
@@ -31,21 +35,21 @@ pub struct Manifest {
 /// An extension's storage declaration.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Storage {
-    /// One database per repository or per org.
+    /// One database per repository: the only scope, since every extension installs on
+    /// repositories.
     pub scope: StorageScope,
     /// Migration files, relative to the package root, applied in order.
     #[serde(default)]
     pub migrations: Vec<String>,
 }
 
-/// The unit an installation keeps one database for.
+/// The unit an installation keeps one database for. Every extension installs on repositories,
+/// so a manifest declaring any other scope does not parse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StorageScope {
     /// One database per repository.
     Repo,
-    /// One database per org.
-    Org,
 }
 
 /// An event subscription: an event type pattern such as `ref.*`.
@@ -149,18 +153,6 @@ impl ExtensionPackage {
         })
     }
 
-    /// Checks what the forge requires of a package it makes available: every package installs
-    /// on repositories, so `storage.scope` is `repo`.
-    pub fn check_installable(&self) -> Result<(), PackageError> {
-        if self.manifest.storage.scope != StorageScope::Repo {
-            return Err(PackageError::Manifest(format!(
-                "storage.scope is {:?}: every package installs on repositories, so it must be \"repo\"",
-                self.manifest.storage.scope
-            )));
-        }
-        Ok(())
-    }
-
     /// The SHA-256 of the manifest, the component and the migrations, hex-encoded. Each part is
     /// length-prefixed, so no two packages share a digest by shifting bytes between parts.
     pub fn digest(&self) -> String {
@@ -193,13 +185,19 @@ impl Manifest {
                 manifest.api
             )));
         }
-        let id_ok = !manifest.id.is_empty()
-            && manifest.id.len() <= 64
-            && manifest.id.bytes().all(|b| {
-                b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'_')
-            });
-        if !id_ok {
+        if !valid_id(&manifest.id) {
             return Err(PackageError::Manifest(format!("id {:?}", manifest.id)));
+        }
+        for (index, required) in manifest.requires.iter().enumerate() {
+            if !valid_id(required)
+                || *required == manifest.id
+                || manifest.requires[..index].contains(required)
+            {
+                return Err(PackageError::Manifest(format!(
+                    "requires {required:?}: an extension id other than the package's own, \
+                     listed once"
+                )));
+            }
         }
         for path in &manifest.storage.migrations {
             let safe = !path.starts_with('/') && !path.split('/').any(|part| part == "..");
@@ -209,6 +207,15 @@ impl Manifest {
         }
         Ok(manifest)
     }
+}
+
+/// Whether `id` is an extension id: 1 to 64 lowercase letters, digits, `.`, `-` and `_`.
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'_')
+        })
 }
 
 #[cfg(test)]
@@ -225,6 +232,7 @@ mod tests {
         )
         .expect("valid");
         assert_eq!(manifest.storage.scope, StorageScope::Repo);
+        assert!(manifest.requires.is_empty());
         assert_eq!(manifest.subscribe[0].event, "ref.*");
         assert_eq!(manifest.raw["runtime"], "wasm");
     }
@@ -237,6 +245,37 @@ mod tests {
         let escaping = br#"{"id":"a","name":"A","version":"1.0.0","api":"tartan:ext@0.1.0",
             "storage":{"scope":"repo","migrations":["../x.sql"]}}"#;
         assert!(Manifest::parse(escaping).is_err());
+    }
+
+    #[test]
+    fn every_package_installs_on_repositories() {
+        let org = br#"{"id":"a","name":"A","version":"1.0.0","api":"tartan:ext@0.1.0",
+            "storage":{"scope":"org"}}"#;
+        let error = Manifest::parse(org).expect_err("org scope");
+        assert!(error.to_string().contains("repo"), "{error}");
+    }
+
+    #[test]
+    fn requires_names_other_extensions_once() {
+        let manifest = |requires: &str| {
+            format!(
+                r#"{{"id":"rawkode.kanban","name":"K","version":"1.0.0","api":"tartan:ext@0.1.0",
+                "storage":{{"scope":"repo"}},"requires":{requires}}}"#
+            )
+        };
+        let parsed = Manifest::parse(manifest(r#"["rawkode.issues"]"#).as_bytes()).expect("valid");
+        assert_eq!(parsed.requires, vec!["rawkode.issues"]);
+        for invalid in [
+            r#"["rawkode.kanban"]"#,
+            r#"["rawkode.issues","rawkode.issues"]"#,
+            r#"["Not An Id"]"#,
+            r#""rawkode.issues""#,
+        ] {
+            assert!(
+                Manifest::parse(manifest(invalid).as_bytes()).is_err(),
+                "{invalid}"
+            );
+        }
     }
 
     fn module(manifest: &str, extra: &[(&str, &str)]) -> BTreeMap<String, Vec<u8>> {
@@ -268,7 +307,6 @@ mod tests {
         let package = ExtensionPackage::from_module_files(&module(manifest, &both)).expect("valid");
         let paths: Vec<&str> = package.migrations.iter().map(|(p, _)| p.as_str()).collect();
         assert_eq!(paths, vec!["migrations/0001.sql", "migrations/0002.sql"]);
-        assert!(package.check_installable().is_ok());
 
         let missing = module(manifest, &both[..1]);
         assert!(ExtensionPackage::from_module_files(&missing).is_err());
@@ -277,9 +315,5 @@ mod tests {
             &[both[0], both[1], ("migrations/0003.sql", "three")],
         );
         assert!(ExtensionPackage::from_module_files(&extra).is_err());
-
-        let org = manifest.replace("\"repo\"", "\"org\"");
-        let package = ExtensionPackage::from_module_files(&module(&org, &both)).expect("parses");
-        assert!(package.check_installable().is_err());
     }
 }

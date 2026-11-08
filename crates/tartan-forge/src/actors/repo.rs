@@ -21,7 +21,7 @@ use crate::event_log::{EVENT_LOG_SCHEMA, ReadEvents, append, read};
 use crate::outbox::{Flush, FlushTree, Outbox, SubscriberSource};
 use crate::services::services;
 use crate::sql::{param_integer, param_text, text};
-use crate::{Envelope, RecipientScope, RefEvent, Slug};
+use crate::{Envelope, RefEvent, Slug};
 use rivetkit::TypedClientExt;
 
 /// The repository actor.
@@ -140,10 +140,7 @@ impl Actor for Repo {
         apply_schema(ctx.sql(), INSTALLATIONS_SCHEMA).await?;
         let id = key_id(ctx.key())?;
         let outbox = Outbox::new(format!("repo:{id}"));
-        let org = ctx.sql().query("SELECT org_id FROM repo", None).await?;
-        if let Some(row) = org.rows.first() {
-            outbox.set_org(text(row, 0)?);
-        }
+        outbox.set_repo(id.clone());
         Ok(Self {
             outbox,
             id,
@@ -186,7 +183,6 @@ impl Handler<Init> for Repo {
         host.create_repo(action.org_slug.as_str(), action.slug.as_str())
             .await?;
         let clone_url = host.clone_url(action.org_slug.as_str(), action.slug.as_str());
-        self.outbox.set_org(action.org_id.clone());
         let source = self.source();
         ctx.sql()
             .transaction(
@@ -417,11 +413,9 @@ impl Repo {
                 })
                 .collect();
             let target = InstallTarget {
-                scope: "repo",
                 org_id: org_id.clone(),
-                repo_id: Some(self.id.clone()),
+                repo_id: self.id.clone(),
                 path: format!("{org_slug}/{slug}"),
-                receives: RecipientScope::Source(self.source()),
             };
             installations::reconcile(ctx, &self.outbox, &self.source(), &target, &sha, wanted)
                 .await?;

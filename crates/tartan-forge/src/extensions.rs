@@ -128,17 +128,14 @@ pub enum RegisterError {
 }
 
 /// Registers `package` with the forge, making `id@version` installable, after checking it: its
-/// manifest targets this host's extension API (checked when it was parsed), it installs on
-/// repositories, its component fits the extension world, and `id@version` is not registered
-/// with other contents. Registering the same package again returns it unchanged.
+/// manifest targets this host's extension API and installs on repositories (both checked when it
+/// was parsed), its component fits the extension world, and `id@version` is not registered with
+/// other contents. Registering the same package again returns it unchanged.
 pub async fn register_package(
     client: &Client,
     extensions: &Extensions,
     package: &ExtensionPackage,
 ) -> Result<PackageInfo, RegisterError> {
-    package
-        .check_installable()
-        .map_err(|error| RegisterError::Refused(error.to_string()))?;
     let digest = package.digest();
     let forge = forge_handle(client).map_err(RegisterError::Unavailable)?;
     let existing = forge

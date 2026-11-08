@@ -44,7 +44,7 @@ const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS extension_subscriptions (
         installation_id TEXT NOT NULL,
         pattern TEXT NOT NULL,
-        receives TEXT NOT NULL,
+        repo_id TEXT NOT NULL,
         pool TEXT,
         PRIMARY KEY (installation_id, pattern)
     );
@@ -86,27 +86,18 @@ pub enum Recipient {
         /// The subscriber.
         subscriber: SubscriberSpec,
     },
-    /// An extension installation, which receives matching events through `on-event`.
+    /// An extension installation, which receives matching events through `on-event` from its
+    /// repository and from the other extensions installed on that repository.
     Installation {
         /// The installation.
         installation_id: String,
         /// The event types it receives.
         pattern: EventPattern,
-        /// The sources it receives events from.
-        receives: RecipientScope,
+        /// The repository it is installed on.
+        repo_id: String,
         /// The pool its actor was created in.
         pool: Option<String>,
     },
-}
-
-/// The sources an installation receives events from.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RecipientScope {
-    /// One source, such as the installation's repository (`repo:<id>`).
-    Source(String),
-    /// Every source in the org: its repositories and the extensions installed in it.
-    Org(String),
 }
 
 impl Recipient {
@@ -140,8 +131,8 @@ pub struct SubscribeInstallation {
     pub installation_id: String,
     /// The event types it receives.
     pub patterns: Vec<EventPattern>,
-    /// The sources it receives events from.
-    pub receives: RecipientScope,
+    /// The repository it is installed on, whose events and extensions' events it receives.
+    pub repo_id: String,
     /// The pool its actor was created in.
     pub pool: Option<String>,
 }
@@ -705,8 +696,7 @@ impl Handler<ListRecipients> for Forge {
 
 impl Handler<SubscribeInstallation> for Forge {
     async fn handle(self: Arc<Self>, ctx: Ctx<Self>, action: SubscribeInstallation) -> Result<()> {
-        let receives = serde_json::to_string(&action.receives)?;
-        let scope = action.receives.clone();
+        let repo_id = action.repo_id.clone();
         ctx.sql()
             .transaction(
                 move |tx| async move {
@@ -718,11 +708,11 @@ impl Handler<SubscribeInstallation> for Forge {
                     for pattern in &action.patterns {
                         tx.execute(
                             "INSERT OR IGNORE INTO extension_subscriptions
-                             (installation_id, pattern, receives, pool) VALUES (?, ?, ?, ?)",
+                             (installation_id, pattern, repo_id, pool) VALUES (?, ?, ?, ?)",
                             Some(vec![
                                 param_text(action.installation_id.as_str()),
                                 param_text(pattern.as_str()),
-                                param_text(receives.as_str()),
+                                param_text(action.repo_id.as_str()),
                                 param_optional_text(action.pool.clone()),
                             ]),
                         )
@@ -731,7 +721,7 @@ impl Handler<SubscribeInstallation> for Forge {
                     let data = json!({
                         "installation_id": action.installation_id,
                         "patterns": action.patterns,
-                        "receives": action.receives,
+                        "repo_id": action.repo_id,
                     });
                     append(&tx, SOURCE, "extension.subscribed", data).await?;
                     Ok(())
@@ -743,46 +733,27 @@ impl Handler<SubscribeInstallation> for Forge {
             )
             .await?;
         self.flush_later(&ctx).await;
-        // Wake the sources the installation receives from, so it gets their history now.
+        // Wake the repository and its extensions, so the installation gets their history now.
         let client = ctx.client()?;
-        let tree = scope;
         ctx.wait_until(async move {
-            if let Err(error) = wake_sources(&client, &tree).await {
-                tracing::warn!(%error, "could not wake the sources of a new subscription");
+            use rivetkit::TypedClientExt;
+            use rivetkit::client::GetOptions;
+
+            let flushed = match client.get_typed::<crate::Repo>(
+                crate::actors::REPO,
+                [repo_id.as_str()],
+                GetOptions::default(),
+            ) {
+                Ok(repo) => repo.send(FlushTree {}).await,
+                Err(error) => Err(error),
+            };
+            if let Err(error) = flushed {
+                tracing::warn!(repo = %repo_id, %error,
+                    "could not wake the sources of a new subscription");
             }
         });
         Ok(())
     }
-}
-
-/// Asks the sources `scope` covers to flush, along with every source below them.
-async fn wake_sources(client: &rivetkit::client::Client, scope: &RecipientScope) -> Result<()> {
-    use rivetkit::TypedClientExt;
-    use rivetkit::client::GetOptions;
-
-    let (kind, id) = match scope {
-        RecipientScope::Org(org_id) => ("org", org_id.as_str()),
-        RecipientScope::Source(source) => match source.split_once(':') {
-            Some((kind, id)) => (kind, id),
-            None => bail!("malformed source {source:?}"),
-        },
-    };
-    match kind {
-        "org" => {
-            client
-                .get_typed::<crate::Org>(crate::actors::ORG, [id], GetOptions::default())?
-                .send(FlushTree {})
-                .await?;
-        }
-        "repo" => {
-            client
-                .get_typed::<crate::Repo>(crate::actors::REPO, [id], GetOptions::default())?
-                .send(FlushTree {})
-                .await?;
-        }
-        _ => {}
-    }
-    Ok(())
 }
 
 async fn recipients(ctx: &Ctx<Forge>) -> Result<Vec<Recipient>> {
@@ -794,7 +765,7 @@ async fn recipients(ctx: &Ctx<Forge>) -> Result<Vec<Recipient>> {
     let result = ctx
         .sql()
         .query(
-            "SELECT installation_id, pattern, receives, pool FROM extension_subscriptions
+            "SELECT installation_id, pattern, repo_id, pool FROM extension_subscriptions
              ORDER BY installation_id, pattern",
             None,
         )
@@ -803,7 +774,7 @@ async fn recipients(ctx: &Ctx<Forge>) -> Result<Vec<Recipient>> {
         list.push(Recipient::Installation {
             installation_id: text(row, 0)?,
             pattern: text(row, 1)?.parse()?,
-            receives: serde_json::from_str(&text(row, 2)?)?,
+            repo_id: text(row, 2)?,
             pool: optional_text(row, 3)?,
         });
     }

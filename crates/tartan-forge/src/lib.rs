@@ -29,9 +29,8 @@ pub use crate::actors::extension::{
 };
 pub use crate::actors::forge::{
     CreateOrg, Forge, ListOrgs, ListPackages, ListRecipients, ListSubscribers, OrgInfo,
-    PackageInfo, PackageQuery, Placement, PublishPackage, Recipient, RecipientScope,
-    RegisterSubscriber, ResolveOrg, SetPlacement, SubscribeInstallation, SubscriberSpec,
-    valid_placement_target,
+    PackageInfo, PackageQuery, Placement, PublishPackage, Recipient, RegisterSubscriber,
+    ResolveOrg, SetPlacement, SubscribeInstallation, SubscriberSpec, valid_placement_target,
 };
 pub use crate::actors::installations::{InstallationInfo, InstallationQuery, ListInstallations};
 pub use crate::actors::org::{

@@ -41,7 +41,7 @@ const SCHEMA: &str = "
         digest TEXT NOT NULL,
         config TEXT NOT NULL,
         org_id TEXT NOT NULL,
-        repo_id TEXT,
+        repo_id TEXT NOT NULL,
         path TEXT NOT NULL,
         disabled INTEGER NOT NULL DEFAULT 0
     );
@@ -72,11 +72,11 @@ pub struct InstallationSpec {
     pub digest: String,
     /// The installation's configuration, as JSON.
     pub config: String,
-    /// The org the installation belongs to.
+    /// The org the repository belongs to.
     pub org_id: String,
-    /// The repository, for a repository's installation.
-    pub repo_id: Option<String>,
-    /// `org` for an org's installation, `org/repo` for a repository's.
+    /// The repository the installation is on.
+    pub repo_id: String,
+    /// The repository's `org/repo` path.
     pub path: String,
 }
 
@@ -224,12 +224,12 @@ impl Actor for Extension {
         apply_schema(ctx.sql(), SCHEMA).await?;
         let id = key_id(ctx.key())?;
         let outbox = Outbox::new(format!("extension:{id}"));
-        let org = ctx
+        let repo = ctx
             .sql()
-            .query("SELECT org_id FROM _tartan_installation", None)
+            .query("SELECT repo_id FROM _tartan_installation", None)
             .await?;
-        if let Some(row) = org.rows.first() {
-            outbox.set_org(text(row, 0)?);
+        if let Some(row) = repo.rows.first() {
+            outbox.set_repo(text(row, 0)?);
         }
         Ok(Self {
             outbox,
@@ -264,7 +264,7 @@ impl Extension {
             digest: text(row, 2)?,
             config: text(row, 3)?,
             org_id: text(row, 4)?,
-            repo_id: crate::sql::optional_text(row, 5)?,
+            repo_id: text(row, 5)?,
             path: text(row, 6)?,
         }))
     }
@@ -308,7 +308,6 @@ impl Extension {
         let caller = ctx.client().ok().map(|client| {
             Arc::new(InstallationCaller {
                 client,
-                org_id: spec.org_id.clone(),
                 repo_id: spec.repo_id.clone(),
                 allowed: loaded.package.manifest.raw["permissions"]["calls"].clone(),
                 viewer: viewer.to_owned(),
@@ -435,7 +434,7 @@ impl Handler<Init> for Extension {
             .extensions
             .load(&spec.extension_id, &spec.version, &spec.digest)
             .await?;
-        self.outbox.set_org(spec.org_id.clone());
+        self.outbox.set_repo(spec.repo_id.clone());
         // A new package (or none yet) runs its migrations and `init`; a configuration change
         // alone does not.
         if current.as_ref().map(|c| c.digest.as_str()) != Some(spec.digest.as_str()) {
@@ -466,7 +465,7 @@ impl Handler<Init> for Extension {
                     param_text(spec.digest.as_str()),
                     param_text(spec.config.as_str()),
                     param_text(spec.org_id.as_str()),
-                    crate::sql::param_optional_text(spec.repo_id.clone()),
+                    param_text(spec.repo_id.as_str()),
                     param_text(spec.path.as_str()),
                 ]),
             )
@@ -660,8 +659,8 @@ fn to_extension_event(envelope: &Envelope, spec: &InstallationSpec) -> tartan_ex
         seq: envelope.seq,
         kind: envelope.kind.clone(),
         source: envelope.source.clone(),
-        node: spec.repo_id.clone().unwrap_or_else(|| spec.org_id.clone()),
-        repo: spec.repo_id.clone(),
+        node: spec.repo_id.clone(),
+        repo: Some(spec.repo_id.clone()),
         subject: None,
         actor: ExtensionActor {
             kind: ActorKind::System,
@@ -681,8 +680,8 @@ fn to_extension_event(envelope: &Envelope, spec: &InstallationSpec) -> tartan_ex
 fn slot_context(spec: &InstallationSpec, slot: Option<&str>, viewer: &str) -> SlotContext {
     SlotContext {
         slot: slot.map(str::to_owned),
-        node: spec.repo_id.clone().unwrap_or_else(|| spec.org_id.clone()),
-        repo: spec.repo_id.clone(),
+        node: spec.repo_id.clone(),
+        repo: Some(spec.repo_id.clone()),
         git_ref: None,
         path: None,
         entity: None,
@@ -723,12 +722,13 @@ fn valid_event_kind(kind: &str) -> bool {
         })
 }
 
-/// Serves an installation's `calls` import: checks its manifest's `permissions.calls` and its
-/// scope, then calls the target installation's tool as the same principal.
+/// Serves an installation's `calls` import: checks its manifest's `permissions.calls` and that
+/// the target is on the caller's own repository, then calls the target installation's tool as
+/// the same principal.
 struct InstallationCaller {
     client: rivetkit::client::Client,
-    org_id: String,
-    repo_id: Option<String>,
+    /// The caller's repository, the only one it may call into.
+    repo_id: String,
     /// `permissions.calls`: extension id to the tools it may call.
     allowed: Value,
     viewer: String,
@@ -756,12 +756,12 @@ impl ToolCaller for InstallationCaller {
         }
         let Some(repo_id) = repo else {
             return Ok(Err(ExtensionError::Invalid(
-                "repo is required: only repository installations can be called".to_owned(),
+                "repo is required: the caller's repository id".to_owned(),
             )));
         };
-        if self.repo_id.as_deref().is_some_and(|own| own != repo_id) {
+        if repo_id != self.repo_id {
             return Ok(Err(ExtensionError::Denied(
-                "an installation on a repository may only call into that repository".to_owned(),
+                "an installation may only call into its own repository".to_owned(),
             )));
         }
         let Ok(args) = serde_json::from_str::<Value>(args) else {
@@ -772,16 +772,6 @@ impl ToolCaller for InstallationCaller {
             [repo_id],
             GetOptions::default(),
         )?;
-        let Ok(status) = target.send(crate::RepoStatusQuery {}).await else {
-            return Ok(Err(ExtensionError::NotFound(format!(
-                "repository {repo_id}"
-            ))));
-        };
-        if status.org_id != self.org_id {
-            return Ok(Err(ExtensionError::Denied(
-                "the repository belongs to another org".to_owned(),
-            )));
-        }
         let installation = target
             .send(crate::InstallationQuery {
                 extension_id: extension.to_owned(),

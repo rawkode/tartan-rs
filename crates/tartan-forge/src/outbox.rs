@@ -17,7 +17,7 @@ use crate::actors::extension::DeliverEvents;
 use crate::actors::subscriber::Deliver;
 use crate::event_log::read;
 use crate::sql::{integer, param_integer, param_text};
-use crate::{ListRecipients, Recipient, RecipientScope, extension_handle, subscriber_handle};
+use crate::{ListRecipients, Recipient, extension_handle, subscriber_handle};
 
 /// The most events sent to a subscriber in one call.
 const BATCH: u32 = 100;
@@ -36,9 +36,9 @@ impl Action for Flush {
     const NAME: &'static str = "flush";
 }
 
-/// Flushes this source and every source below it: an org's repositories, and the extensions
-/// installed on each. Sent when a new recipient subscribes, so it receives the history it
-/// matches without waiting for the next event.
+/// Flushes a repository and every extension installed on it: the sources a repository's
+/// installation receives events from. Sent when an installation subscribes, so it receives the
+/// history it matches without waiting for the next event.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct FlushTree {}
 
@@ -52,8 +52,9 @@ impl Action for FlushTree {
 #[derive(Debug)]
 pub(crate) struct Outbox {
     source: String,
-    // The org the source belongs to, once known: org recipients receive its events.
-    org: std::sync::Mutex<Option<String>>,
+    // The repository the source belongs to, once known: the repository itself, or an extension
+    // installed on it. Installations on that repository receive its events.
+    repo: std::sync::Mutex<Option<String>>,
     // One flush at a time per source, so a subscriber sees each source's events in order.
     flushing: Mutex<()>,
 }
@@ -63,32 +64,35 @@ impl Outbox {
     pub(crate) fn new(source: String) -> Arc<Self> {
         Arc::new(Self {
             source,
-            org: std::sync::Mutex::new(None),
+            repo: std::sync::Mutex::new(None),
             flushing: Mutex::new(()),
         })
     }
 
-    /// Records the org the source belongs to.
-    pub(crate) fn set_org(&self, org_id: String) {
+    /// Records the repository the source belongs to.
+    pub(crate) fn set_repo(&self, repo_id: String) {
         *self
-            .org
+            .repo
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(org_id);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(repo_id);
     }
 
-    fn org(&self) -> Option<String> {
-        self.org
+    fn repo(&self) -> Option<String> {
+        self.repo
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
-    /// Whether events of this source may go to an installation receiving `scope`.
-    fn reaches(&self, scope: &RecipientScope) -> bool {
-        match scope {
-            RecipientScope::Source(source) => *source == self.source,
-            RecipientScope::Org(org_id) => self.org().as_deref() == Some(org_id.as_str()),
-        }
+    /// Whether events of this source go to `installation_id`, an installation on repository
+    /// `repo_id`: the source belongs to that repository and is not the installation itself, so
+    /// an extension that emits what it subscribes to cannot feed itself.
+    fn reaches(&self, installation_id: &str, repo_id: &str) -> bool {
+        self.repo().as_deref() == Some(repo_id)
+            && self
+                .source
+                .strip_prefix("extension:")
+                .is_none_or(|own| own != installation_id)
     }
 
     /// Flushes in the background, and schedules a retry if delivery fails.
@@ -137,9 +141,12 @@ impl Outbox {
         let pattern = match recipient {
             Recipient::Store { subscriber } => &subscriber.pattern,
             Recipient::Installation {
-                pattern, receives, ..
+                installation_id,
+                pattern,
+                repo_id,
+                ..
             } => {
-                if !self.reaches(receives) {
+                if !self.reaches(installation_id, repo_id) {
                     return Ok(());
                 }
                 pattern
