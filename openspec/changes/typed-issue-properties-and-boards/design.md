@@ -2,29 +2,42 @@
 
 ## Context
 
-Today `tartan-config` writes the repository's CUE files plus a forge schema file (and a default `cue.mod/module.cue` when there is none) to a directory and evaluates package `tartan` with cuengine. cuengine resolves module dependencies through `modconfig` (`CUE_REGISTRY`). Org installations, the org's `tartan` repository and contributions exist. CUE 0.17 resolves `import "tartan.dev/types"` from any registry module a `cue.mod/module.cue` depends on.
+Today packages are uploaded through `POST /-/api/packages` into object storage, and `tartan-config` evaluates a repository's CUE plus an injected schema file and default module. cuengine resolves module dependencies through `CUE_REGISTRY`. CUE resolves every module through one registry setting — there is no discovery from a module path's host — so a person's `cue` and the forge agree only if they use the same registry. Verified with CUE 0.17.1 and CNCF `distribution`: a module published with `source: kind: "self"` carries non-CUE files (`component.wasm`, `migrations/`), imports natively, and its files are present in the fetched module.
 
 ## Goals / Non-Goals
 
 **Goals:**
-- The golden rule: the configuration the forge applies is exactly `cue export` of the repository's root package `tartan`, run with the same registry configuration.
-- Typed properties and boards whose references are checked by CUE itself.
+- The golden rule: the forge applies exactly `cue export` of the repository's root package `tartan`, run against the forge's registry.
+- One artifact per extension version, available because the deployment says so.
+- Typed properties and boards whose references CUE itself checks.
 
 **Non-Goals:**
-- Running or choosing a registry: any OCI registry works; the operator configures `CUE_REGISTRY`.
-- Configuration shared across repositories (other than through published CUE modules a repository imports).
+- Pushing to the forge's registry from outside (only the forge's sync writes).
+- Configuration shared across repositories other than through modules a repository imports.
 - Checking `#Person` values against identities (none exist yet).
 
 ## Example
 
 ```cue
-// cue.mod/module.cue
+// /etc/tartan/forge.cue (the deployment's config map)
+package forge
+
+sources: "github.com/rawkode": "ghcr.io/rawkode/cue"
+modules: [
+	"tartan.dev/types@v0.1.0",
+	"github.com/rawkode/tartan-ext/issues@v0.6.0",
+	"github.com/rawkode/tartan-ext/kanban@v0.3.0",
+]
+```
+
+```cue
+// a repository: cue.mod/module.cue
 module: "example.com/acme-api"
 language: version: "v0.14.1"
 deps: {
-	"tartan.dev/types@v0":       v: "v0.1.0"
-	"tartan.dev/ext/issues@v0":  v: "v0.6.0"
-	"tartan.dev/ext/kanban@v0":  v: "v0.3.0"
+	"tartan.dev/types@v0":                          v: "v0.1.0"
+	"github.com/rawkode/tartan-ext/issues@v0":      v: "v0.6.0"
+	"github.com/rawkode/tartan-ext/kanban@v0":      v: "v0.3.0"
 }
 
 // tartan.cue
@@ -32,8 +45,8 @@ package tartan
 
 import (
 	"tartan.dev/types"
-	"tartan.dev/ext/issues"
-	"tartan.dev/ext/kanban"
+	"github.com/rawkode/tartan-ext/issues"
+	"github.com/rawkode/tartan-ext/kanban"
 )
 
 let props = extensions."rawkode.issues".settings.properties
@@ -51,16 +64,17 @@ extensions: "rawkode.kanban": kanban.#Extension & {
 
 ## Decisions
 
-- **Evaluate exactly what is committed.** The forge loads the package's files as today and evaluates them unchanged; it adds no schema and no module file. A configuration that imports modules needs its own `cue.mod/module.cue`, as it would locally. After evaluation, Rust checks the shape: each `extensions` key is an id, each entry has a semver `version` and object `settings`. Alternative: keep the injected schema — refused by the golden rule.
-- **Registry configuration is the operator's.** The gateway process's `CUE_REGISTRY` (and the CUE config it points to) is what cuengine uses, so `CUE_REGISTRY=… cue export` on a laptop gives the same result. The forge never rewrites module paths.
-- **`#Extension` fixes id and version.** Each extension module defines `#Extension: {version: "<its version>", settings: #Settings}`; the module's published version and the WASM package's version are released together (`scripts/publish-cue-modules.sh` reads the manifest version). The manifest's `config.module` names the module so documentation and tooling can point users to it.
-- **Kanban depends on Issues through its module.** Kanban's module imports `tartan.dev/ext/issues` and declares `#issues: issues.#Extension`; boards check `columns: #issues.settings.properties[columns.name]` (or a `{property, values}` subset, or `"state"`), so a lookalike or misspelt property fails natively. The repository binds `#issues: extensions."rawkode.issues"` — explicit, and evaluable by `cue eval`. At reconciliation the forge also refuses Kanban without Issues installed, which the manifest's `requires` declares.
-- **Repository only, by removal.** Org installations, the org configuration repository, contributions, `RecipientScope::Org`, org extension routes and org `FlushTree` go; the code and specs describe only what exists.
-- **Kanban views.** A view is lanes × columns, each cell holding groups. A multi-select lane or group lists a card under each value; cards without a value go under a final "none". Titles come from `labels`, falling back to values.
-- **Test registry.** Development and tests run CNCF `distribution` on a local port; `scripts/publish-cue-modules.sh` publishes the types, Issues and Kanban modules to the registry named by `CUE_REGISTRY` with `cue mod publish`.
+- **The registry is served by the gateway, read only.** CUE needs only the OCI Distribution read API: `GET /v2/`, `GET`/`HEAD /v2/<name>/manifests/<ref>`, `GET`/`HEAD /v2/<name>/blobs/<digest>` and `GET /v2/<name>/tags/list`. The gateway serves these from the object store (`registry/blobs/sha256/<hex>`, `registry/manifests/<name>/<tag>`), using `oci-spec` for the types; the only writer is the forge's own sync, so there is no push API, upload session or garbage collection. Alternatives: CNCF `distribution` (a second process, against a single-binary forge); `ferro-oci-server` (months old, metadata in memory); `container-registry` (unmaintained since 2024).
+- **Deployment configuration in CUE.** `TARTAN_CONFIG` names a CUE file or directory (package `forge`), evaluated natively with cuengine and no registry: `modules` (fully qualified `path@version`) and `sources` (module path prefix → OCI registry and repository prefix, in `CUE_REGISTRY` syntax). Other settings now in environment variables can move there later.
+- **Sync at startup, idempotent.** For each listed module the forge resolves its source, pulls the manifest and blobs with `oci-client` (ORAS) and writes them to the object store unless the registry already has that version with the same digest, and — when the module has a `tartan.json` — reads the manifest, component and migrations out of the module zip and registers the package (`id@version` and digest). A version whose digest changed is refused, keeping `id@version` immutable. Modules dropped from the list stay in the registry but their packages stop being available: configurations naming them are refused; existing installations keep running until their repository's configuration changes.
+- **`#Extension` fixes id and version.** The module's schema sets `version` to the module's version; the forge checks, when registering, that the module version and `tartan.json`'s version agree.
+- **Evaluate exactly what is committed.** No schema or module file is added; the forge's process environment sets `CUE_REGISTRY` to its own registry for cuengine. After evaluation Rust checks the shape: ids, semver versions, object settings.
+- **Kanban depends on Issues through its module.** Kanban's module imports Issues' and declares `#issues: issues.#Extension`; boards check `columns: #issues.settings.properties[columns.name]` (or a `{property, values}` subset, or `"state"`), so lookalikes and typos fail natively. Kanban's `tartan.json` `requires` `rawkode.issues`, which reconciliation enforces.
+- **Repository only, by removal**, as before: org installations, org configuration repository, contributions, `RecipientScope::Org`, org routes.
+- **Kanban views.** Lanes × columns, each cell holding groups; multi-select under each value; "none" last; titles from labels.
 
 ## Risks / Trade-offs
 
-- [The forge's evaluation now needs the registry reachable] → An unreachable registry refuses the configuration and nothing changes; the error says which module could not be fetched.
-- [Breaking: org boards across repositories are gone] → Accepted by the golden rule; cross-repository views can return later as something CUE can evaluate natively (for example a module repositories publish and an org repository imports).
-- [Module and package versions released together] → One script publishes both from the manifest version; a mismatch is refused at reconciliation because `#Extension`'s version must name a published package.
+- [The forge depends on its registry for every evaluation] → It runs beside the forge; an unreachable registry refuses the configuration and nothing changes.
+- [Source registries unreachable at startup] → Modules already in the forge's registry keep working; the sync reports what it could not copy and retries on the next start.
+- [Breaking: the publish API and org boards are gone] → No deployments exist; the deployment configuration replaces publishing.

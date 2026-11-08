@@ -1,26 +1,26 @@
 # Spec Delta
 
 ## Purpose
-Extension settings are typed by CUE modules in any OCI registry, which repositories import, so configuration evaluates natively.
+An extension is one CUE module carrying its settings schema and its package, and repositories' configuration evaluates natively against the modules they import.
 
 ## ADDED Requirements
 
-### Requirement: Extensions publish a CUE module
-An extension's settings schema SHALL be a CUE module in an OCI registry defining `#Extension`, which fixes the extension's `version` and types its `settings`. The module version SHALL equal the extension package's version.
+### Requirement: An extension is one CUE module
+An extension version SHALL be one CUE module holding its settings schema and its package (`tartan.json`, `component.wasm`, migrations). The schema SHALL define `#Extension`, which fixes the extension's `version` to the module's version and types its `settings`.
 
 #### Scenario: Version from the module
-- **WHEN** a repository sets `extensions: "rawkode.issues": issues.#Extension & {settings: …}` with `tartan.dev/ext/issues@v0` at `v0.6.0`
+- **WHEN** a repository sets `extensions: "rawkode.issues": issues.#Extension & {settings: …}` with `github.com/rawkode/tartan-ext/issues@v0` at `v0.6.0`
 - **THEN** the configuration installs Issues 0.6.0
 
 ### Requirement: Configuration evaluates natively
-The forge SHALL evaluate a repository's configuration exactly as committed, adding no files, with the CUE registry configuration it is run with (`CUE_REGISTRY`), so `cue export` of the root package `tartan` with the same registry gives the configuration the forge applies. A module the registry cannot provide SHALL make the configuration invalid.
+The forge SHALL evaluate a repository's configuration exactly as committed, adding no files, against its own registry, so `cue export` of the root package `tartan` with `CUE_REGISTRY` set to the forge gives the configuration the forge applies. A module the forge does not serve SHALL make the configuration invalid.
 
 #### Scenario: Same as cue export
 - **WHEN** a repository's configuration imports Issues' and Kanban's modules
 - **THEN** the forge applies the value `cue export` gives for package `tartan`
 
-#### Scenario: Unreachable module
-- **WHEN** a configuration depends on a module version the registry does not have
+#### Scenario: Unavailable module
+- **WHEN** a configuration depends on a module version the deployment does not list
 - **THEN** the configuration is refused, naming the module
 
 ### Requirement: Settings that do not fit are refused
