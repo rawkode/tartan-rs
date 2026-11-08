@@ -1,0 +1,86 @@
+use anyhow::Result;
+use async_trait::async_trait;
+
+/// One SQLite value.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SqlValue {
+    /// NULL.
+    Null,
+    /// A 64-bit integer.
+    Integer(i64),
+    /// A 64-bit float.
+    Real(f64),
+    /// Text.
+    Text(String),
+    /// A blob.
+    Blob(Vec<u8>),
+}
+
+/// The result of one statement.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SqlRows {
+    /// The result's column names.
+    pub columns: Vec<String>,
+    /// The rows, each with one value per column.
+    pub values: Vec<Vec<SqlValue>>,
+    /// How many rows the statement inserted, updated or deleted.
+    pub rows_written: u64,
+}
+
+/// An installation's SQLite database.
+#[async_trait]
+pub trait SqlBackend: Send + Sync {
+    /// Runs one statement with positional parameters.
+    async fn exec(&self, query: &str, params: Vec<SqlValue>) -> Result<SqlRows>;
+
+    /// Runs a script of statements without parameters, such as a migration.
+    async fn exec_script(&self, script: &str) -> Result<()>;
+}
+
+/// The prefix of every table the host keeps in an installation's database.
+pub(crate) const HOST_TABLE_PREFIX: &str = "_tartan_";
+
+/// Why the extension's statement `query` may not run, or `None` when it may.
+///
+/// This is a guard against mistakes, not a sandbox: it keeps an extension's statements off the
+/// host's tables and away from statements that change the connection, and in a read-only call it
+/// admits only a single `SELECT` or `WITH` query.
+pub fn check_statement(query: &str, read_only: bool) -> Option<&'static str> {
+    let lowered = query.to_ascii_lowercase();
+    let trimmed = lowered.trim_start();
+    if lowered.contains(HOST_TABLE_PREFIX) {
+        return Some("the host's tables are not accessible");
+    }
+    let leading = trimmed.split_whitespace().next().unwrap_or_default();
+    if matches!(leading, "attach" | "detach" | "pragma" | "vacuum") {
+        return Some("this statement is not allowed");
+    }
+    if read_only {
+        let single = !trimmed.trim_end().trim_end_matches(';').contains(';');
+        if !single || !matches!(leading, "select" | "with") {
+            return Some("read-only");
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_statement;
+
+    #[test]
+    fn guards_host_tables_and_connection_statements() {
+        assert!(check_statement("SELECT * FROM issues", false).is_none());
+        assert!(check_statement("select * from _TARTAN_kv", false).is_some());
+        assert!(check_statement("  PRAGMA query_only = 0", false).is_some());
+        assert!(check_statement("ATTACH 'x' AS y", false).is_some());
+    }
+
+    #[test]
+    fn read_only_calls_admit_one_query() {
+        assert!(check_statement("SELECT 1", true).is_none());
+        assert!(check_statement("WITH a AS (SELECT 1) SELECT * FROM a;", true).is_none());
+        assert!(check_statement("INSERT INTO t VALUES (1)", true).is_some());
+        assert!(check_statement("SELECT 1; DELETE FROM t", true).is_some());
+    }
+}

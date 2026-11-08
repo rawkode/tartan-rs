@@ -41,8 +41,15 @@ browser ──► tartan gateway ──► actors on Rivet, each with its own SQ
 
 ### Goal 2: WASM extensions
 
-Extensions are WebAssembly components run with wasmtime, one actor per installation scope with its own SQLite,
-subscribing to events through the same outbox. Not started.
+Extensions are WebAssembly components of the `tartan:ext@0.1.0` world (`wit/tartan.wit`), so existing extensions
+such as Issues run unchanged.
+
+1. A wasmtime host for the world: guarded SQL against the installation's database, migrations, configuration,
+   clock and randomness, buffered effects, and fuel, memory and time limits per call. **Done:** the Issues
+   component creates, lists and renders issues on it.
+2. Packages in object storage and installations on a repository, each an actor with its own SQLite; tools, render
+   and actions over the API. Not started.
+3. `on-event` subscriptions and `effects.emit` through the outbox. Not started.
 
 ### Goal 3: the web frontend
 
@@ -53,6 +60,7 @@ Astro, TypeScript and Vue against the gateway's API. Not started.
 | Crate | Holds |
 | --- | --- |
 | `tartan-forge` | the actors, the event log and outbox, the walgit client and webhook contract |
+| `tartan-extensions` | the wasmtime host of the `tartan:ext` world, packages and migrations |
 | `tartan` | the binary: the HTTP gateway and the actor host |
 
 ## Running
@@ -65,6 +73,9 @@ Needs Rust 1.98, `git`, `rustfs` and `rclone` on `PATH`, and a walgit binary bui
 WALGIT_BIN=/path/to/walgit scripts/e2e.sh   # fmt, clippy and every test, git included
 WALGIT_BIN=/path/to/walgit scripts/dev.sh   # RustFS, the Rivet engine, walgit and the gateway
 ```
+
+`e2e.sh` also needs `TARTAN_ISSUES_SRC` (the Issues extension crate) and `wasm-tools`: `scripts/build-extension.sh`
+packages an extension crate as `component.wasm`, `tartan.json` and its migrations.
 
 `scripts/rivet-engine.sh` downloads the Rivet engine matching the `rivetkit` crate and verifies its checksum.
 

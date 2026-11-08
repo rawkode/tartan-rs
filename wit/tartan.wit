@@ -1,0 +1,171 @@
+// Tartan extension ABI: sync-only, no JSPI.
+// Toolchain: cargo build --target wasm32-unknown-unknown --release
+//   → wasm-tools component new → wasm-tools component wit (import record for
+//   the publish-time import ⊆ permissions check)
+//   → jco transpile --instantiation sync --no-typescript.
+// WIT has no optional exports: the Rust SDK (`tartan-ext`) supplies defaults.
+// During `render` and `provide-context` the shim runs `sql.exec` read-only and
+// answers every `effects` import with `denied("read-only")`.
+package tartan:ext@0.1.0;
+
+interface types {
+  // WIT has no recursive types: payloads and UI trees are JSON strings.
+  type json = string;
+
+  enum actor-kind { user, agent, ext, system }
+
+  record actor {
+    kind: actor-kind,
+    id: string,
+    on-behalf-of: option<string>,
+  }
+
+  record entity-ref {
+    kind: string,
+    id: string,
+  }
+
+  enum install-mode { enforce, shadow }
+
+  // Derived server-side and confined to the installation subtree (K12).
+  // `slot` is the catalogue slot (`repo.tab`, …) of the contribution being
+  // rendered or acted on; none for gates and tools.
+  // `extra` carries kernel-derived context without a dedicated field
+  // (`route`, `revision`, `lines`), as a JSON object.
+  record slot-context {
+    slot: option<string>,
+    node: string,
+    repo: option<string>,
+    git-ref: option<string>,
+    path: option<string>,
+    entity: option<entity-ref>,
+    viewer: option<actor>,
+    mode: install-mode,
+    extra: option<json>,
+  }
+
+  // `node` is the node the event belongs to; `shadow` marks events from a
+  // shadow installation.
+  record event {
+    id: string,
+    seq: u64,
+    kind: string,
+    source: string,
+    node: string,
+    repo: option<string>,
+    subject: option<entity-ref>,
+    actor: actor,
+    caused-by: option<string>,
+    correlation: option<string>,
+    time-ms: u64,
+    depth: u8,
+    shadow: bool,
+    data: json,
+  }
+
+  // `denied` carries the reason: "scope", "read-only", "shadow", "grant", …
+  variant error {
+    denied(string),
+    not-found(string),
+    invalid(string),
+    conflict(string),
+    unavailable(string),
+    internal(string),
+  }
+
+  enum verdict { allow, advise, veto }
+
+  record gate-decision {
+    verdict: verdict,
+    message: string,
+    // JSON array of {path, line, text}; "[]" when none.
+    annotations: json,
+    // The gate scanned the full change although the input was truncated, so
+    // `onTruncated` does not apply.
+    full-scan: bool,
+  }
+
+  enum severity { info, warn, critical }
+
+  // `caps.notify.send` options: `kind` is a notice kind; `repo` and
+  // `lane` are confined to the installation subtree (K12).
+  record notify-options {
+    kind: string,
+    severity: severity,
+    dedupe-key: option<string>,
+    repo: option<string>,
+    lane: option<string>,
+  }
+}
+
+// Facet SQLite, synchronous.
+interface sql {
+  use types.{error};
+
+  variant value {
+    null,
+    integer(s64),
+    real(f64),
+    text(string),
+    blob(list<u8>),
+  }
+
+  record rows {
+    columns: list<string>,
+    values: list<list<value>>,
+    rows-written: u64,
+  }
+
+  exec: func(query: string, params: list<value>) -> result<rows, error>;
+}
+
+interface kv {
+  get: func(key: string) -> option<list<u8>>;
+  put: func(key: string, value: list<u8>);
+  delete: func(key: string) -> bool;
+  list-keys: func(prefix: string, limit: u32) -> list<string>;
+}
+
+// wasm32-unknown-unknown has no clock or entropy.
+interface host {
+  use types.{json};
+
+  enum level { debug, info, warn, error }
+
+  log: func(level: level, msg: string);
+  // Installation config (settings form).
+  config: func() -> json;
+  now-ms: func() -> u64;
+  random: func(len: u32) -> list<u8>;
+  ulid: func() -> string;
+}
+
+// Buffered by the shim; applied through KernelCaps after the export returns OK.
+interface effects {
+  use types.{error, json, entity-ref, notify-options};
+
+  emit: func(kind: string, subject: option<entity-ref>, data: json) -> result<_, error>;
+  notify: func(principal: string, options: notify-options, text: string, data: json) -> result<_, error>;
+  contribute-note: func(change-id: string, section: json) -> result<_, error>;
+  set-timer: func(key: string, at-ms: u64);
+}
+
+world extension {
+  use types.{slot-context, event, error, json, gate-decision};
+
+  import sql;
+  import kv;
+  import host;
+  import effects;
+
+  export init: func() -> result<_, error>;
+  export on-event: func(e: event) -> result<_, error>;
+  export on-timer: func(key: string) -> result<_, error>;
+  export gate: func(point: string, input: json, ctx: slot-context) -> result<gate-decision, error>;
+  export echo: func(e: event, input: json) -> result<list<string>, error>;
+  // Returns a tartan-ui@1 document.
+  export render: func(slot: string, ctx: slot-context, props: json) -> result<json, error>;
+  export on-action: func(action: string, payload: json, ctx: slot-context) -> result<json, error>;
+  export call-tool: func(name: string, args: json, ctx: slot-context) -> result<json, error>;
+  export provide-context: func(req: json) -> result<json, error>;
+}
