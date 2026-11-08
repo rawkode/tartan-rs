@@ -1,0 +1,21 @@
+schema: spec-driven
+
+context: |
+  Tartan is an event-driven Git forge. The backend is Rust on Rivet actors (one SQLite database per
+  actor); walgit hosts Git in an object store (RustFS locally); extensions are WebAssembly
+  components of the tartan:ext world (wit/tartan.wit) run in wasmtime.
+  Extensions and their settings come only from tartan.cue committed in repositories; the org's
+  configuration lives in its `tartan` repository. Nothing is installed or configured through the
+  HTTP API.
+  Every state change appends an event in the same transaction; delivery is in order per source
+  and at least once.
+  Prefer maintained open-source components over building infrastructure.
+  The forge crates are AGPL-3.0-or-later (they link cuengine); sdk/ and extensions/ are MIT.
+  Verification is scripts/e2e.sh: fmt, clippy -D warnings, unit tests, and end-to-end tests
+  against the real Rivet engine, walgit and RustFS.
+  User and operator documentation is a Nimbus (Astro) site in docs/ that changes with each change.
+
+rules:
+  tasks:
+    - Include a task to update the Nimbus docs in docs/ for any user- or operator-visible change
+    - End with a task to run scripts/e2e.sh
