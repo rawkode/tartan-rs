@@ -34,13 +34,15 @@ cue mod get github.com/rawkode/tartan-ext/issues@v0.6.0
 
 A module version is published once, so a change to an extension needs a new version in its `tartan.json` (or a fresh `.dev`) before the forge sees it.
 
+To try the forge with seeded issues and boards in the web interface, run the [demo](/demo/) instead.
+
 ## Run the tests
 
 ```sh
 WALGIT_BIN=/path/to/walgit REGISTRY_BIN=/path/to/registry scripts/e2e.sh
 ```
 
-It checks formatting and lints, then runs every test: unit tests, the extensions' own tests, and end-to-end tests against the real Rivet engine, walgit and RustFS. For the end-to-end tests it starts a fresh source registry and fixes the address the forge under test serves its registry on (`CUE_REGISTRY`); the tests publish extension modules with `cue mod publish` and sync them into the forge, as a deployment does at startup.
+It builds and lints the docs, checks formatting and lints, then runs every test: unit tests, the extensions' own checks and tests, and end-to-end tests against the real Rivet engine, walgit and RustFS. For the end-to-end tests it starts a fresh source registry and fixes the address the forge under test serves its registry on (`CUE_REGISTRY`). It builds Issues and Kanban as modules and publishes them, with `tartan.dev/types`, to the source registry, then runs the modules' own CUE checks (`cue/types/test.sh` and `extensions/kanban/cue/test.sh`). The tests sync those modules, and test extension modules they publish with `cue mod publish`, into the forge under test, as a deployment does at startup; the Kanban and Git tests push repository configurations that import the modules the forge serves.
 
 ## Configuration
 

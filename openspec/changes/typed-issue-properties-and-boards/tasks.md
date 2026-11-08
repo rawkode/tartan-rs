@@ -30,4 +30,4 @@
 
 ## 5. Verification
 
-- [ ] 5.1 Run `scripts/e2e.sh` and verify every suite passes
+- [x] 5.1 Run `scripts/e2e.sh` and verify every suite passes

@@ -1,0 +1,62 @@
+---
+title: Demo
+description: One command that runs a seeded forge and the web interface, with typed issues and Kanban boards to try.
+sidebar:
+  order: 2.2
+---
+
+`scripts/demo.sh` runs the whole forge on one machine, seeds it with an org, a repository, its configuration and a dozen issues, and starts the [web interface](/web/). It needs the same tools as [Running locally](/running-locally/#what-you-need), plus `npm`.
+
+```sh
+WALGIT_BIN=/path/to/walgit REGISTRY_BIN=/path/to/registry CUE_BIN=/path/to/cue scripts/demo.sh
+```
+
+When it is ready it prints the addresses. The web interface takes the next free port when 4321 is taken, and the printed addresses say which.
+
+| What | Where |
+| --- | --- |
+| Web interface | `http://127.0.0.1:4321/#/acme/api` |
+| Triage board | `http://127.0.0.1:4321/#/acme/api/boards/triage` |
+| Web app board | `http://127.0.0.1:4321/#/acme/api/boards/web` |
+| Gateway API | `http://127.0.0.1:8080/-/api`, with `Authorization: Bearer dev-admin-token` |
+| Git | `http://127.0.0.1:9200/acme/api.git`; pushes send `Authorization: Bearer dev-git-host-token` |
+
+Press Ctrl-C to stop every process it started. The credentials are for development only.
+
+## What runs
+
+| Process | Address | Role |
+| --- | --- | --- |
+| RustFS | `127.0.0.1:9100` | the object store for Git, the forge's registry and extension packages |
+| walgit | `127.0.0.1:9200` | the Git host, posting ref events to the gateway |
+| distribution | `127.0.0.1:9300` | the source registry the extension modules are published to |
+| Rivet engine | `127.0.0.1:6420` | started by the forge for its actors |
+| Tartan gateway | `127.0.0.1:8080` | the API, and the forge's own CUE registry |
+| Web interface | `127.0.0.1:4321`, or the next free port | the Astro dev server, forwarding `/-/` and `/v2/` to the gateway |
+
+The script builds Issues and Kanban as modules with `scripts/build-extension.sh` and publishes them, with `tartan.dev/types`, to the source registry. The forge's [deployment configuration](/deploying/#the-deployment-configuration) lists the three modules, so at startup the forge copies them into its own registry and registers the extension packages inside them. The forge runs with `CUE_REGISTRY=127.0.0.1:8080+insecure`: every configuration's imports resolve through the forge itself.
+
+## What it seeds
+
+- Org `acme` and repository `acme/api`.
+- A configuration pushed with `git push` through walgit, as a person would: `cue.mod/module.cue` depends on the types, Issues and Kanban modules, and `tartan.cue` installs both extensions through their `#Extension`s. Before pushing, the script evaluates it with plain `cue export` against the forge's registry, which is exactly what the forge applies.
+- Issues' properties, one of each [property type](/property-types/) the demo uses: `status` (a select with labels), `priority` (select), `assignee` (person), `estimate` (number), `due` (date), `notes` (Markdown long text), `link` (URL), `budget` (money in GBP) and `labels` (multi-select).
+- Two [Kanban](/kanban/) boards: **Triage**, with columns by status, lanes by priority and groups by project; and **Web app**, the `web` project's board, with some of the status columns, lanes by label and groups by assignee.
+- Twelve issues across the projects `web`, `crates/api` and `crates/cli` (and some with none), with a mix of properties; one is closed.
+
+The configuration is the repository's own: clone it, change a board or a property, and push again to see the forge apply it. A configuration that does not evaluate (for example a board whose columns are not one of Issues' select properties) is refused, and the repository keeps what it had.
+
+```sh
+git clone http://127.0.0.1:9200/acme/api.git && cd api
+CUE_REGISTRY=127.0.0.1:8080+insecure cue export
+git -c "http.extraHeader=Authorization: Bearer dev-git-host-token" push origin main
+```
+
+## State
+
+Everything the demo keeps is in `.dev/demo`: the object store, the source registry, the Rivet engine's data, the logs (`.dev/demo/logs`) and the seeded repository's working copy.
+
+- `scripts/demo.sh` starts from nothing: it deletes `.dev/demo` and seeds again, so every run shows the same demo.
+- `scripts/demo.sh --keep` reuses the previous demo's state, with the changes made in it, and seeds only when an earlier run never finished seeding.
+
+The demo uses the same ports as `scripts/dev.sh`, so run one at a time; the script stops early if one of the forge's ports is taken.

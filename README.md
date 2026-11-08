@@ -2,7 +2,8 @@
 
 An event-driven Git forge. The backend is Rust on [Rivet Actors](https://rivet.dev); Git hosting and repository storage
 are [walgit](https://github.com/tobi/walgit), which keeps repositories in an S3-compatible object store
-([RustFS](https://rustfs.com) in development). The web frontend will be Astro, TypeScript and Vue.
+([RustFS](https://rustfs.com) in development). The web interface (`web/`) is Astro with Vue single-file components and
+Panda CSS.
 
 ## Architecture
 
@@ -74,13 +75,15 @@ Not yet: gates (walgit has no pre-receive hook to call them from), `notify` and 
 
 | Extension | Installs on | Does |
 | --- | --- | --- |
-| `extensions/issues` (`rawkode.issues`) | a repository | numbered issues with configured fields; emits `x.rawkode.issues.issue.created` and `.updated` snapshots |
+| `extensions/issues` (`rawkode.issues`) | a repository | numbered issues with typed properties from `tartan.dev/types`; emits `x.rawkode.issues.issue.created` and `.updated` snapshots |
 | `extensions/kanban` (`rawkode.kanban`) | a repository | boards for the repository or a project, with columns, lanes and groups from Issues' properties; cards follow Issues' snapshots, and moving one calls Issues' `update`; requires Issues |
 | `extensions/fixture` (`tartan.fixture`) | a repository | test extension for event delivery |
 
 ### Goal 3: the web frontend
 
-Astro, TypeScript and Vue against the gateway's API. Not started.
+Astro, Vue single-file components and Panda CSS against the gateway's API (`web/`). **Done:** orgs and
+repositories, a repository's configuration steps, issues with every property type, and Kanban boards with drag and
+drop.
 
 ## Layout
 
@@ -88,7 +91,20 @@ Astro, TypeScript and Vue against the gateway's API. Not started.
 | --- | --- |
 | `tartan-forge` | the actors, the event log and outbox, the walgit client and webhook contract |
 | `tartan-extensions` | the wasmtime host of the `tartan:ext` world, packages and migrations |
-| `tartan` | the binary: the HTTP gateway and the actor host |
+| `tartan` | the binary: the HTTP gateway, the forge's CUE registry and the actor host |
+| `tartan-config` | repository and deployment configuration, evaluated natively as CUE |
+
+## Demo
+
+```sh
+WALGIT_BIN=/path/to/walgit REGISTRY_BIN=/path/to/registry CUE_BIN=/path/to/cue scripts/demo.sh
+```
+
+Starts RustFS, walgit, a source CUE registry with the types, Issues and Kanban modules, the Rivet engine, the gateway
+and the web interface, then seeds org `acme` and repository `acme/api`: a configuration pushed with `git` that
+installs Issues with typed properties and Kanban with two boards, and a dozen issues. Open
+`http://127.0.0.1:4321/#/acme/api/boards/triage`; the admin token is `dev-admin-token`. Ctrl-C stops everything.
+State lives in `.dev/demo`; each run starts fresh, and `--keep` reuses the previous one. See `docs/` (Demo).
 
 ## Running
 
@@ -101,8 +117,9 @@ WALGIT_BIN=/path/to/walgit scripts/e2e.sh   # fmt, clippy and every test, git in
 WALGIT_BIN=/path/to/walgit scripts/dev.sh   # RustFS, the Rivet engine, walgit and the gateway
 ```
 
-`e2e.sh` also needs `wasm-tools` and the `wasm32-unknown-unknown` target: `scripts/build-extension.sh` packages an
-extension crate (`extensions/*`, built on `sdk/rust/tartan-ext`) as `component.wasm`, `tartan.json` and its
+Both also need `REGISTRY_BIN` (a CNCF distribution `registry` binary), `cue` (or `CUE_BIN`), `jq`, `wasm-tools` and
+the `wasm32-unknown-unknown` target: `scripts/build-extension.sh` builds an extension crate (`extensions/*`, built on
+`sdk/rust/tartan-ext`) into a CUE module directory holding its CUE, `component.wasm`, `tartan.json` and its
 migrations.
 
 `scripts/rivet-engine.sh` downloads the Rivet engine matching the `rivetkit` crate and verifies its checksum.
