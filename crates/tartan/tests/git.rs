@@ -1,9 +1,9 @@
 //! Git through the whole stack: RustFS, walgit, the Rivet engine and the gateway, driven by the
 //! `git` CLI.
 //!
-//! Needs `WALGIT_BIN`, `RIVET_ENGINE_BINARY_PATH`, `TARTAN_ISSUES_PACKAGE`, the module source
-//! (`TARTAN_MODULE_SOURCE`, `CUE_BIN`), and `rustfs`, `rclone` and `git` on `PATH`;
-//! `scripts/e2e.sh` provides them.
+//! Needs `WALGIT_BIN`, `RIVET_ENGINE_BINARY_PATH`, the first-party modules
+//! (`TARTAN_EXTENSION_MODULES`, `TARTAN_MODULE_SOURCE`, `CUE_REGISTRY`), and `rustfs`, `rclone`
+//! and `git` on `PATH`; `scripts/e2e.sh` provides them.
 
 mod common;
 
@@ -28,6 +28,20 @@ const S3_ACCESS_KEY: &str = "tartantest";
 const S3_SECRET_KEY: &str = "tartantestsecret";
 const BUCKET: &str = "tartan-test";
 const DEADLINE: Duration = Duration::from_secs(60);
+
+/// The configuration the test pushes: Issues, through its module, with typed properties.
+const ISSUES_CONFIG: &str = r#"package tartan
+
+import (
+	"tartan.dev/types"
+	"github.com/rawkode/tartan-ext/issues"
+)
+
+extensions: "rawkode.issues": issues.#Extension & {settings: properties: {
+	status:   types.#Select & {options: ["todo", "done"], default: "todo"}
+	estimate: types.#Number & {min: 0}
+}}
+"#;
 
 fn free_port() -> u16 {
     StdListener::bind("127.0.0.1:0")
@@ -407,27 +421,23 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
         .expect("read a missing file");
     assert_eq!(missing, None);
 
-    // A tartan.cue pushed to main installs Issues from the module the forge synced.
-    let issues = tartan_extensions::ExtensionPackage::from_dir(
-        std::env::var("TARTAN_ISSUES_PACKAGE")
-            .expect("TARTAN_ISSUES_PACKAGE names the Issues package")
-            .as_ref(),
-    )
-    .expect("the Issues package");
+    // A configuration pushed to main installs Issues through the module the forge synced: the
+    // repository's module depends on Issues' module, and its tartan.cue unifies the entry with
+    // Issues' #Extension.
     let modules = common::ModuleSource::default();
-    modules.publish(&issues, &issues.manifest.raw, None).await;
+    modules.add_extension_modules();
     let report = common::sync(&modules.deployment(), &registry, &client, &extensions).await;
+    let mut registered = report.registered.clone();
+    registered.sort();
     assert_eq!(
-        report.registered,
-        vec![format!("rawkode.issues@{}", issues.manifest.version)],
+        registered,
+        vec!["rawkode.issues@0.6.0", "rawkode.kanban@0.3.0"],
         "{report:?}"
     );
-    let config = format!(
-        "package tartan\n\nextensions: \"rawkode.issues\": version: \"{}\"\n",
-        issues.manifest.version
-    );
-    std::fs::write(work.join("tartan.cue"), config).expect("write");
-    run(&work, "git", &["add", "tartan.cue"]).await;
+    std::fs::create_dir_all(work.join("cue.mod")).expect("mkdir");
+    std::fs::write(work.join("cue.mod/module.cue"), common::repository_module()).expect("write");
+    std::fs::write(work.join("tartan.cue"), ISSUES_CONFIG).expect("write");
+    run(&work, "git", &["add", "cue.mod/module.cue", "tartan.cue"]).await;
     run(&work, "git", &["commit", "--quiet", "-m", "Install Issues"]).await;
     push("main").await;
     let start = Instant::now();
@@ -454,10 +464,15 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
         &http,
         &base,
         "/-/api/orgs/acme/repos/api/extensions/rawkode.issues/tools/create",
-        json!({"title": "Installed by Git"}),
+        json!({"title": "Installed by Git", "properties": {"estimate": 2}}),
     )
     .await;
     assert_eq!(created["issue"]["number"], 1);
+    assert_eq!(
+        created["issue"]["properties"],
+        json!({"status": "todo", "estimate": 2}),
+        "{created}"
+    );
 
     actors.shutdown().await;
 }

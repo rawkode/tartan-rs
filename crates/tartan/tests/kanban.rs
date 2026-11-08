@@ -1,327 +1,351 @@
-//! Kanban boards over an org's issues, defined in `tartan.cue`: the org's boards in its
-//! `tartan` repository, and a repository's and a project's boards contributed by that
-//! repository. Cards follow Issues' events; moving a card updates the issue through a permitted
-//! call.
+//! Kanban boards over a repository's issues, configured in its committed CUE: the
+//! repository's module depends on `tartan.dev/types`, Issues' module and Kanban's module, which
+//! the forge serves from its own registry, and its `tartan.cue` installs both extensions through
+//! their `#Extension`s, with boards whose columns, lanes and groups are Issues' properties. Cards
+//! follow Issues' events; moving a card updates the issue through Kanban's permitted call.
 //!
-//! Needs `RIVET_ENGINE_BINARY_PATH`, `TARTAN_ISSUES_PACKAGE` and `TARTAN_KANBAN_PACKAGE`
-//! (see `scripts/e2e.sh`).
+//! Needs `RIVET_ENGINE_BINARY_PATH`, `TARTAN_EXTENSION_MODULES`, `TARTAN_MODULE_SOURCE`,
+//! `CUE_REGISTRY` and `CUE_BIN` (see `scripts/e2e.sh`).
 
 mod common;
 
-use common::{Forge, package};
+use std::time::Duration;
+
+use common::{Forge, repository_module};
 use serde_json::{Value, json};
 
-const COLUMNS: &str = r#"[{value: "todo", title: "To do"}, {value: "doing", title: "Doing"}, {value: "done", title: "Done"}]"#;
-
-fn issues(version: &str) -> String {
-    format!(
-        r#"extensions: "rawkode.issues": {{
-	version: "{version}"
-	settings: fields: status: {{type: "select", options: ["todo", "doing", "done"], default: "todo"}}
+/// Issues' entry: the repository's typed properties.
+const ISSUES: &str = r#"
+extensions: "rawkode.issues": issues.#Extension & {settings: properties: {
+	status: types.#Select & {
+		options: ["todo", "doing", "done"]
+		labels: {todo: "To do", doing: "In progress", done: "Done"}
+		default: "todo"
+	}
+	priority: types.#Select & {options: ["p1", "p2", "p3"], labels: p1: "Urgent"}
+	labels:   types.#MultiSelect & {options: ["bug", "docs"]}
+	owner:    types.#Person
+	estimate: types.#Number & {min: 0}
 }}
-"#
-    )
+"#;
+
+/// Kanban's entry: a board with lanes by priority and groups by project, a project's board
+/// with some status columns, lanes by a multi-select and groups by a person, and a state board.
+const KANBAN: &str = r#"
+let props = extensions."rawkode.issues".settings.properties
+
+extensions: "rawkode.kanban": kanban.#Extension & {
+	#issues: extensions."rawkode.issues"
+	settings: boards: {
+		triage: {name: "Triage", columns: props.status, lanes: props.priority, group: "project"}
+		lsp: {
+			name:    "Language server"
+			project: "crates/lsp"
+			columns: {property: props.status, values: ["todo", "done"]}
+			lanes:   props.labels
+			group:   props.owner
+		}
+		open: {columns: "state", lanes: "project"}
+	}
+}
+"#;
+
+/// The repository's configuration: its module, and `tartan.cue` with `entries`.
+fn config(entries: &str) -> Vec<(String, String)> {
+    vec![
+        ("cue.mod/module.cue".to_owned(), repository_module()),
+        (
+            "tartan.cue".to_owned(),
+            format!(
+                "package tartan\n\nimport (\n\t\"tartan.dev/types\"\n\t\"github.com/rawkode/tartan-ext/issues\"\n\t\"github.com/rawkode/tartan-ext/kanban\"\n)\n\n// Keeps every import used whichever entries are written.\n_uses: [types.#Property, issues.#Extension, kanban.#Extension]\n{entries}"
+            ),
+        ),
+    ]
 }
 
-/// The API repository: Issues, and the boards it contributes to the org's Kanban.
-fn api_config(issues_version: &str, lsp_name: &str) -> String {
-    format!(
-        r#"package tartan
-
-{issues}
-extensions: "rawkode.kanban": settings: boards: {{
-	api: {{name: "API", field: "status", columns: {COLUMNS}}}
-	lsp: {{name: "{lsp_name}", field: "status", project: "crates/lsp", columns: {COLUMNS}}}
-}}
-"#,
-        issues = issues(issues_version)
-    )
+async fn push(forge: &Forge, repo: &str, files: &[(String, String)]) {
+    let files: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, c)| (p.as_str(), c.as_str()))
+        .collect();
+    forge.push_files(repo, &files).await;
 }
 
-/// The org's configuration: Kanban with its org boards, and the same component without the
-/// permission to call Issues.
-fn org_config(kanban_version: &str) -> String {
-    format!(
-        r#"package tartan
-
-let statuses = {COLUMNS}
-
-extensions: "rawkode.kanban": {{
-	version: "{kanban_version}"
-	settings: boards: {{
-		org: {{name: "Everything", field: "status", "columns": statuses}}
-		web: {{field: "status", "columns": statuses, scope: {{kind: "repo", repo: "acme/web"}}}}
-		state: {{field: "state", columns: [{{value: "open"}}, {{value: "closed"}}]}}
-		bad: {{field: "status", columns: []}}
-	}}
-}}
-extensions: "rawkode.kanban-locked": {{
-	version: "{kanban_version}"
-	settings: boards: org: {{field: "status", "columns": statuses}}
-}}
-"#
-    )
-}
-
-/// The cards in each column of a board view, as `repo#number`.
-fn columns(view: &Value) -> Vec<(String, Vec<String>)> {
-    view["columns"]
-        .as_array()
-        .map(|list| {
-            list.iter()
-                .map(|column| {
-                    let cards = column["cards"]
-                        .as_array()
-                        .map(|cards| {
-                            cards
-                                .iter()
-                                .map(|card| {
-                                    format!(
-                                        "{}#{}",
-                                        card["repo"].as_str().unwrap_or_default(),
-                                        card["number"]
-                                    )
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    (
-                        column["value"].as_str().unwrap_or_default().to_owned(),
-                        cards,
-                    )
+/// Waits for a `config.refused` event whose problems mention `problem`. Refusals are matched
+/// by their problem, not counted: actors an earlier test process left on the same engine can
+/// be woken by this one and report to its subscribers too.
+async fn refusal(forge: &Forge, problem: &str) {
+    forge
+        .until(
+            &format!("a refused configuration: {problem}"),
+            async || Value::from(forge.received("config").await),
+            |events| {
+                events.as_array().is_some_and(|e| {
+                    e.iter().any(|e| {
+                        e["type"] == "config.refused"
+                            && e["data"]["problems"].to_string().contains(problem)
+                    })
                 })
-                .collect()
-        })
-        .unwrap_or_default()
+            },
+        )
+        .await;
+}
+
+/// A board view as `lane / column / group: #numbers`, one entry per non-empty group, with `-`
+/// for a null value.
+fn layout(view: &Value) -> Vec<String> {
+    let text = |value: &Value| value.as_str().unwrap_or("-").to_owned();
+    let mut out = Vec::new();
+    for lane in view["lanes"].as_array().into_iter().flatten() {
+        for cell in lane["cells"].as_array().into_iter().flatten() {
+            for group in cell["groups"].as_array().into_iter().flatten() {
+                let cards: Vec<String> = group["cards"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|card| format!("#{}", card["number"]))
+                    .collect();
+                if !cards.is_empty() {
+                    out.push(format!(
+                        "{} / {} / {}: {}",
+                        text(&lane["value"]),
+                        text(&cell["column"]),
+                        text(&group["value"]),
+                        cards.join(" ")
+                    ));
+                }
+            }
+        }
+    }
+    out
 }
 
 fn card_count(view: &Value) -> usize {
-    columns(view).iter().map(|(_, cards)| cards.len()).sum()
+    view["lanes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|lane| lane["cells"].as_array().into_iter().flatten())
+        .flat_map(|cell| cell["groups"].as_array().into_iter().flatten())
+        .map(|group| group["cards"].as_array().map_or(0, Vec::len))
+        .sum()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "migrated in integration"]
-async fn boards_for_the_org_a_repository_and_a_project_from_configuration() {
-    let issues_package = package("TARTAN_ISSUES_PACKAGE");
-    let kanban_package = package("TARTAN_KANBAN_PACKAGE");
-    let (issues_version, kanban_version) = (
-        issues_package.manifest.version.clone(),
-        kanban_package.manifest.version.clone(),
-    );
+#[ignore = "needs the first-party modules, the module registries and a Rivet engine; run scripts/e2e.sh"]
+async fn boards_from_a_repository_configuration_importing_the_modules() {
     let forge = Forge::start("kanban-test").await;
-
+    let (status, _) = forge
+        .put("/-/api/subscribers/config", json!({"pattern": "config.*"}))
+        .await;
+    assert_eq!(status, 204);
     forge.ok("/-/api/orgs", json!({"slug": "acme"})).await;
-    let api_repo = forge
-        .ok("/-/api/orgs/acme/repos", json!({"slug": "api"}))
-        .await;
-    let web_repo = forge
-        .ok("/-/api/orgs/acme/repos", json!({"slug": "web"}))
-        .await;
-    forge
-        .ok("/-/api/orgs/acme/repos", json!({"slug": "tartan"}))
-        .await;
-    let (api_id, web_id) = (
-        api_repo["id"].as_str().expect("id").to_owned(),
-        web_repo["id"].as_str().expect("id").to_owned(),
+    for repo in ["api", "web"] {
+        forge
+            .ok("/-/api/orgs/acme/repos", json!({"slug": repo}))
+            .await;
+    }
+
+    let report = forge.sync_extension_modules().await;
+    let mut registered = report.registered.clone();
+    registered.sort();
+    assert_eq!(
+        registered,
+        vec!["rawkode.issues@0.6.0", "rawkode.kanban@0.3.0"],
+        "{report:?}"
     );
-    forge
-        .publish(&issues_package, &issues_package.manifest.raw)
-        .await;
-    forge
-        .publish(&kanban_package, &kanban_package.manifest.raw)
-        .await;
-    let mut locked = kanban_package.manifest.raw.clone();
-    locked["id"] = json!("rawkode.kanban-locked");
-    locked
-        .as_object_mut()
-        .expect("an object")
-        .remove("permissions");
-    forge.publish(&kanban_package, &locked).await;
 
-    // Issues on both repositories, from their configuration.
-    forge
-        .push_config("acme/api", Some(&api_config(&issues_version, "LSP")))
-        .await;
-    forge
-        .push_config(
-            "acme/web",
-            Some(&format!("package tartan\n\n{}", issues(&issues_version))),
-        )
-        .await;
-    let installed = format!("rawkode.issues@{issues_version}");
-    forge.until_installed("acme/api", &[&installed]).await;
-    forge.until_installed("acme/web", &[&installed]).await;
-    let issues_tool = |repo: &str, tool: &str| {
-        format!("/-/api/orgs/acme/repos/{repo}/extensions/rawkode.issues/tools/{tool}")
-    };
+    // Kanban without the Issues it requires is refused, and installs nothing.
+    push(
+        &forge,
+        "acme/web",
+        &config(
+            "extensions: \"rawkode.kanban\": kanban.#Extension & {settings: boards: open: columns: \"state\"}\n",
+        ),
+    )
+    .await;
+    refusal(&forge, "rawkode.kanban requires rawkode.issues").await;
+    assert!(forge.installed("acme/web").await.is_empty());
 
-    // An issue filed before Kanban is installed still reaches its boards.
+    // Issues alone first: an issue filed before Kanban is installed still reaches its boards.
+    push(&forge, "acme/api", &config(ISSUES)).await;
     forge
+        .until_installed("acme/api", &["rawkode.issues@0.6.0"])
+        .await;
+    let issues_tool =
+        |tool: &str| format!("/-/api/orgs/acme/repos/api/extensions/rawkode.issues/tools/{tool}");
+    let created = forge
         .ok(
-            &issues_tool("api", "create"),
-            json!({"title": "LSP crash", "project": "crates/lsp"}),
+            &issues_tool("create"),
+            json!({
+                "title": "LSP crash",
+                "project": "crates/lsp",
+                "properties": {"priority": "p1", "labels": ["bug"], "owner": "alice"}
+            }),
         )
         .await;
-    forge
-        .push_config("acme/tartan", Some(&org_config(&kanban_version)))
-        .await;
+    assert_eq!(
+        created["issue"]["properties"]["status"], "todo",
+        "{created}"
+    );
+
+    push(&forge, "acme/api", &config(&format!("{ISSUES}{KANBAN}"))).await;
     forge
         .until_installed(
-            "acme",
-            &[
-                &format!("rawkode.kanban@{kanban_version}"),
-                &format!("rawkode.kanban-locked@{kanban_version}"),
-            ],
+            "acme/api",
+            &["rawkode.issues@0.6.0", "rawkode.kanban@0.3.0"],
         )
         .await;
-    forge
-        .ok(&issues_tool("api", "create"), json!({"title": "API docs"}))
-        .await;
-    forge
-        .ok(
-            &issues_tool("web", "create"),
-            json!({"title": "Web login", "fields": {"status": "doing"}}),
-        )
-        .await;
+    for (title, properties) in [
+        (
+            "API docs",
+            json!({"status": "doing", "priority": "p2", "labels": ["docs", "bug"]}),
+        ),
+        ("Release notes", json!({"status": "done", "estimate": 3})),
+    ] {
+        forge
+            .ok(
+                &issues_tool("create"),
+                json!({"title": title, "properties": properties}),
+            )
+            .await;
+    }
 
-    let kanban = |tool: &str| format!("/-/api/orgs/acme/extensions/rawkode.kanban/tools/{tool}");
+    let kanban =
+        |tool: &str| format!("/-/api/orgs/acme/repos/api/extensions/rawkode.kanban/tools/{tool}");
     let listed = forge.ok(&kanban("list_boards"), json!({})).await;
-    let ids: Vec<&str> = listed["boards"]
-        .as_array()
-        .expect("boards")
-        .iter()
-        .filter_map(|b| b["id"].as_str())
-        .collect();
     assert_eq!(
-        ids,
-        vec!["org", "state", "web", "acme/api/api", "acme/api/lsp"],
-        "{listed}"
+        listed,
+        json!({
+            "boards": [
+                {"id": "lsp", "name": "Language server", "project": "crates/lsp"},
+                {"id": "open", "name": "open", "project": null},
+                {"id": "triage", "name": "Triage", "project": null},
+            ],
+            "invalid": [],
+        })
     );
-    assert_eq!(listed["invalid"][0]["id"], "bad", "{listed}");
 
     let board_until = async |id: &str, done: &dyn Fn(&Value) -> bool| {
         forge
             .until(
                 &format!("board {id}"),
-                async || forge.ok(&kanban("board"), json!({"id": id})).await,
+                async || forge.ok(&kanban("board"), json!({"board": id})).await,
                 done,
             )
             .await
     };
-    let org = board_until("org", &|view| card_count(view) == 3).await;
+
+    // Lanes by priority, every option and then "None"; columns titled by the labels; groups
+    // by project.
+    let triage = board_until("triage", &|view| card_count(view) == 3).await;
     assert_eq!(
-        columns(&org),
+        triage["board"]["columns"],
+        json!([
+            {"value": "todo", "title": "To do"},
+            {"value": "doing", "title": "In progress"},
+            {"value": "done", "title": "Done"},
+        ])
+    );
+    assert_eq!(triage["board"]["lanes"], json!({"by": "priority"}));
+    assert_eq!(triage["board"]["group"], json!({"by": "project"}));
+    let lanes: Vec<(Value, Value)> = triage["lanes"]
+        .as_array()
+        .expect("lanes")
+        .iter()
+        .map(|lane| (lane["value"].clone(), lane["title"].clone()))
+        .collect();
+    assert_eq!(
+        lanes,
         vec![
-            (
-                "todo".to_owned(),
-                vec!["acme/api#1".to_owned(), "acme/api#2".to_owned()]
-            ),
-            ("doing".to_owned(), vec!["acme/web#1".to_owned()]),
-            ("done".to_owned(), vec![]),
+            (json!("p1"), json!("Urgent")),
+            (json!("p2"), json!("p2")),
+            (json!("p3"), json!("p3")),
+            (Value::Null, json!("None")),
         ]
     );
     assert_eq!(
-        card_count(&board_until("web", &|view| card_count(view) == 1).await),
-        1
+        layout(&triage),
+        vec![
+            "p1 / todo / crates/lsp: #1",
+            "p2 / doing / -: #2",
+            "- / done / -: #3",
+        ]
     );
-    let repo = board_until("acme/api/api", &|view| card_count(view) == 2).await;
-    assert_eq!(card_count(&repo), 2);
-    let project = board_until("acme/api/lsp", &|view| card_count(view) == 1).await;
-    assert_eq!(columns(&project)[0].1, vec!["acme/api#1".to_owned()]);
-    assert_eq!(project["board"]["name"], "LSP");
 
-    // A repository's new contribution reconfigures the org's Kanban.
-    forge
-        .push_config(
-            "acme/api",
-            Some(&api_config(&issues_version, "Language server")),
+    // A project's board: only its issues, some columns, lanes by a multi-select, groups by a
+    // person.
+    let lsp = board_until("lsp", &|view| card_count(view) == 1).await;
+    assert_eq!(
+        lsp["board"]["columns"],
+        json!([{"value": "todo", "title": "To do"}, {"value": "done", "title": "Done"}])
+    );
+    assert_eq!(layout(&lsp), vec!["bug / todo / alice: #1"]);
+
+    // A state board with lanes by project.
+    let open = board_until("open", &|view| card_count(view) == 3).await;
+    assert_eq!(
+        layout(&open),
+        vec!["crates/lsp / open / -: #1", "- / open / -: #2 #3"]
+    );
+
+    // Moving a card sets the column's property through Issues' update.
+    let moved = forge
+        .ok(
+            &kanban("move"),
+            json!({"board": "triage", "number": 1, "column": "done"}),
         )
         .await;
-    board_until("acme/api/lsp", &|view| {
-        view["board"]["name"] == "Language server"
+    assert_eq!(moved["card"]["properties"]["status"], "done", "{moved}");
+    let issue = forge.ok(&issues_tool("get"), json!({"number": 1})).await;
+    assert_eq!(issue["issue"]["properties"]["status"], "done", "{issue}");
+    assert_eq!(issue["issue"]["version"], 2, "{issue}");
+    let triage = board_until("triage", &|view| {
+        layout(view).contains(&"p1 / done / crates/lsp: #1".to_owned())
     })
     .await;
+    assert_eq!(card_count(&triage), 3);
 
-    // Moving a card updates the issue in its own repository.
+    // On a state board, moving a card closes the issue.
     forge
         .ok(
             &kanban("move"),
-            json!({"board": "org", "repo_id": web_id, "number": 1, "to": "done"}),
+            json!({"board": "open", "number": 3, "column": "closed"}),
         )
         .await;
-    let issue = forge
-        .ok(&issues_tool("web", "get"), json!({"number": 1}))
-        .await;
-    assert_eq!(issue["issue"]["fields"]["status"], "done", "{issue}");
-    let org = board_until("org", &|view| columns(view)[2].1.len() == 1).await;
-    assert_eq!(columns(&org)[2].1, vec!["acme/web#1".to_owned()]);
+    let closed = forge.ok(&issues_tool("get"), json!({"number": 3})).await;
+    assert_eq!(closed["issue"]["state"], "closed", "{closed}");
 
-    // The board's UI action does the same, and a state board closes an issue.
-    forge
-        .ok(
-            "/-/api/orgs/acme/extensions/rawkode.kanban/actions/move",
-            json!({"board": "acme/api/api", "repo_id": api_id, "number": 2, "to": "doing"}),
-        )
-        .await;
-    forge
-        .ok(
-            &kanban("move"),
-            json!({"board": "state", "repo_id": api_id, "number": 1, "to": "closed"}),
-        )
-        .await;
-    let closed = forge
-        .ok(&issues_tool("api", "get"), json!({"number": 1}))
-        .await;
-    assert_eq!(closed["issue"]["state"], "closed");
-    let page = forge
-        .ok(
-            "/-/api/orgs/acme/extensions/rawkode.kanban/render/board",
-            json!({"board": "org"}),
-        )
-        .await;
-    assert!(page.to_string().contains("Web login"), "{page}");
-
-    // Moves outside a board's columns or scope are refused.
-    let (status, _) = forge
+    // Moves to no column of the board, or of an issue outside the board's project, are refused.
+    let (status, body) = forge
         .post(
             &kanban("move"),
-            json!({"board": "org", "repo_id": web_id, "number": 1, "to": "nope"}),
+            json!({"board": "triage", "number": 2, "column": "blocked"}),
         )
         .await;
-    assert_eq!(status, 400);
-    let (status, _) = forge
+    assert_eq!(status, 400, "{body}");
+    let (status, body) = forge
         .post(
             &kanban("move"),
-            json!({"board": "acme/api/lsp", "repo_id": web_id, "number": 1, "to": "todo"}),
+            json!({"board": "lsp", "number": 2, "column": "done"}),
         )
         .await;
-    assert_eq!(status, 404);
+    assert_eq!(status, 404, "{body}");
+    let untouched = forge.ok(&issues_tool("get"), json!({"number": 2})).await;
+    assert_eq!(untouched["issue"]["properties"]["status"], "doing");
 
-    // The same component without permissions.calls may not touch issues.
-    let locked_tool = "/-/api/orgs/acme/extensions/rawkode.kanban-locked/tools";
-    forge
-        .until(
-            "the locked board's cards",
-            async || {
-                forge
-                    .post(&format!("{locked_tool}/board"), json!({"id": "org"}))
-                    .await
-                    .1
-            },
-            |view| card_count(view) == 3,
-        )
-        .await;
-    let (status, refused) = forge
-        .post(
-            &format!("{locked_tool}/move"),
-            json!({"board": "org", "repo_id": web_id, "number": 1, "to": "todo"}),
-        )
-        .await;
-    assert_eq!(status, 403, "{refused}");
-    let unchanged = forge
-        .ok(&issues_tool("web", "get"), json!({"number": 1}))
-        .await;
-    assert_eq!(unchanged["issue"]["fields"]["status"], "done");
+    // A board whose columns are not one of Issues' select properties fails evaluation, so the
+    // configuration is refused and the boards stay as they were.
+    let lookalike = KANBAN.replace(
+        "columns: props.status, lanes",
+        "columns: types.#Select & {options: [\"todo\", \"review\", \"done\"]}, lanes",
+    );
+    assert_ne!(lookalike, KANBAN);
+    push(&forge, "acme/api", &config(&format!("{ISSUES}{lookalike}"))).await;
+    refusal(&forge, "boards.triage.columns").await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let listed_again = forge.ok(&kanban("list_boards"), json!({})).await;
+    assert_eq!(listed_again, listed);
 
     forge.stop().await;
 }

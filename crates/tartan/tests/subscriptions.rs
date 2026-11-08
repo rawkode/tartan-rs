@@ -171,30 +171,28 @@ async fn another_extension_on_the_repository_receives_its_events(forge: &Forge) 
         )
         .await;
 
-    // Without the fixture it requires, the listener is refused and nothing changes.
+    // Without the fixture it requires, the listener is refused and nothing changes. The
+    // refusal is looked up by its problem: actors an earlier test process left on the same
+    // engine can be woken by this one and report to its subscribers too.
     forge
         .push_config("acme/api", Some(&install(&[LISTENER])))
         .await;
-    let refusal = forge
+    forge
         .until(
             "the refused configuration",
             async || Value::from(forge.received("config").await),
             |events| {
-                events
-                    .as_array()
-                    .is_some_and(|e| e.iter().any(|e| e["type"] == "config.refused"))
+                events.as_array().is_some_and(|e| {
+                    e.iter().any(|e| {
+                        e["type"] == "config.refused"
+                            && e["data"]["problems"]
+                                .to_string()
+                                .contains("tartan.listener requires tartan.fixture")
+                    })
+                })
             },
         )
         .await;
-    let problems = refusal
-        .as_array()
-        .and_then(|events| events.iter().find(|e| e["type"] == "config.refused"))
-        .map(|event| event["data"]["problems"].to_string())
-        .unwrap_or_default();
-    assert!(
-        problems.contains("tartan.listener requires tartan.fixture"),
-        "{problems}"
-    );
     assert_eq!(
         forge.installed("acme/api").await,
         vec!["tartan.fixture@0.1.0"]

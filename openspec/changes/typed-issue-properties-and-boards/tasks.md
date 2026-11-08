@@ -25,7 +25,7 @@
 
 - [x] 4.1 Kanban's module `github.com/rawkode/tartan-ext/kanban`: imports Issues' module, `#issues`, boards with `columns` (a property, a subset, or `"state"`), `lanes` and `group`; verify with `cue vet` tests: a lookalike property, a non-select column and an unknown option fail
 - [x] 4.2 Repository-scoped Kanban with board views as lanes × columns × groups (multi-select under each value, "none" last, labels as titles); verify with Kanban's unit tests
-- [ ] 4.3 Move the Kanban end-to-end test to a repository configuration importing the modules the forge serves, with lanes, groups and a project board, and verify moves still update issues
+- [x] 4.3 Move the Kanban end-to-end test to a repository configuration importing the modules the forge serves, with lanes, groups and a project board, and verify moves still update issues
 - [x] 4.4 Update the Kanban docs page with a worked example and verify the docs build
 
 ## 5. Verification

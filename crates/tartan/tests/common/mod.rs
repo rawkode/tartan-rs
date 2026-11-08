@@ -5,7 +5,9 @@
 //! Extension packages reach the forge as they do in a deployment: each is published as a CUE
 //! module (`cue mod publish`, with the `cue` in `CUE_BIN`) to the source registry at
 //! `TARTAN_MODULE_SOURCE` (a test-only CNCF distribution that `scripts/e2e.sh` starts), then the
-//! forge syncs the modules published so far. The gateway listens on the address in
+//! forge syncs the modules published so far. The first-party modules (`tartan.dev/types`,
+//! Issues and Kanban) are built and published once by `scripts/e2e.sh`, which lists them in
+//! `TARTAN_EXTENSION_MODULES`; tests add them to the sync. The gateway listens on the address in
 //! `CUE_REGISTRY` when it is set, so the CUE evaluator in the test process resolves imports
 //! against this forge's registry.
 
@@ -197,18 +199,70 @@ impl ModuleSource {
         module
     }
 
-    /// A deployment listing every module published so far, from the source registry.
+    /// Adds the first-party modules `scripts/e2e.sh` published (see [`extension_modules`]) to
+    /// the modules the next sync lists, and returns them.
+    pub fn add_extension_modules(&self) -> Vec<ModuleVersion> {
+        let modules = extension_modules();
+        let mut published = self.published.lock().expect("never poisoned");
+        for module in &modules {
+            if !published.contains(module) {
+                published.push(module.clone());
+            }
+        }
+        modules
+    }
+
+    /// A deployment listing every module published so far, from the source registry: the test
+    /// packages under [`MODULE_PREFIX`] and the first-party modules under their own paths.
     pub fn deployment(&self) -> Deployment {
+        let source = format!("{}+insecure", Self::address());
         Deployment {
             modules: self.published.lock().expect("never poisoned").clone(),
-            sources: BTreeMap::from([(
-                MODULE_PREFIX.to_owned(),
-                format!("{}+insecure", Self::address())
-                    .parse()
-                    .expect("a source"),
-            )]),
+            sources: [MODULE_PREFIX, "tartan.dev", "github.com/rawkode/tartan-ext"]
+                .into_iter()
+                .map(|prefix| (prefix.to_owned(), source.parse().expect("a source")))
+                .collect(),
         }
     }
+}
+
+/// The first-party modules (`tartan.dev/types`, Issues' and Kanban's) that `scripts/e2e.sh`
+/// built and published to the source registry, from `TARTAN_EXTENSION_MODULES`: a
+/// space-separated list of `path@vX.Y.Z`.
+pub fn extension_modules() -> Vec<ModuleVersion> {
+    let list = std::env::var("TARTAN_EXTENSION_MODULES").expect(
+        "TARTAN_EXTENSION_MODULES lists the published first-party modules (see scripts/e2e.sh)",
+    );
+    list.split_whitespace()
+        .map(|module| {
+            let (path, version) = module
+                .split_once('@')
+                .unwrap_or_else(|| panic!("{module} is not path@version"));
+            ModuleVersion {
+                path: path.to_owned(),
+                version: version.to_owned(),
+            }
+        })
+        .collect()
+}
+
+/// The `cue.mod/module.cue` of a repository whose configuration depends on every first-party
+/// module `scripts/e2e.sh` published.
+pub fn repository_module() -> String {
+    let deps: String = extension_modules()
+        .iter()
+        .map(|module| {
+            format!(
+                "\t\"{}@{}\": v: \"{}\"\n",
+                module.path,
+                module.major(),
+                module.version
+            )
+        })
+        .collect();
+    format!(
+        "module: \"example.com/acme-api\"\nlanguage: version: \"v0.14.1\"\ndeps: {{\n{deps}}}\n"
+    )
 }
 
 /// Runs `cue mod publish <version>` in `dir` against the source registry.
@@ -400,6 +454,13 @@ impl Forge {
     /// module published so far into the forge, as a restart with them listed would.
     pub async fn publish(&self, package: &ExtensionPackage, manifest: &Value) -> SyncReport {
         self.modules.publish(package, manifest, None).await;
+        self.sync().await
+    }
+
+    /// Lists the first-party modules `scripts/e2e.sh` published and syncs them into the forge,
+    /// as a deployment listing them would at startup.
+    pub async fn sync_extension_modules(&self) -> SyncReport {
+        self.modules.add_extension_modules();
         self.sync().await
     }
 
