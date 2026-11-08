@@ -53,6 +53,44 @@ impl GitHost for WalgitClient {
         format!("{}/{owner}/{name}.git", self.base_url)
     }
 
+    async fn list_dir(
+        &self,
+        owner: &str,
+        name: &str,
+        rev: &str,
+        path: &str,
+    ) -> Result<Option<Vec<tartan_config::DirEntry>>> {
+        // walgit's `GET /{owner}/{repo}/api/tree/{ref}/{path}` lists a directory.
+        let url = format!("{}/{owner}/{name}/api/tree/{rev}/{path}", self.base_url);
+        let mut request = self.http.get(&url).header("accept", "application/json");
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await.with_context(|| format!("GET {url}"))?;
+        match response.status() {
+            reqwest::StatusCode::NOT_FOUND => Ok(None),
+            status if status.is_success() => {
+                let listing: serde_json::Value = response.json().await?;
+                let entries = listing["entries"]
+                    .as_array()
+                    .map(|entries| {
+                        entries
+                            .iter()
+                            .filter_map(|entry| {
+                                Some(tartan_config::DirEntry {
+                                    name: entry["name"].as_str()?.to_owned(),
+                                    is_dir: entry["type"] == "tree",
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Ok(Some(entries))
+            }
+            status => bail!("GET {url}: {status}"),
+        }
+    }
+
     async fn read_file(
         &self,
         owner: &str,

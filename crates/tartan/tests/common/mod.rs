@@ -5,7 +5,7 @@
 // Each test binary uses part of this module.
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -19,6 +19,7 @@ use rivetkit::test::TestHandle;
 use serde_json::{Value, json};
 use sha2::Sha256;
 use tartan::{GatewayState, router};
+use tartan_config::DirEntry;
 use tartan_extensions::{ExtensionPackage, ExtensionRuntime};
 use tartan_forge::{Extensions, GitHost, Services, install_services, register_actors};
 
@@ -26,12 +27,12 @@ pub const ADMIN_TOKEN: &str = "test-admin-token";
 pub const WEBHOOK_SECRET: &[u8] = b"test-webhook-secret";
 pub const DEADLINE: Duration = Duration::from_secs(60);
 
-/// A Git host that keeps each pushed commit's `tartan.cue`.
+/// A Git host that keeps each pushed commit's files.
 #[derive(Default)]
 pub struct FakeGitHost {
     pub created: Mutex<Vec<String>>,
-    /// `(owner/name, sha)` to the commit's `tartan.cue`, if it has one.
-    files: Mutex<HashMap<(String, String), Option<String>>>,
+    /// `(owner/name, sha)` to the commit's files, by path.
+    files: Mutex<HashMap<(String, String), BTreeMap<String, String>>>,
 }
 
 #[async_trait]
@@ -48,6 +49,42 @@ impl GitHost for FakeGitHost {
         format!("http://git.test/{owner}/{name}.git")
     }
 
+    async fn list_dir(
+        &self,
+        owner: &str,
+        name: &str,
+        rev: &str,
+        path: &str,
+    ) -> Result<Option<Vec<DirEntry>>> {
+        let files = self.files.lock().expect("never poisoned");
+        let Some(commit) = files.get(&(format!("{owner}/{name}"), rev.to_owned())) else {
+            return Ok(None);
+        };
+        let prefix = if path.is_empty() {
+            String::new()
+        } else {
+            format!("{path}/")
+        };
+        let mut entries: BTreeMap<String, bool> = BTreeMap::new();
+        for file in commit.keys() {
+            if let Some(rest) = file.strip_prefix(&prefix) {
+                match rest.split_once('/') {
+                    Some((dir, _)) => entries.insert(dir.to_owned(), true),
+                    None => entries.insert(rest.to_owned(), false),
+                };
+            }
+        }
+        if entries.is_empty() && !path.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(
+            entries
+                .into_iter()
+                .map(|(name, is_dir)| DirEntry { name, is_dir })
+                .collect(),
+        ))
+    }
+
     async fn read_file(
         &self,
         owner: &str,
@@ -55,15 +92,11 @@ impl GitHost for FakeGitHost {
         rev: &str,
         path: &str,
     ) -> Result<Option<Vec<u8>>> {
-        if path != "tartan.cue" {
-            return Ok(None);
-        }
         let files = self.files.lock().expect("never poisoned");
         Ok(files
             .get(&(format!("{owner}/{name}"), rev.to_owned()))
-            .cloned()
-            .flatten()
-            .map(String::into_bytes))
+            .and_then(|commit| commit.get(path))
+            .map(|contents| contents.clone().into_bytes()))
     }
 }
 
@@ -204,16 +237,26 @@ impl Forge {
         self.ok("/-/api/packages", upload).await
     }
 
-    /// Pushes a commit to `repo`'s `main` with `config` as its `tartan.cue` (none for `None`),
+    /// Pushes a commit to `repo`'s `main` with `config` as its `tartan.cue` (no file for `None`),
     /// and returns the commit.
     pub async fn push_config(&self, repo: &str, config: Option<&str>) -> String {
+        let files: Vec<(&str, &str)> = config.map(|c| ("tartan.cue", c)).into_iter().collect();
+        self.push_files(repo, &files).await
+    }
+
+    /// Pushes a commit to `repo`'s `main` holding exactly `files`, and returns the commit.
+    pub async fn push_files(&self, repo: &str, files: &[(&str, &str)]) -> String {
         let seq = self.seq.fetch_add(1, Ordering::SeqCst);
         let sha = format!("{seq:040x}");
+        let commit = files
+            .iter()
+            .map(|(path, contents)| ((*path).to_owned(), (*contents).to_owned()))
+            .collect();
         self.git
             .files
             .lock()
             .expect("never poisoned")
-            .insert((repo.to_owned(), sha.clone()), config.map(str::to_owned));
+            .insert((repo.to_owned(), sha.clone()), commit);
         let old = self
             .heads
             .lock()
@@ -229,11 +272,10 @@ impl Forge {
     pub async fn push_branch(&self, repo: &str, branch: &str, config: &str) {
         let seq = self.seq.fetch_add(1, Ordering::SeqCst);
         let sha = format!("{seq:040x}");
-        self.git
-            .files
-            .lock()
-            .expect("never poisoned")
-            .insert((repo.to_owned(), sha.clone()), Some(config.to_owned()));
+        self.git.files.lock().expect("never poisoned").insert(
+            (repo.to_owned(), sha.clone()),
+            BTreeMap::from([("tartan.cue".to_owned(), config.to_owned())]),
+        );
         let event = json!([ref_event(repo, seq, branch, &"0".repeat(40), &sha)]);
         assert_eq!(self.hook(&event).await, 204);
     }

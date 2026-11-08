@@ -1,18 +1,18 @@
 ---
 title: Kanban
-description: rawkode.kanban — boards over an org's issues, for the org, a repository or a project, defined in tartan.cue.
+description: rawkode.kanban — boards over an org's issues, for the org, a repository or a project, defined in CUE configuration.
 sidebar:
   order: 9
 ---
 
-Kanban installs once per org, from the org's `tartan` repository. It keeps a card for every issue in the org from Issues' events, including issues created before it was installed, and shows them on boards. Boards are defined in `tartan.cue`: the org's in its `tartan` repository, and a repository's or a project's in that repository.
+Kanban installs once per org, from the org's `tartan` repository. It keeps a card for every issue in the org from Issues' events, including issues created before it was installed, and shows them on boards. Boards are defined in configuration: the org's in its `tartan` repository, and a repository's or a project's in that repository.
 
 ## A worked example
 
 The org's `tartan` repository installs Kanban and defines org-wide boards:
 
 ```cue
-// acme/tartan: tartan.cue
+// acme/tartan: any root file of package tartan, such as tartan.cue
 package tartan
 
 let statuses = [{value: "todo", title: "To do"}, {value: "doing", title: "Doing"}, {value: "done", title: "Done"}]
@@ -30,7 +30,7 @@ extensions: "rawkode.kanban": {
 A repository adds its own boards, and its projects' boards, by contributing settings without a version:
 
 ```cue
-// acme/api: tartan.cue
+// acme/api
 package tartan
 
 let statuses = [{value: "todo"}, {value: "doing"}, {value: "done"}]

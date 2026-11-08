@@ -25,7 +25,7 @@ browser ──► tartan gateway ──► actors on Rivet, each with its own SQ
   `git -c http.extraHeader="Authorization: Bearer <token>" push …`. Locally walgit's event bridge wakes on a 1 s
   sweep; in production, point the object store's bucket notifications at walgit's `/_events/notify`.
 - **Extensions.** `POST /-/api/packages` publishes a package (manifest, base64 component, migrations) to object
-  storage. Extensions are installed and configured only by the `tartan.cue` committed at a repository's root (the
+  storage. Extensions are installed and configured only by the CUE package `tartan` committed at a repository's root (the
   org's in its `tartan` repository), applied on each push to `main`; `…/extensions/<id>/tools/<tool>`,
   `…/render/<slot>` and `…/actions/<action>` call an installation. Every API call acts as `admin` until the
   gateway has identities.

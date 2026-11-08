@@ -1,11 +1,11 @@
 ---
 title: Configuration
-description: tartan.cue — what a repository or an org installs, and how each extension is set up.
+description: The CUE package tartan — what a repository or an org installs, and how each extension is set up.
 sidebar:
   order: 6
 ---
 
-Extensions are installed and configured only by the `tartan.cue` committed at a repository's root. There is no install API: a push to `main` that changes `tartan.cue` is the only way an extension is installed, upgraded, reconfigured or removed.
+Extensions are installed and configured only by the CUE package `tartan` committed at a repository's root. There is no install API: a push to `main` that changes it is the only way an extension is installed, upgraded, reconfigured or removed.
 
 ```cue
 package tartan
@@ -16,11 +16,37 @@ extensions: "rawkode.issues": {
 }
 ```
 
-Each entry under `extensions` is an extension id with an optional `version` and free-form `settings`. Any other key, an invalid id or version, or CUE that does not evaluate makes the file invalid. A repository without `tartan.cue` installs nothing.
+Each entry under `extensions` is an extension id with an optional `version` and free-form `settings`. Any other key, an invalid id or version, or CUE that does not evaluate makes the configuration invalid.
+
+## A package, not a file
+
+The configuration is every root `*.cue` file that declares `package tartan`, evaluated together the way `cue eval` evaluates a package directory. Name the files as you like and split them as you like; `tartan.cue` is only a convention. Root files of other packages, such as a cuenv `env.cue`, are not part of it, and a repository with no `package tartan` file at its root installs nothing.
+
+With `cue.mod/module.cue`, your module path and language version are used and packages of your module can be imported:
+
+```cue
+// cue.mod/module.cue
+module: "example.com/acme-api"
+language: version: "v0.14.1"
+
+// config/fields/fields.cue
+package fields
+
+all: status: {type: "select", options: ["todo", "done"], default: "todo"}
+
+// issues.cue
+package tartan
+
+import defs "example.com/acme-api/config/fields"
+
+extensions: "rawkode.issues": {version: "0.5.0", settings: fields: defs.all}
+```
+
+The forge reads only what the package needs at the pushed commit: the root's `*.cue` files, `cue.mod/`, and the directories of the module's packages that are imported. Imports of other modules resolve through the forge's CUE registry configuration (`CUE_REGISTRY`). A configuration may read at most 500 files, 64 directories and 4 MiB of CUE.
 
 ## When it applies
 
-When `refs/heads/main` moves, the forge reads `tartan.cue` at the new commit and applies it. Other branches never apply. When pushes arrive quickly, the latest commit wins.
+When `refs/heads/main` moves, the forge loads the configuration at the new commit and applies it. Other branches never apply. When pushes arrive quickly, the latest commit wins.
 
 The file is applied all or nothing. Every entry is checked first: its version is published and its package installs where the file lives. If anything fails, nothing changes and `config.refused` records the problems.
 
@@ -34,7 +60,7 @@ The file is applied all or nothing. Every entry is checked first: its version is
 
 ## The org's configuration
 
-The repository named `tartan` in an org configures the org. Each entry there installs an `org`-scoped package on the org, and must have a `version`.
+The repository named `tartan` in an org configures the org, with the same kind of package. Each entry there installs an `org`-scoped package on the org, and must have a `version`.
 
 ```cue
 package tartan
@@ -47,7 +73,7 @@ extensions: "rawkode.kanban": {
 
 ## Contributing to the org's extensions
 
-An entry without a `version` in a repository's `tartan.cue` contributes settings to the org's installation of that extension:
+An entry without a `version` in a repository's configuration contributes settings to the org's installation of that extension:
 
 ```cue
 extensions: "rawkode.kanban": settings: boards: api: {field: "status", columns: [{value: "todo"}, {value: "done"}]}

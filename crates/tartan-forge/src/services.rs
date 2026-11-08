@@ -14,6 +14,16 @@ pub trait GitHost: Send + Sync {
     /// The URL `git clone` takes for `owner/name`.
     fn clone_url(&self, owner: &str, name: &str) -> String;
 
+    /// The entries of directory `path` (`""` for the root) in commit `rev` of `owner/name`, or
+    /// `None` if there is no such directory.
+    async fn list_dir(
+        &self,
+        owner: &str,
+        name: &str,
+        rev: &str,
+        path: &str,
+    ) -> Result<Option<Vec<tartan_config::DirEntry>>>;
+
     /// The file at `path` in commit `rev` of `owner/name`, or `None` if there is none.
     async fn read_file(
         &self,

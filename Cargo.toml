@@ -17,6 +17,7 @@ cuengine = "0.40.6"
 hex = "0.4"
 hmac = "0.12"
 object_store = { version = "0.14.2", features = ["aws"] }
+regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rivetkit = "3.0.6"
 serde = { version = "1", features = ["derive"] }

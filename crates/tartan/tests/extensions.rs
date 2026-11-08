@@ -142,10 +142,30 @@ async fn extensions_come_only_from_pushed_configuration() {
     wait_for_count(&forge, "config.refused", 2).await;
     assert_eq!(forge.installed("acme/api").await, installed);
 
-    // A settings change reconfigures the installation and keeps its data.
-    let with_owner = format!("{STATUS}\n\t\towner: {{type: \"text\"}}");
+    // A settings change reconfigures the installation and keeps its data. The configuration is
+    // the root package tartan: here split across files, importing a package of the repository's
+    // module, next to a cuenv file in another package.
     forge
-        .push_config("acme/api", Some(&issues_config(&version, &with_owner)))
+        .push_files(
+            "acme/api",
+            &[
+                (
+                    "cue.mod/module.cue",
+                    "module: \"example.com/acme-api\"\nlanguage: version: \"v0.14.1\"\n",
+                ),
+                (
+                    "issues.cue",
+                    &format!(
+                        "package tartan\n\nimport defs \"example.com/acme-api/config/fields\"\n\nextensions: \"rawkode.issues\": {{version: \"{version}\", settings: fields: defs.all}}\n"
+                    ),
+                ),
+                (
+                    "config/fields/fields.cue",
+                    &format!("package fields\n\nall: {{\n\t{STATUS}\n\towner: type: \"text\"\n}}\n"),
+                ),
+                ("env.cue", "package cuenv\n\nenv: FOO: \"bar\"\n"),
+            ],
+        )
         .await;
     wait_for_count(&forge, "extension.configured", 1).await;
     let fields = forge.ok(&format!("{tools}/fields"), json!({})).await;

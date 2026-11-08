@@ -41,6 +41,16 @@ impl GitHost for FakeGitHost {
         format!("http://git.test/{owner}/{name}.git")
     }
 
+    async fn list_dir(
+        &self,
+        _owner: &str,
+        _name: &str,
+        _rev: &str,
+        _path: &str,
+    ) -> Result<Option<Vec<tartan_config::DirEntry>>> {
+        Ok(None)
+    }
+
     async fn read_file(
         &self,
         _owner: &str,

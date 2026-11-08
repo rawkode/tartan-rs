@@ -318,6 +318,30 @@ impl Handler<RecordRefEvents> for Repo {
     }
 }
 
+/// The repository at one commit, read through the Git host.
+struct HostSource {
+    owner: String,
+    name: String,
+    rev: String,
+}
+
+#[async_trait]
+impl tartan_config::ConfigSource for HostSource {
+    async fn list(&self, dir: &str) -> Result<Option<Vec<tartan_config::DirEntry>>> {
+        services()?
+            .git_host
+            .list_dir(&self.owner, &self.name, &self.rev, dir)
+            .await
+    }
+
+    async fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        services()?
+            .git_host
+            .read_file(&self.owner, &self.name, &self.rev, path)
+            .await
+    }
+}
+
 impl Handler<RepoStatusQuery> for Repo {
     async fn handle(
         self: Arc<Self>,
@@ -365,20 +389,16 @@ impl Repo {
         }
         let (org_slug, slug) = self.path(ctx).await?;
         let org_id = self.org_id(ctx).await?;
-        let file = services()?
-            .git_host
-            .read_file(
-                org_slug.as_str(),
-                slug.as_str(),
-                &sha,
-                tartan_config::CONFIG_FILE,
-            )
-            .await?;
-        let evaluated = match file.map(String::from_utf8).transpose() {
-            Ok(source) => tartan_config::evaluate(source.as_deref())
+        let source = HostSource {
+            owner: org_slug.to_string(),
+            name: slug.to_string(),
+            rev: sha.clone(),
+        };
+        let evaluated = match tartan_config::load(&source, tartan_config::LIMITS).await {
+            Ok(files) => tartan_config::evaluate(files)
                 .await
                 .map_err(|error| error.to_string()),
-            Err(_) => Err(format!("{} is not UTF-8", tartan_config::CONFIG_FILE)),
+            Err(error) => Err(error.to_string()),
         };
         let config = match evaluated {
             Ok(config) => Some(config),

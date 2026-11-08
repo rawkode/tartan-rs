@@ -23,6 +23,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+tartan-config.workspace = true
 async-trait.workspace = true
 hex.workspace = true
 hmac.workspace = true

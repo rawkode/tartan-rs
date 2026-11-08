@@ -23,7 +23,7 @@ A package is a directory with `tartan.json`, `component.wasm` and the migrations
 }
 ```
 
-`storage.scope` is `repo` (one database per repository, installed by a repository's `tartan.cue`) or `org` (one per org, installed by the org's `tartan` repository). Publish with `POST /-/api/packages` (`manifest`, base64 `component`, `migrations`). An `id@version` never changes: publishing other contents under it answers 409.
+`storage.scope` is `repo` (one database per repository, installed by a repository's configuration) or `org` (one per org, installed by the org's `tartan` repository). Publish with `POST /-/api/packages` (`manifest`, base64 `component`, `migrations`). An `id@version` never changes: publishing other contents under it answers 409.
 
 ## What an extension can do
 
