@@ -1,14 +1,11 @@
 # Spec Delta
 
-## MODIFIED Requirements
+## REMOVED Requirements
 
 ### Requirement: The org's tartan repository configures the org
-The repository named `tartan` in an org SHALL be the org's configuration: each entry with a `version` installs an `org`-scoped package on the org, and each entry without one gives org-wide settings for a `repo`-scoped extension. When org-wide settings change, every repository in the org SHALL apply its latest configuration again with them.
+**Reason**: Org-wide configuration cannot be evaluated natively by `cue eval` of one repository; every extension installs on a repository.
+**Migration**: Configure each repository's extensions in its own package `tartan`; share definitions by publishing a CUE module and importing it.
 
-#### Scenario: Org install
-- **WHEN** `acme/tartan`'s configuration names `rawkode.kanban` version `0.3.0`
-- **THEN** Kanban is installed on `acme`
-
-#### Scenario: Org-wide settings change
-- **WHEN** `acme/tartan` adds an Issues property
-- **THEN** every repository in `acme` that installs Issues has the new property
+### Requirement: Repositories contribute settings to org installations
+**Reason**: There are no org installations to contribute to.
+**Migration**: Configure the extension on the repository itself.

@@ -1,31 +1,31 @@
 # Spec Delta
 
 ## Purpose
-Extensions check their own settings in CUE, may depend on another extension's settings, and may be given org-wide settings.
+Extension settings are typed by CUE modules in any OCI registry, which repositories import, so configuration evaluates natively.
 
 ## ADDED Requirements
 
-### Requirement: Settings are checked against the extension's schema
-When an extension's package ships a settings schema, its settings in a configuration SHALL be evaluated against the schema's `#Settings`; settings that do not fit SHALL make the configuration invalid. An entry with a version SHALL use that version's schema; a contribution SHALL use the org installation's version; org-wide settings SHALL use the latest published version.
+### Requirement: Extensions publish a CUE module
+An extension's settings schema SHALL be a CUE module in an OCI registry defining `#Extension`, which fixes the extension's `version` and types its `settings`. The module version SHALL equal the extension package's version.
+
+#### Scenario: Version from the module
+- **WHEN** a repository sets `extensions: "rawkode.issues": issues.#Extension & {settings: …}` with `tartan.dev/ext/issues@v0` at `v0.6.0`
+- **THEN** the configuration installs Issues 0.6.0
+
+### Requirement: Configuration evaluates natively
+The forge SHALL evaluate a repository's configuration exactly as committed, adding no files, with the CUE registry configuration it is run with (`CUE_REGISTRY`), so `cue export` of the root package `tartan` with the same registry gives the configuration the forge applies. A module the registry cannot provide SHALL make the configuration invalid.
+
+#### Scenario: Same as cue export
+- **WHEN** a repository's configuration imports Issues' and Kanban's modules
+- **THEN** the forge applies the value `cue export` gives for package `tartan`
+
+#### Scenario: Unreachable module
+- **WHEN** a configuration depends on a module version the registry does not have
+- **THEN** the configuration is refused, naming the module
+
+### Requirement: Settings that do not fit are refused
+Settings that do not fit their extension's `#Extension` SHALL fail evaluation and refuse the configuration.
 
 #### Scenario: Invalid settings
-- **WHEN** a repository configures Issues with a property of an unknown type
+- **WHEN** Issues' settings give a property an unknown `kind`
 - **THEN** the configuration is refused and nothing changes
-
-### Requirement: Extensions may require another extension's settings
-A package MAY declare that its settings require another extension, under an alias. Its schema SHALL then see that extension's settings in the same configuration as `#<alias>`, and configuring it where that extension is not configured SHALL make the configuration invalid.
-
-#### Scenario: Kanban without Issues
-- **WHEN** the org's configuration installs Kanban but configures no Issues properties
-- **THEN** the configuration is refused with a problem naming `rawkode.issues`
-
-### Requirement: Org-wide settings for repository extensions
-An entry without a version in the org's `tartan` repository SHALL give org-wide settings for that repository extension. Each repository that installs it SHALL evaluate its own settings unified with the org-wide ones, so it may add to them but a conflicting redefinition SHALL make its configuration invalid.
-
-#### Scenario: Adding a property
-- **WHEN** the org defines `status` and `acme/api` adds `component`
-- **THEN** Issues on `acme/api` has both properties
-
-#### Scenario: Redefining a property
-- **WHEN** `acme/api` defines `status` with other options than the org's
-- **THEN** `acme/api`'s configuration is refused

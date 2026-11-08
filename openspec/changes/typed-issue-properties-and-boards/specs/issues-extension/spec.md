@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Issues with configured fields
-Each repository installation SHALL keep issues numbered from 1, open or closed, optionally filed against a project (a root path). Its properties SHALL be the org-wide Issues properties plus the repository's own (`settings.properties`), each typed with `tartan.dev/types`; a value that does not fit its property's type SHALL be refused with `invalid`.
+Each repository installation SHALL keep issues numbered from 1, open or closed, optionally filed against a project (a root path). Its properties SHALL be its settings' `properties`, typed with `tartan.dev/types` through Issues' module `tartan.dev/ext/issues`; a value that does not fit its property's type SHALL be refused with `invalid`.
 
 #### Scenario: Create and list
 - **WHEN** two issues are created and the issues are listed
