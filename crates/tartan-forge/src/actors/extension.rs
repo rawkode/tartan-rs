@@ -568,14 +568,14 @@ impl Handler<Disable> for Extension {
 /// A `render` or `on-action` reply whose `tartan-ui@1` nodes the host accepts: a `person` node
 /// must name a valid DID (design D14), else the call fails as `internal`.
 fn checked_ui(reply: CallReply) -> CallReply {
-    let CallReply::Ok(value) = &reply else {
+    let CallReply::Ok(mut value) = reply else {
         return reply;
     };
     let mode = services()
         .map(|services| services.resolver.mode())
         .unwrap_or_default();
-    match crate::ui_check::check_person_nodes(value, mode) {
-        Ok(()) => reply,
+    match crate::ui_check::check_person_nodes(&mut value, mode) {
+        Ok(()) => CallReply::Ok(value),
         Err(message) => CallReply::Failed {
             kind: "internal".to_owned(),
             message: format!("the extension returned an invalid tartan-ui document: {message}"),
@@ -940,40 +940,68 @@ impl ToolCaller for InstallationCaller {
 /// The installation's database, as the extension host sees it.
 struct ActorSql(SqliteDb);
 
+fn bind_params(params: Vec<SqlValue>) -> Vec<BindParam> {
+    params
+        .into_iter()
+        .map(|value| match value {
+            SqlValue::Null => BindParam::Null,
+            SqlValue::Integer(v) => BindParam::Integer(v),
+            SqlValue::Real(v) => BindParam::Float(v),
+            SqlValue::Text(v) => BindParam::Text(v),
+            SqlValue::Blob(v) => BindParam::Blob(v),
+        })
+        .collect()
+}
+
+fn sql_rows(
+    query: &str,
+    columns: Vec<String>,
+    rows: Vec<Vec<ColumnValue>>,
+    changes: i64,
+) -> SqlRows {
+    // SQLite's change count is the last write's, so a query reports none of its own.
+    let leading = query
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let reads_only = matches!(leading.as_str(), "select" | "with");
+    SqlRows {
+        columns,
+        values: rows
+            .into_iter()
+            .map(|row| row.into_iter().map(from_column).collect())
+            .collect(),
+        rows_written: if reads_only {
+            0
+        } else {
+            u64::try_from(changes).unwrap_or_default()
+        },
+    }
+}
+
 #[async_trait]
 impl SqlBackend for ActorSql {
     async fn exec(&self, query: &str, params: Vec<SqlValue>) -> Result<SqlRows> {
-        let params = params
-            .into_iter()
-            .map(|value| match value {
-                SqlValue::Null => BindParam::Null,
-                SqlValue::Integer(v) => BindParam::Integer(v),
-                SqlValue::Real(v) => BindParam::Float(v),
-                SqlValue::Text(v) => BindParam::Text(v),
-                SqlValue::Blob(v) => BindParam::Blob(v),
-            })
-            .collect();
-        let result = self.0.execute(query, Some(params)).await?;
-        // SQLite's change count is the last write's, so a query reports none of its own.
-        let leading = query
-            .split_whitespace()
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let reads_only = matches!(leading.as_str(), "select" | "with");
-        Ok(SqlRows {
-            columns: result.columns,
-            values: result
-                .rows
-                .into_iter()
-                .map(|row| row.into_iter().map(from_column).collect())
-                .collect(),
-            rows_written: if reads_only {
-                0
-            } else {
-                u64::try_from(result.changes).unwrap_or_default()
-            },
-        })
+        let result = self.0.execute(query, Some(bind_params(params))).await?;
+        Ok(sql_rows(query, result.columns, result.rows, result.changes))
+    }
+
+    async fn exec_read_only(&self, query: &str, params: Vec<SqlValue>) -> Result<SqlRows> {
+        // The transaction keeps the actor's other statements off the connection while
+        // `query_only` is on, and its rollback undoes anything that slipped through.
+        let transaction = self.0.begin_transaction(None).await?;
+        let outcome = match transaction.exec("PRAGMA query_only = ON").await {
+            Ok(_) => {
+                let result = transaction.execute(query, Some(bind_params(params))).await;
+                let reset = transaction.exec("PRAGMA query_only = OFF").await;
+                result.and_then(|result| reset.map(|_| result))
+            }
+            Err(error) => Err(error),
+        };
+        transaction.rollback().await?;
+        let result = outcome?;
+        Ok(sql_rows(query, result.columns, result.rows, result.changes))
     }
 
     async fn exec_script(&self, script: &str) -> Result<()> {

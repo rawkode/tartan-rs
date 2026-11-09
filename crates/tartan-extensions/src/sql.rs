@@ -33,6 +33,11 @@ pub trait SqlBackend: Send + Sync {
     /// Runs one statement with positional parameters.
     async fn exec(&self, query: &str, params: Vec<SqlValue>) -> Result<SqlRows>;
 
+    /// Runs one statement that SQLite itself keeps from changing the database, failing when the
+    /// statement would write. Read-only calls use this, so a statement that only looks like a
+    /// query, such as `WITH a AS (SELECT 1) DELETE FROM t`, is refused by the engine.
+    async fn exec_read_only(&self, query: &str, params: Vec<SqlValue>) -> Result<SqlRows>;
+
     /// Runs a script of statements without parameters, such as a migration.
     async fn exec_script(&self, script: &str) -> Result<()>;
 }
@@ -57,9 +62,11 @@ pub(crate) const HOST_TABLE_PREFIX: &str = "_tartan_";
 
 /// Why the extension's statement `query` may not run, or `None` when it may.
 ///
-/// This is a guard against mistakes, not a sandbox: it keeps an extension's statements off the
-/// host's tables and away from statements that change the connection, and in a read-only call it
-/// admits only a single `SELECT` or `WITH` query.
+/// This is a lexical guard against mistakes, not a sandbox: it keeps an extension's statements off
+/// the host's tables and away from statements that change the connection, and in a read-only call
+/// it admits only a single statement starting with `SELECT` or `WITH`. A read-only call's
+/// statement then runs through [`SqlBackend::exec_read_only`], where SQLite refuses any write
+/// (a `WITH` prefix can introduce an `INSERT`, `UPDATE` or `DELETE`).
 pub fn check_statement(query: &str, read_only: bool) -> Option<&'static str> {
     let lowered = query.to_ascii_lowercase();
     let trimmed = lowered.trim_start();
