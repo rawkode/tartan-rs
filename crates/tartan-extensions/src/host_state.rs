@@ -11,8 +11,12 @@ use crate::{SqlBackend, SqlRows, SqlValue, check_statement};
 /// Whether a call may change the installation's data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CallKind {
-    /// `render` and `provide-context`: SQL may only read, and effects are refused.
+    /// `render` and `provide-context`: SQL may only read, and effects and calls are refused.
     ReadOnly,
+    /// A tool the manifest declares `access: "read"`, called for someone who may only read:
+    /// SQL may only read and effects are refused, but it may call other installations' tools,
+    /// which the caller in its environment runs the same way.
+    ReadTool,
     /// Every other export.
     ReadWrite,
 }
@@ -79,7 +83,7 @@ impl HostState {
     }
 
     fn read_only(&self) -> bool {
-        self.kind == CallKind::ReadOnly
+        matches!(self.kind, CallKind::ReadOnly | CallKind::ReadTool)
     }
 
     /// Runs a host statement, which the guard does not apply to.
@@ -316,7 +320,7 @@ impl calls::Host for HostState {
         tool: String,
         args: String,
     ) -> wasmtime::Result<Result<String, types::Error>> {
-        if self.read_only() {
+        if self.kind == CallKind::ReadOnly {
             return Ok(Err(types::Error::Denied("read-only".to_owned())));
         }
         let Some(caller) = self.caller.clone() else {

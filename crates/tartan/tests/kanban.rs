@@ -469,5 +469,42 @@ extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
         json!({"kind": "user", "id": forge.identity.owner}),
         "{by_person}"
     );
+
+    // A reader (readers: "signed_in") calls the tools the manifests declare `access: "read"`,
+    // read-only, including Kanban's board, which calls Issues; tools that write are refused
+    // with the read-only explanation.
+    let open = forge
+        .gateway(tartan_config::deployment::Readers::SignedIn, Vec::new())
+        .await;
+    let bob = common::sign_in(&open, "bob.test", "/", None)
+        .await
+        .session();
+    let as_bob = async |path: String, body: Value| {
+        let response = common::browser()
+            .post(format!("{open}{path}"))
+            .header("cookie", format!("tartan_session={bob}"))
+            .header("origin", &open)
+            .json(&body)
+            .send()
+            .await
+            .expect("answers");
+        let status = response.status().as_u16();
+        (status, response.json::<Value>().await.unwrap_or_default())
+    };
+    let (status, listed) = as_bob(issues_tool("list"), json!({})).await;
+    assert_eq!(status, 200, "{listed}");
+    let (status, board) = as_bob(kanban("board"), json!({"board": "open"})).await;
+    assert_eq!(status, 200, "{board}");
+    for (path, body) in [
+        (issues_tool("create"), json!({"title": "By a reader"})),
+        (
+            kanban("move"),
+            json!({"board": "open", "number": 1, "column": "done"}),
+        ),
+    ] {
+        let (status, refusal) = as_bob(path, body).await;
+        assert_eq!(status, 403, "{refusal}");
+        assert!(refusal.to_string().contains("read-only"), "{refusal}");
+    }
     forge.stop().await;
 }

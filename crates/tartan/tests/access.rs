@@ -212,6 +212,20 @@ async fn rights_by_read_mode() {
         post(&open, As::Cookie(&bob), "/-/api/orgs", json!({"slug": "x"})).await,
         403
     );
+    // An extension action always writes, so a reader's is refused at the gateway. A reader's
+    // tool call reaches the installation, which runs only tools declared `access: "read"`
+    // (tested with Issues and Kanban installed in tests/kanban.rs); here none is installed.
+    let act = "/-/api/orgs/acme/repos/api/extensions/issues.tartan.rawkode.academy/actions/close";
+    let (status, refusal, _) = call(
+        &open,
+        As::Cookie(&bob),
+        reqwest::Method::POST,
+        act,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, 403);
+    assert!(refusal.to_string().contains("read-only"), "{refusal}");
     let tool = "/-/api/orgs/acme/repos/api/extensions/issues.tartan.rawkode.academy/tools/create";
     let (status, refusal, _) = call(
         &open,
@@ -221,8 +235,7 @@ async fn rights_by_read_mode() {
         Some(json!({})),
     )
     .await;
-    assert_eq!(status, 403);
-    assert!(refusal.to_string().contains("read-only"), "{refusal}");
+    assert_eq!(status, 404, "{refusal}");
     let (_, me, _) = call(
         &open,
         As::Cookie(&bob),

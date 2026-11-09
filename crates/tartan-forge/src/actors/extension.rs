@@ -188,6 +188,11 @@ pub struct CallTool {
     pub args: Value,
     /// The principal calling it.
     pub viewer: Caller,
+    /// The principal may only read: the call is refused unless the manifest declares the tool
+    /// `access: "read"`, and then it runs as a read-only call (no writes or effects; calls to
+    /// other installations are read-only too).
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 impl Action for CallTool {
@@ -363,14 +368,7 @@ impl Extension {
         loaded: &Loaded,
         viewer: &Caller,
     ) -> CallEnvironment {
-        let caller = ctx.client().ok().map(|client| {
-            Arc::new(InstallationCaller {
-                client,
-                repo_id: spec.repo_id.clone(),
-                allowed: loaded.package.manifest.raw["permissions"]["calls"].clone(),
-                viewer: viewer.clone(),
-            }) as Arc<dyn ToolCaller>
-        });
+        let caller = self.caller(ctx, spec, loaded, viewer, false);
         CallEnvironment {
             sql: Arc::new(ActorSql(ctx.sql().clone())),
             config: spec.config.clone(),
@@ -378,6 +376,27 @@ impl Extension {
             label: format!("{}@{}", spec.extension_id, self.id),
             caller,
         }
+    }
+
+    /// The installation's `calls` import acting for `viewer`; with `read_only`, every tool it
+    /// calls must be a read tool and runs read-only.
+    fn caller(
+        &self,
+        ctx: &Ctx<Self>,
+        spec: &InstallationSpec,
+        loaded: &Loaded,
+        viewer: &Caller,
+        read_only: bool,
+    ) -> Option<Arc<dyn ToolCaller>> {
+        ctx.client().ok().map(|client| {
+            Arc::new(InstallationCaller {
+                client,
+                repo_id: spec.repo_id.clone(),
+                allowed: loaded.package.manifest.raw["permissions"]["calls"].clone(),
+                viewer: viewer.clone(),
+                read_only,
+            }) as Arc<dyn ToolCaller>
+        })
     }
 
     /// The principal an installation acts as when no person does: for events and timers.
@@ -569,15 +588,34 @@ impl Handler<CallTool> for Extension {
         let _call = self.calls.lock().await;
         let (spec, loaded) = self.installed(&ctx).await?;
         let context = slot_context(&spec, None, &action.viewer);
-        let outcome = loaded
-            .component
-            .call_tool(
-                self.environment(&ctx, &spec, &loaded, &action.viewer),
-                &action.tool,
-                &action.args.to_string(),
-                &context,
-            )
-            .await?;
+        let outcome = if action.read_only {
+            if !declares_read_tool(&loaded.package.manifest.raw, &action.tool) {
+                return Ok(CallReply::Failed {
+                    kind: "denied".to_owned(),
+                    message: format!(
+                        "read-only: {} {} changes data; only forge owners can make changes \
+                         until membership exists",
+                        spec.extension_id, action.tool
+                    ),
+                });
+            }
+            let mut env = self.environment(&ctx, &spec, &loaded, &action.viewer);
+            env.caller = self.caller(&ctx, &spec, &loaded, &action.viewer, true);
+            loaded
+                .component
+                .call_read_tool(env, &action.tool, &action.args.to_string(), &context)
+                .await?
+        } else {
+            loaded
+                .component
+                .call_tool(
+                    self.environment(&ctx, &spec, &loaded, &action.viewer),
+                    &action.tool,
+                    &action.args.to_string(),
+                    &context,
+                )
+                .await?
+        };
         self.reply(&ctx, &spec, outcome).await
     }
 }
@@ -786,6 +824,17 @@ fn failed(error: ExtensionError) -> CallReply {
     }
 }
 
+/// Whether `manifest` declares `tool` with `access: "read"` (`contributes.tools`).
+fn declares_read_tool(manifest: &Value, tool: &str) -> bool {
+    manifest["contributes"]["tools"]
+        .as_array()
+        .is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|t| t["name"] == tool && t["access"] == "read")
+        })
+}
+
 /// Whether an extension-emitted event type is dot-separated lowercase tokens.
 fn valid_event_kind(kind: &str) -> bool {
     !kind.is_empty()
@@ -808,6 +857,8 @@ struct InstallationCaller {
     /// `permissions.calls`: extension id to the tools it may call.
     allowed: Value,
     viewer: Caller,
+    /// Whether the call it serves is a read-only tool call.
+    read_only: bool,
 }
 
 #[async_trait]
@@ -869,6 +920,7 @@ impl ToolCaller for InstallationCaller {
                 tool: tool.to_owned(),
                 args,
                 viewer: self.viewer.clone(),
+                read_only: self.read_only,
             })
             .await?;
         Ok(match reply {

@@ -503,6 +503,16 @@ pub async fn authenticate(
     if class == RouteClass::Write && param("call").as_deref() == Some("render") {
         class = RouteClass::Read;
     }
+    // A reader's tool call is admitted here; the extension actor runs it only when the
+    // manifest declares the tool `access: "read"` (`call_on_repo` passes `read_only`).
+    let reader_tool = class == RouteClass::Write
+        && param("call").as_deref() == Some("tools")
+        && principal
+            .as_ref()
+            .is_some_and(|p| p.rights.read && !p.rights.write);
+    if reader_tool {
+        class = RouteClass::Read;
+    }
 
     let Some(principal) = principal else {
         if class == RouteClass::Me {

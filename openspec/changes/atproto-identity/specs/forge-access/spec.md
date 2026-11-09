@@ -21,7 +21,7 @@ A principal SHALL be an owner when its DID, or the DID it acts on behalf of, is 
 - **THEN** `GET /-/api/me` answers their DID, handle and `owner: true`
 
 ### Requirement: What callers may do
-Anonymous callers SHALL get 401 from `/-/api` except `GET /-/api/me`. Readers (non-owners the configuration's `readers` admits) SHALL only read: `GET` routes and extension `render` calls. Other signed-in non-owners SHALL get 403 except `GET /-/api/me`, which reports `rights: []`, their own sessions at `/-/api/sessions`, and the `self` routes. Writes (extension `tool` and `act` calls) SHALL need an owner. Creating orgs, repositories, placements and subscribers SHALL need `admin` rights.
+Anonymous callers SHALL get 401 from `/-/api` except `GET /-/api/me`. Readers (non-owners the configuration's `readers` admits) SHALL only read: `GET` routes, extension `render` calls, and calls of the tools an extension's manifest declares `access: "read"`, which the forge SHALL run read-only (no writes, no effects, and calls to other installations only of their read tools, also read-only). Other signed-in non-owners SHALL get 403 except `GET /-/api/me`, which reports `rights: []`, their own sessions at `/-/api/sessions`, and the `self` routes. Writes (extension `tool` and `act` calls) SHALL need an owner. Creating orgs, repositories, placements and subscribers SHALL need `admin` rights.
 
 #### Scenario: Person who is not an owner
 - **WHEN** a signed-in reader who is not an owner calls an Issues tool that creates an issue
@@ -30,6 +30,10 @@ Anonymous callers SHALL get 401 from `/-/api` except `GET /-/api/me`. Readers (n
 #### Scenario: Reading
 - **WHEN** a signed-in reader who is not an owner lists an org's repositories
 - **THEN** the list is returned
+
+#### Scenario: Reader using a read tool
+- **WHEN** a signed-in reader who is not an owner calls Issues' `list` tool or Kanban's `board` tool (declared `access: "read"`)
+- **THEN** the answer is returned, and a call of a tool not declared `access: "read"` (such as Kanban's `move`) answers 403 with the read-only explanation
 
 #### Scenario: Non-owner on a private forge
 - **WHEN** `readers` is unset or `"owners"` and a signed-in person who is not an owner lists an org's repositories

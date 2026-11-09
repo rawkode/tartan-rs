@@ -13,7 +13,7 @@ use tartan_forge::{
 };
 
 use crate::ApiError;
-use crate::access::RequestPrincipal;
+use crate::access::{Principal, RequestPrincipal};
 use crate::gateway::{GatewayState, resolve_repo};
 
 /// The extension routes, relative to `/-/api`.
@@ -53,9 +53,9 @@ async fn call_on_repo(
     Path((org, repo, extension, call, name)): Path<(String, String, String, String, String)>,
     Json(input): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
-    let viewer = caller.0.ok_or(ApiError::Unauthorized)?.caller();
+    let principal = caller.0.ok_or(ApiError::Unauthorized)?;
     let repo = resolve_repo(&state.client, &org, &repo).await?;
-    call_extension(&state, &repo, &extension, &call, name, input, viewer).await
+    call_extension(&state, &repo, &extension, &call, name, input, &principal).await
 }
 
 /// Calls an installation: `call` is `tools`, `render` or `actions`, and `name` the tool, slot
@@ -67,8 +67,12 @@ async fn call_extension(
     call: &str,
     name: String,
     input: Value,
-    viewer: tartan_forge::Caller,
+    principal: &Principal,
 ) -> Result<Json<Value>, ApiError> {
+    // Someone who may read but not write may call only the tools a manifest declares
+    // `access: "read"`, run read-only (design D4, *Rights*).
+    let read_only = !principal.rights.write;
+    let viewer = principal.caller();
     let installation = repo_handle(&state.client, &repo.id, repo.pool.clone())?
         .send(InstallationQuery {
             extension_id: extension.to_owned(),
@@ -92,6 +96,7 @@ async fn call_extension(
                     tool: name,
                     args: input,
                     viewer,
+                    read_only,
                 })
                 .await?
         }
