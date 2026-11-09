@@ -1,0 +1,40 @@
+{
+  "lexicon": 1,
+  "id": "academy.rawkode.tartan.signature",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "The account signs the payload whose keyed digest is given, in the given namespace. The key (a random per-signature salt) travels with the signature, not in this record.",
+      "key": "tid",
+      "record": {
+        "type": "object",
+        "required": ["namespace", "algorithm", "digest", "createdAt"],
+        "properties": {
+          "namespace": {
+            "type": "string",
+            "knownValues": ["git"],
+            "maxLength": 64,
+            "description": "What kind of payload is signed. `git`: a Git object without its signature, as Git hands it to its signing program."
+          },
+          "algorithm": {
+            "type": "string",
+            "knownValues": ["hmac-sha256"],
+            "maxLength": 32,
+            "description": "How `digest` is computed. `hmac-sha256`: HMAC-SHA256 keyed with the signature's 32-byte salt, over the exact payload bytes."
+          },
+          "digest": {
+            "type": "bytes",
+            "minLength": 32,
+            "maxLength": 32,
+            "description": "The keyed digest, under `algorithm`, of the exact payload bytes."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Required. When the signer signed, to the second, by the signer's own clock."
+          }
+        }
+      }
+    }
+  }
+}

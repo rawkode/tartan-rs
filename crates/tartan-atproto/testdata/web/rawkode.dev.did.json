@@ -1,0 +1,25 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/did/v1",
+    "https://w3id.org/security/multikey/v1"
+  ],
+  "id": "did:web:rawkode.dev",
+  "alsoKnownAs": [
+    "at://rawkode.dev"
+  ],
+  "verificationMethod": [
+    {
+      "id": "did:web:rawkode.dev#atproto",
+      "type": "Multikey",
+      "controller": "did:web:rawkode.dev",
+      "publicKeyMultibase": "zQ3shpG8vFZ6MmTHNVv7PHmRrw97oArf4QnYJh88zFnNpuYzJ"
+    }
+  ],
+  "service": [
+    {
+      "id": "did:web:rawkode.dev#atproto_pds",
+      "type": "AtprotoPersonalDataServer",
+      "serviceEndpoint": "https://rawkode.dev"
+    }
+  ]
+}

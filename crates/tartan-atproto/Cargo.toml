@@ -18,7 +18,15 @@ base64.workspace = true
 cid.workspace = true
 getrandom.workspace = true
 hex.workspace = true
+# DNS TXT lookups for handles. jacquard-identity resolves TXT records itself but
+# stops at the first `did=` value, so it cannot refuse conflicting records, and it
+# offers no way to substitute a resolver in tests (design D9, *Handles*). The
+# version is the one jacquard-identity already resolves to.
+hickory-resolver = { version = "=0.26.3", default-features = false, features = ["system-config", "tokio"] }
 hmac.workspace = true
+# jacquard's `HttpClient` trait is written against the `http` crate's request and
+# response types; the version is the one reqwest and jacquard already resolve to.
+http = "=1.5.0"
 ipnet.workspace = true
 jacquard-common.workspace = true
 jacquard-identity.workspace = true
@@ -34,6 +42,9 @@ sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
