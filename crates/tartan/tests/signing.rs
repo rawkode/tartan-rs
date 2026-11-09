@@ -54,6 +54,7 @@ struct World {
     forge: Forge,
     alice: String,
     bob: String,
+    repo_id: String,
 }
 
 impl World {
@@ -141,10 +142,7 @@ impl World {
     }
 
     async fn repo(&self) -> rivetkit::TypedActorHandle<Repo> {
-        let (status, info) = self.forge.get("/-/api/orgs/acme/repos/api").await;
-        assert_eq!(status, 200, "{info}");
-        let id = info["id"].as_str().expect("an id");
-        repo_handle(&self.forge.client, id, None).expect("the repository actor")
+        repo_handle(&self.forge.client, &self.repo_id, None).expect("the repository actor")
     }
 
     async fn verify(&self) {
@@ -199,17 +197,23 @@ impl World {
     }
 
     async fn events(&self) -> Vec<(String, Value)> {
-        self.repo()
-            .await
-            .send(ReadEvents {
-                after: 0,
-                limit: 500,
-            })
-            .await
-            .expect("events")
-            .into_iter()
-            .map(|envelope| (envelope.kind, envelope.data))
-            .collect()
+        let repo = self.repo().await;
+        let mut out = Vec::new();
+        let mut after = 0;
+        loop {
+            let page = repo
+                .send(ReadEvents { after, limit: 500 })
+                .await
+                .expect("events");
+            let Some(last) = page.last() else {
+                return out;
+            };
+            after = last.seq;
+            out.extend(
+                page.into_iter()
+                    .map(|envelope| (envelope.kind, envelope.data)),
+            );
+        }
     }
 
     /// The `config.refused` problems recorded for `sha`.
@@ -285,7 +289,15 @@ async fn signatures_are_verified_and_the_rule_gates_configuration() {
         .await;
     let alice = forge.identity.owner.clone();
     let bob = forge.identity.devnet.did("bob.test").await.expect("bob");
-    let world = World { forge, alice, bob };
+    let (status, info) = forge.get("/-/api/orgs/acme/repos/api").await;
+    assert_eq!(status, 200, "{info}");
+    let repo_id = info["id"].as_str().expect("an id").to_owned();
+    let world = World {
+        forge,
+        alice,
+        bob,
+        repo_id,
+    };
     let (alice, bob) = (world.alice.clone(), world.bob.clone());
 
     // An unsigned commit on a branch no rule covers is judged `unsigned`.
@@ -720,6 +732,287 @@ async fn signatures_are_verified_and_the_rule_gates_configuration() {
     assert_eq!(status["config_commit"], change.sha.as_str(), "{status}");
     assert!(!status["rule"].is_null(), "{status}");
     assert_eq!(world.applied().await.as_deref(), Some(change.sha.as_str()));
+
+    // Signed annotated tags are verified like commits.
+    let seq = world.forge.next_seq();
+    let tag_payload = format!(
+        "object {}\ntype commit\ntag v1\ntagger Tests <tests@example.com> {} +0000\n\nrelease\n",
+        change.sha,
+        commit_time(seq)
+    )
+    .into_bytes();
+    let tag_salt = Salt::generate().expect("a salt");
+    let tag_record = world
+        .devnet()
+        .write_signature("alice.test", &tag_payload, &tag_salt, None, None)
+        .await
+        .expect("record written");
+    let tag_block = SignatureBlock {
+        did: Did::parse(&alice, tartan_atproto::Mode::Development).expect("a DID"),
+        rkey: Tid::parse(&tag_record.rkey).expect("a TID"),
+        cid: tag_record.cid.parse().expect("a CID"),
+        salt: tag_salt,
+    };
+    let mut tag_bytes = tag_payload.clone();
+    tag_bytes.extend_from_slice(tag_block.write().as_bytes());
+    let tag = world.forge.git.insert(REPO, "tag", tag_bytes);
+    world.push("refs/tags/v1", None, &tag).await;
+    let view = world.judged(&tag).await;
+    assert_eq!(view["status"], "verified", "{view}");
+    assert_eq!(view["kind"], "tag");
+
+    // "Record for another object" and "Salt altered": a proved record that does not sign these
+    // bytes is a bad signature.
+    let elsewhere = world
+        .sign("alice.test", &alice, &[], "elsewhere", true)
+        .await;
+    let borrowed_payload = commit_bytes(&[], "borrowed", commit_time(world.forge.next_seq()));
+    let borrowed_block = SignatureBlock {
+        did: Did::parse(&alice, tartan_atproto::Mode::Development).expect("a DID"),
+        rkey: Tid::parse(&elsewhere.rkey).expect("a TID"),
+        cid: elsewhere.cid.parse().expect("a CID"),
+        salt: elsewhere.salt.clone(),
+    };
+    let borrowed = world.forge.git.insert(
+        REPO,
+        "commit",
+        with_gpgsig(&borrowed_payload, &borrowed_block.write()),
+    );
+    world.push("refs/heads/borrowed", None, &borrowed).await;
+    assert_eq!(world.judged(&borrowed).await["status"], "bad_signature");
+    let resalted_block = SignatureBlock {
+        salt: Salt::generate().expect("a salt"),
+        ..borrowed_block
+    };
+    let resalted = world.forge.git.insert(
+        REPO,
+        "commit",
+        with_gpgsig(&elsewhere.payload, &resalted_block.write()),
+    );
+    world.push("refs/heads/resalted", None, &resalted).await;
+    assert_eq!(world.judged(&resalted).await["status"], "bad_signature");
+    // "Other X.509 signature": gitsign's CMS block.
+    let cms = with_gpgsig(
+        &commit_bytes(&[], "cms", commit_time(world.forge.next_seq())),
+        "-----BEGIN SIGNED MESSAGE-----\nMIIEDAYJKoZIhvcNAQcCoIID/TCCA/kCAQExDTALBglghkgBZQMEAgEwCwYJKoZI\n-----END SIGNED MESSAGE-----\n",
+    );
+    let cms = world.forge.git.insert(REPO, "commit", cms);
+    world.push("refs/heads/cms", None, &cms).await;
+    assert_eq!(world.judged(&cms).await["status"], "unsupported_format");
+
+    // A signer whose PDS reports `takendown` is `signer_inactive`.
+    let carol = world.devnet().did("carol.test").await.expect("carol");
+    let by_carol = world.sign("carol.test", &carol, &[], "carol", true).await;
+    world
+        .devnet()
+        .set_status("carol.test", "takendown")
+        .await
+        .expect("status set");
+    world.push("refs/heads/carol", None, &by_carol.sha).await;
+    let view = world.judged(&by_carol.sha).await;
+    assert_eq!(view["status"], "signer_inactive", "{view}");
+    assert_eq!(view["detail"], "takendown");
+
+    // "Object gone from the host": a ref whose object the host no longer serves gives up at once.
+    let gone = "1".repeat(40);
+    world.push("refs/heads/gone", None, &gone).await;
+    let view = world.judged(&gone).await;
+    assert_eq!(view["status"], "unverifiable", "{view}");
+    assert!(
+        view["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no longer on the host"),
+        "{view}"
+    );
+
+    // "Older update finishes last": W waits for its record while X, on top of it, is judged;
+    // the ref reports X, and W's later result lands only in W's own update.
+    let w = world.sign("alice.test", &alice, &[], "W", false).await;
+    world.push("refs/heads/w", None, &w.sha).await;
+    world
+        .forge
+        .until(
+            "W fails once",
+            async || world.signature(&w.sha).await.1,
+            |view| view["attempts"].as_i64().unwrap_or(0) >= 1,
+        )
+        .await;
+    let x = world.sign("alice.test", &alice, &[&w.sha], "X", true).await;
+    world.push("refs/heads/w", Some(&w.sha), &x.sha).await;
+    assert_eq!(world.judged(&x.sha).await["status"], "verified");
+    let reported = world
+        .forge
+        .until(
+            "the ref reports X",
+            async || {
+                world
+                    .forge
+                    .get("/-/api/orgs/acme/repos/api/signatures?ref=refs/heads/w")
+                    .await
+                    .1
+            },
+            |view| view["status"] == "checked",
+        )
+        .await;
+    assert_eq!(reported["head"], x.sha.as_str(), "{reported}");
+    world.publish("alice.test", &w).await;
+    world.forge.clock.advance(Duration::from_secs(10 * 60));
+    world.verify().await;
+    assert_eq!(world.judged(&w.sha).await["status"], "verified");
+    let (_, reported) = world
+        .forge
+        .get("/-/api/orgs/acme/repos/api/signatures?ref=refs/heads/w")
+        .await;
+    assert_eq!(reported["head"], x.sha.as_str(), "{reported}");
+
+    // "Record never published" and "Signer recovers a late record": Bob, allowed by the rule
+    // now in force, pushes a configuration whose record stays in his queue for seven days; it
+    // ends `unverifiable` and refused, and Bob's own re-check applies it once published.
+    let late_bob = world
+        .sign("bob.test", &bob, &[&pre_rule.sha], "bob late", false)
+        .await;
+    world.configure(&late_bob.sha, &world.rule(&[&alice, &bob]));
+    world
+        .push("refs/heads/main", Some(&pre_rule.sha), &late_bob.sha)
+        .await;
+    world
+        .forge
+        .until(
+            "the record is missing",
+            async || world.signature(&late_bob.sha).await.1,
+            |view| view["attempts"].as_i64().unwrap_or(0) >= 1,
+        )
+        .await;
+    for day in 0..8 {
+        world.forge.clock.advance(Duration::from_secs(24 * 60 * 60));
+        world.verify().await;
+        if day < 6 {
+            let (_, view) = world.signature(&late_bob.sha).await;
+            assert_eq!(view["status"], "pending", "day {day}: {view}");
+        }
+    }
+    let view = world.judged(&late_bob.sha).await;
+    assert_eq!(view["status"], "unverifiable", "{view}");
+    assert_eq!(view["did"], bob.as_str());
+    world.handled(&late_bob.sha).await;
+    assert_eq!(
+        world.refusals(&late_bob.sha).await,
+        vec![format!("signing: {} is unverifiable", late_bob.sha)]
+    );
+    world.publish("bob.test", &late_bob).await;
+    let bob_session = cli_session(&world.forge, &bob).await;
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/-/api/orgs/acme/repos/api/commits/{}/signature/recheck",
+            world.forge.base, late_bob.sha
+        ))
+        .bearer_auth(&bob_session)
+        .send()
+        .await
+        .expect("answers");
+    assert_eq!(response.status(), 200, "the signer re-checks");
+    assert_eq!(world.judged(&late_bob.sha).await["status"], "verified");
+    world.handled(&late_bob.sha).await;
+    assert_eq!(
+        world.applied().await.as_deref(),
+        Some(late_bob.sha.as_str())
+    );
+
+    // "Rewind to a signed head" is applied; a rewind to an unsigned commit is refused.
+    let next = world
+        .sign("alice.test", &alice, &[&late_bob.sha], "next", true)
+        .await;
+    world.configure(&next.sha, &world.rule(&[&alice, &bob]));
+    world
+        .push("refs/heads/main", Some(&late_bob.sha), &next.sha)
+        .await;
+    world.handled(&next.sha).await;
+    assert_eq!(world.applied().await.as_deref(), Some(next.sha.as_str()));
+    world
+        .push("refs/heads/main", Some(&next.sha), &late_bob.sha)
+        .await;
+    world.handled(&late_bob.sha).await;
+    assert_eq!(
+        world.applied().await.as_deref(),
+        Some(late_bob.sha.as_str())
+    );
+    world.push("refs/heads/main", Some(&late_bob.sha), &a).await;
+    world.handled(&a).await;
+    assert_eq!(
+        world.refusals(&a).await.last().cloned(),
+        Some(format!("signing: {a} is unsigned"))
+    );
+    assert_eq!(
+        world.applied().await.as_deref(),
+        Some(late_bob.sha.as_str())
+    );
+
+    // Two overlapping `verify` wakes judge an update once.
+    let twice = world.unsigned(&[], "twice");
+    world.push("refs/heads/twice", None, &twice).await;
+    let repo = world.repo().await;
+    let (first, second) = tokio::join!(repo.send(Verify {}), repo.send(Verify {}));
+    first.expect("verify");
+    second.expect("verify");
+    world.judged(&twice).await;
+    let checked = world
+        .events()
+        .await
+        .into_iter()
+        .filter(|(kind, data)| kind == "ref.signatures.checked" && data["new"] == twice.as_str())
+        .count();
+    assert_eq!(checked, 1);
+
+    // 1500 tag updates queued while the Git host fails cost one pending `verify` schedule.
+    world
+        .forge
+        .ok(
+            "/-/api/orgs/acme/repos",
+            serde_json::json!({"slug": "tags"}),
+        )
+        .await;
+    let tagged = world.unsigned(&[], "tagged");
+    world
+        .forge
+        .git
+        .insert("acme/tags", "commit", commit_bytes(&[], "tagged", 0));
+    world
+        .forge
+        .git
+        .failing
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let events: Vec<Value> = (0..1500)
+        .map(|i| {
+            common::ref_event(
+                "acme/tags",
+                world.forge.next_seq(),
+                &format!("refs/tags/t{i}"),
+                &"0".repeat(40),
+                &tagged,
+            )
+        })
+        .collect();
+    // Sent in pushes of 250 updates each.
+    for batch in events.chunks(250) {
+        assert_eq!(world.forge.hook(&Value::Array(batch.to_vec())).await, 204);
+    }
+    let (status, info) = world.forge.get("/-/api/orgs/acme/repos/tags").await;
+    assert_eq!(status, 200, "{info}");
+    let tags_repo = repo_handle(
+        &world.forge.client,
+        info["id"].as_str().expect("an id"),
+        None,
+    )
+    .expect("the repository actor");
+    tags_repo.send(Verify {}).await.expect("verify runs");
+    let schedules = tags_repo.send(VerifySchedules {}).await.expect("schedules");
+    assert!(schedules.len() <= 1, "{schedules:?}");
+    world
+        .forge
+        .git
+        .failing
+        .store(false, std::sync::atomic::Ordering::SeqCst);
 
     // One pending verify schedule at most, whatever ran before.
     let schedules = world
