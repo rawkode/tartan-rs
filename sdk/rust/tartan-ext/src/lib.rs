@@ -31,6 +31,7 @@
 //! the tools of other extensions the manifest names.
 
 pub mod calls;
+pub mod did;
 pub mod effects;
 pub mod gate;
 pub mod host;

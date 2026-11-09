@@ -25,6 +25,7 @@ pub mod proof_cache;
 mod services;
 mod slug;
 mod sql;
+mod ui_check;
 mod walgit;
 
 pub use crate::actors::extension::{
@@ -54,6 +55,7 @@ pub use crate::extensions::{Extensions, Loaded, RegisterError, register_package}
 pub use crate::outbox::{Flush, FlushTree};
 pub use crate::services::{GitHost, IdentityLimits, Services, install_services};
 pub use crate::slug::{Slug, SlugError};
+pub use crate::ui_check::check_person_nodes;
 pub use crate::walgit::{RefEvent, WalgitClient, verify_signature};
 
 use rivetkit::Registry;

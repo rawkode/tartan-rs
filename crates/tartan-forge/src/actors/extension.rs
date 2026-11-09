@@ -546,6 +546,24 @@ impl Handler<Disable> for Extension {
     }
 }
 
+/// A `render` or `on-action` reply whose `tartan-ui@1` nodes the host accepts: a `person` node
+/// must name a valid DID (design D14), else the call fails as `internal`.
+fn checked_ui(reply: CallReply) -> CallReply {
+    let CallReply::Ok(value) = &reply else {
+        return reply;
+    };
+    let mode = services()
+        .map(|services| services.resolver.mode())
+        .unwrap_or_default();
+    match crate::ui_check::check_person_nodes(value, mode) {
+        Ok(()) => reply,
+        Err(message) => CallReply::Failed {
+            kind: "internal".to_owned(),
+            message: format!("the extension returned an invalid tartan-ui document: {message}"),
+        },
+    }
+}
+
 impl Handler<CallTool> for Extension {
     async fn handle(self: Arc<Self>, ctx: Ctx<Self>, action: CallTool) -> Result<CallReply> {
         let _call = self.calls.lock().await;
@@ -578,7 +596,7 @@ impl Handler<Render> for Extension {
                 &action.props.to_string(),
             )
             .await?;
-        self.reply(&ctx, &spec, outcome).await
+        Ok(checked_ui(self.reply(&ctx, &spec, outcome).await?))
     }
 }
 
@@ -596,7 +614,7 @@ impl Handler<Act> for Extension {
                 &context,
             )
             .await?;
-        self.reply(&ctx, &spec, outcome).await
+        Ok(checked_ui(self.reply(&ctx, &spec, outcome).await?))
     }
 }
 
