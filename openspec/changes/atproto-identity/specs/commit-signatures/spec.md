@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Verifying Tartan signatures on pushed commits and tags (each a reference to a `dev.tartan.signature` record in the signer's ATProto repository), keeping the result and its proof from push time, and enforcing a repository's signing rule.
+Verifying Tartan signatures on pushed commits and tags (each a reference to a `dev.rawkode.tartan.signature` record in the signer's ATProto repository), keeping the result and its proof from push time, and enforcing a repository's signing rule.
 
 ## ADDED Requirements
 
@@ -37,7 +37,7 @@ Each checked object SHALL get one status: `verified`, `unsigned`, `bad_signature
 - **THEN** its status is `unsigned`
 
 ### Requirement: A signature is a proved record over the object
-A signature SHALL verify only when it is a Tartan signature naming a `dev.tartan.signature` record of a `did:plc` or hostname-only `did:web` DID, the record is proved back to that DID, its CID equals the signature's, its `namespace` is `git`, its `algorithm` is `hmac-sha256`, and its `digest` is HMAC-SHA256, keyed with the signature's `Salt`, of the object without its signature (a commit without its `gpgsig` header; a tag up to its signature).
+A signature SHALL verify only when it is a Tartan signature naming a `dev.rawkode.tartan.signature` record of a `did:plc` or hostname-only `did:web` DID, the record is proved back to that DID, its CID equals the signature's, its `namespace` is `git`, its `algorithm` is `hmac-sha256`, and its `digest` is HMAC-SHA256, keyed with the signature's `Salt`, of the object without its signature (a commit without its `gpgsig` header; a tag up to its signature).
 
 #### Scenario: Altered message
 - **WHEN** a signed commit's message is changed and the signature kept
@@ -123,7 +123,7 @@ When a record that verified a stored result is later deleted or replaced, or the
 - **THEN** the commit still shows verified as Alice, with the date the signature was revoked
 
 ### Requirement: Records the forge relies on are watched
-The identity actor SHALL track every record that verified a result. A Jetstream delete or update in `dev.tartan.signature` for a tracked record, or `POST /-/api/people/<did>/signatures/<rkey>/refresh` by that DID or an owner, SHALL re-prove it; a proved absence or another CID SHALL mark it revoked and record `signature.revoked {did, rkey, cid}`. A revoked record SHALL stay revoked. Jetstream SHALL only trigger.
+The identity actor SHALL track every record that verified a result. A Jetstream delete or update in `dev.rawkode.tartan.signature` for a tracked record, or `POST /-/api/people/<did>/signatures/<rkey>/refresh` by that DID or an owner, SHALL re-prove it; a proved absence or another CID SHALL mark it revoked and record `signature.revoked {did, rkey, cid}`. A revoked record SHALL stay revoked. Jetstream SHALL only trigger.
 
 #### Scenario: Deleted record
 - **WHEN** a person deletes a tracked signature record and Jetstream reports it

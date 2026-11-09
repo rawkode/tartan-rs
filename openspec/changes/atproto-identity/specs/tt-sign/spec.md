@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`tt sign`: Git's signing and verification program for Tartan signatures. A signature is a `dev.tartan.signature` record written to the signer's own ATProto repository over a narrowly scoped OAuth session; the commit or tag carries only a reference to that record.
+`tt sign`: Git's signing and verification program for Tartan signatures. A signature is a `dev.rawkode.tartan.signature` record written to the signer's own ATProto repository over a narrowly scoped OAuth session; the commit or tag carries only a reference to that record.
 
 ## ADDED Requirements
 
@@ -96,7 +96,7 @@ Because Git passes the same sign argv for `openpgp` and `x509`, `tt` SHALL, befo
 - **THEN** `tt` writes `[GNUPG:] ERRSIG`, exits 1, and says to set `gpg.format=x509`
 
 ### Requirement: A signature is a record in the signer's repository
-To sign, `tt` SHALL read the payload from standard input (at most 16 MiB) and create, in the signing DID's repository under a fresh TID record key, a `dev.tartan.signature` record holding only `namespace` `git`, `algorithm` `hmac-sha256`, `digest` (HMAC-SHA256 of the exact payload bytes keyed with a fresh 32-byte random salt) and `createdAt` (whole seconds). The salt SHALL appear only in the signature.
+To sign, `tt` SHALL read the payload from standard input (at most 16 MiB) and create, in the signing DID's repository under a fresh TID record key, a `dev.rawkode.tartan.signature` record holding only `namespace` `git`, `algorithm` `hmac-sha256`, `digest` (HMAC-SHA256 of the exact payload bytes keyed with a fresh 32-byte random salt) and `createdAt` (whole seconds). The salt SHALL appear only in the signature.
 
 #### Scenario: Record content
 - **WHEN** a person signs a commit in a private repository
@@ -207,11 +207,11 @@ After a successful write, `tt` SHALL drain the queue within the remaining time. 
 - **THEN** the forge's check, retrying meanwhile, ends `verified`
 
 ### Requirement: Signing uses a narrowly scoped OAuth session
-`tt sign --login` SHALL authorize as a public native ATProto OAuth client whose `client_id` is the configured forge's `/-/auth/tt/client-metadata.json`, with a loopback redirect, PAR, PKCE S256 and DPoP, asking for exactly `atproto repo:dev.tartan.signature?action=create`. `tt` SHALL refresh tokens under an exclusive file lock, because refresh tokens are single-use.
+`tt sign --login` SHALL authorize as a public native ATProto OAuth client whose `client_id` is the configured forge's `/-/auth/tt/client-metadata.json`, with a loopback redirect, PAR, PKCE S256 and DPoP, asking for exactly `atproto repo:dev.rawkode.tartan.signature?action=create`. `tt` SHALL refresh tokens under an exclusive file lock, because refresh tokens are single-use.
 
 #### Scenario: Scope asked
 - **WHEN** a person runs `tt sign --login`
-- **THEN** the PAR request's `scope` is exactly `atproto repo:dev.tartan.signature?action=create`
+- **THEN** the PAR request's `scope` is exactly `atproto repo:dev.rawkode.tartan.signature?action=create`
 
 #### Scenario: Parallel signing
 - **WHEN** two `tt` processes sign at once with an expired access token
@@ -226,7 +226,7 @@ After a successful write, `tt` SHALL drain the queue within the remaining time. 
 - **THEN** it fails with "no forge configured: run `tt login --forge <url>` or pass `--forge`" and starts no authorization
 
 ### Requirement: Forges not on public HTTPS
-`tt sign --login --client localhost` SHALL authorize with ATProto's `http://localhost` client_id, declaring both loopback redirect URIs and the `atproto` and both `repo:dev.tartan.signature` scope tokens in its query. When the authorization server answers `invalid_client_metadata` or `invalid_redirect_uri` at the first PAR, `tt sign --login` SHALL suggest `--client localhost`.
+`tt sign --login --client localhost` SHALL authorize with ATProto's `http://localhost` client_id, declaring both loopback redirect URIs and the `atproto` and both `repo:dev.rawkode.tartan.signature` scope tokens in its query. When the authorization server answers `invalid_client_metadata` or `invalid_redirect_uri` at the first PAR, `tt sign --login` SHALL suggest `--client localhost`.
 
 #### Scenario: VPN-only forge
 - **WHEN** a person's forge is reachable only over a VPN and `tt sign --login` is refused with `invalid_client_metadata`
@@ -244,14 +244,14 @@ An agent running anywhere but its person's own machine SHALL sign as its own ATP
 - **THEN** the first machine's signing fails, naming sessions shared between machines among the causes and `tt sign --login`
 
 ### Requirement: The forge publishes the CLI's client metadata
-The forge SHALL serve `<TARTAN_PUBLIC_URL>/-/auth/tt/client-metadata.json` with `client_id` equal to that URL, `application_type` `native`, `token_endpoint_auth_method` `none`, `redirect_uris` `http://127.0.0.1/callback` and `http://[::1]/callback`, `grant_types` `authorization_code` and `refresh_token`, `dpop_bound_access_tokens` true, and `scope` `atproto repo:dev.tartan.signature?action=create repo:dev.tartan.signature?action=delete`.
+The forge SHALL serve `<TARTAN_PUBLIC_URL>/-/auth/tt/client-metadata.json` with `client_id` equal to that URL, `application_type` `native`, `token_endpoint_auth_method` `none`, `redirect_uris` `http://127.0.0.1/callback` and `http://[::1]/callback`, `grant_types` `authorization_code` and `refresh_token`, `dpop_bound_access_tokens` true, and `scope` `atproto repo:dev.rawkode.tartan.signature?action=create repo:dev.rawkode.tartan.signature?action=delete`.
 
 #### Scenario: Metadata matches its URL
 - **WHEN** an authorization server fetches the CLI's `client_id`
 - **THEN** it receives `application/json` whose `client_id` equals that URL and that declares both `repo:` tokens verbatim
 
 ### Requirement: Revoking a signature
-`tt sign revoke <commit-or-at-uri>` SHALL authorize once with exactly `atproto repo:dev.tartan.signature?action=delete`, delete the named record, revoke those tokens at the authorization server, and, when signed in to a forge, withdraw it there if signed in with a CLI session as the record's DID, else ask the forge to re-prove it. A record still in the local queue SHALL instead be removed from the queue with no authorization.
+`tt sign revoke <commit-or-at-uri>` SHALL authorize once with exactly `atproto repo:dev.rawkode.tartan.signature?action=delete`, delete the named record, revoke those tokens at the authorization server, and, when signed in to a forge, withdraw it there if signed in with a CLI session as the record's DID, else ask the forge to re-prove it. A record still in the local queue SHALL instead be removed from the queue with no authorization.
 
 #### Scenario: Compromised session
 - **WHEN** a person whose signing session was stolen revokes every app password and app session with repository write access at their PDS, and then revokes a forged signature
@@ -281,7 +281,7 @@ The forge SHALL serve `<TARTAN_PUBLIC_URL>/-/auth/tt/client-metadata.json` with 
 - **THEN** the record is published, the forge re-checks the commit, and it ends `verified`
 
 ### Requirement: The signature lexicon
-The repository SHALL publish the `dev.tartan.signature` Lexicon: a record with key `tid` and required `namespace` (string, known value `git`, at most 64 bytes), `algorithm` (string, known value `hmac-sha256`, at most 32 bytes), `digest` (bytes, exactly 32) and `createdAt` (datetime).
+The repository SHALL publish the `dev.rawkode.tartan.signature` Lexicon: a record with key `tid` and required `namespace` (string, known value `git`, at most 64 bytes), `algorithm` (string, known value `hmac-sha256`, at most 32 bytes), `digest` (bytes, exactly 32) and `createdAt` (datetime).
 
 #### Scenario: Valid record
 - **WHEN** the Lexicon validates a record `tt` wrote
