@@ -20,16 +20,34 @@ modules: [
 	"tartan.rawkode.academy/issues@v0.6.0",
 	"tartan.rawkode.academy/kanban@v0.3.0",
 ]
+owners: ["did:plc:abcdefghijklmnopqrstuvwx"]
+readers: "owners"
 ```
 
 | Field | Meaning |
 | --- | --- |
 | `modules` | each module version the forge makes available, fully qualified as `path@vX.Y.Z` |
 | `sources` | module path prefixes and the OCI registry each is copied from, written as `CUE_REGISTRY` writes one: `host[:port][/repository-prefix]`, with `+insecure` for plain HTTP |
+| `owners` | the DIDs of the forge's administrators: at least one, each listed once |
+| `readers` | who else may read: `"owners"` (the default when left out), `"signed_in"` or a list of DIDs |
+
+### Owners and readers
+
+People are identified by their [ATProto](https://atproto.com) DID, never by a handle, because a handle can change hands. `owners` and a `readers` list accept `did:plc` DIDs (`did:plc:` and 24 characters from `a-z` and `2-7`) and hostname-level `did:web` DIDs (`did:web:rawkode.dev`); a `did:web` with a path, such as `did:web:example.com:alice`, is refused. Find a person's DID from their handle with `tt identity resolve <handle>`, or any ATProto tool.
+
+`readers` decides who other than the owners may read:
+
+| Value | Who may read |
+| --- | --- |
+| `"owners"` (the default) | only the owners: the forge stays private, and other people who sign in are told so |
+| `"signed_in"` | anyone who signs in with an ATProto account, which anyone can create: they may read every org, repository and issue |
+| a list of DIDs | the owners and the DIDs listed |
+
+Until org and repository membership exist, only owners may make changes; readers who are not owners may only read. Both settings change only when the forge restarts with a new configuration.
 
 A module comes from the source whose prefix matches the most whole elements of its path, and its repository there is the source's prefix followed by the module path. A registry on `localhost` or `127.0.0.1` is reached over plain HTTP unless it says `+secure`.
 
-The file is evaluated as `cue export` evaluates it, without a registry, and may import only CUE's standard library. It is the operator's file, so unlike a repository's configuration it needs no `cue.mod/module.cue`: the forge evaluates a file or directory without one in an empty module of its own, which changes nothing it exports. Values must be concrete. The forge does not start when it does not evaluate, has a field other than `modules` and `sources`, lists a module without a full version (`@v0` is not one) or lists a module no source serves; the log names the problem. Without `TARTAN_CONFIG` the forge starts with no modules.
+The file is evaluated as `cue export` evaluates it, without a registry, and may import only CUE's standard library. It is the operator's file, so unlike a repository's configuration it needs no `cue.mod/module.cue`: the forge evaluates a file or directory without one in an empty module of its own, which changes nothing it exports. Values must be concrete. The forge does not start when it does not evaluate, has a field other than `modules`, `sources`, `owners` and `readers`, lists a module without a full version (`@v0` is not one) or lists a module no source serves, lists no owner, lists a DID twice or lists anything that is not a DID (a handle such as `alice.bsky.social` is not one), or sets `readers` to anything else; the log names the problem and the entry. Without `TARTAN_CONFIG` the forge starts with no modules.
 
 ## The forge's registry
 
