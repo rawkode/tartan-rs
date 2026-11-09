@@ -14,6 +14,7 @@ mod cli;
 mod people;
 mod secrets;
 mod sessions;
+mod signatures;
 mod tokens;
 
 use std::sync::Arc;
@@ -25,9 +26,11 @@ use rivetkit::prelude::*;
 use rivetkit::{CronEveryOptions, Handler, action};
 use tartan_identity_api::{
     AdminCreateToken, AdminListTokens, AdminRevokeToken, Authenticate, BeginAuth, CompleteAuth,
-    CreateSession, CreateToken, EndSession, IssueCliCode, KnowDid, KnownAs, ListSessions,
-    ListTokens, People, PutOutcome, RedeemCliCode, RefreshIdentity, RevokeToken, SWEEP_SCHEDULE,
-    Schedules, SignInCapacity, SignedIn, Sweep, TakeOutcome,
+    CreateSession, CreateToken, EndSession, GetJetstreamCursor, IssueCliCode, KnowDid, KnownAs,
+    ListSessions, ListTokens, People, PutOutcome, RecordSignature, RedeemCliCode, RefreshIdentity,
+    ReproveSignature, RevokeToken, SWEEP_SCHEDULE, Schedules, SetJetstreamCursor, SignInCapacity,
+    SignatureRecordQuery, SignedIn, SignerStanding, Sweep, TakeOutcome, WatchedDids,
+    WithdrawSignature,
 };
 
 use crate::Envelope;
@@ -166,6 +169,14 @@ impl Actor for Identity {
         TakeOutcome,
         Sweep,
         Schedules,
+        RecordSignature,
+        ReproveSignature,
+        WithdrawSignature,
+        SignerStanding,
+        SignatureRecordQuery,
+        WatchedDids,
+        GetJetstreamCursor,
+        SetJetstreamCursor,
         ReadEvents,
         Flush,
     );

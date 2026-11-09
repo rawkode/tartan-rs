@@ -57,6 +57,32 @@ pub struct Services {
     pub readers: Readers,
     /// The identity resolver, over the fetch-safe client (design D9).
     pub resolver: VerifyingResolver,
+    /// The caps the identity actor enforces.
+    pub identity_limits: IdentityLimits,
+}
+
+/// Caps the identity actor enforces (design D4, *Route classes*). The `tartan` binary always
+/// uses [`IdentityLimits::default`], the values of the design; tests lower them so a cap can be
+/// reached quickly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdentityLimits {
+    /// The most untracked records one DID may withdraw in advance.
+    pub pre_withdrawn_per_did: u64,
+    /// The most `pre_withdrawn` rows forge-wide.
+    pub pre_withdrawn: u64,
+    /// The forge-wide count below which a stranger (no `read` right, not known) may still
+    /// withdraw an untracked record.
+    pub pre_withdrawn_for_strangers: u64,
+}
+
+impl Default for IdentityLimits {
+    fn default() -> Self {
+        Self {
+            pre_withdrawn_per_did: tartan_identity_api::MAX_PRE_WITHDRAWN_PER_DID,
+            pre_withdrawn: tartan_identity_api::MAX_PRE_WITHDRAWN,
+            pre_withdrawn_for_strangers: tartan_identity_api::MAX_PRE_WITHDRAWN_FOR_STRANGERS,
+        }
+    }
 }
 
 impl Services {

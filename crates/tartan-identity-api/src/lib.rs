@@ -119,8 +119,11 @@ pub fn status_is_inactive(status: &str) -> bool {
 pub struct Person {
     /// The DID.
     pub did: String,
-    /// The verified handle, when one is known.
+    /// The verified handle, [`INVALID_HANDLE`], or `None` when none is known yet.
     pub handle: Option<String>,
+    /// When the handle was last checked (clock milliseconds), if ever.
+    #[serde(default)]
+    pub handle_checked_at: Option<i64>,
     /// The PDS named by the DID's verified document.
     pub pds: Option<String>,
     /// The `#atproto` key as a `did:key`.
@@ -162,8 +165,10 @@ pub struct SignedIn {
 
 identity_action!(SignedIn, "signedIn", bool);
 
-/// Re-learns `did`'s identity and account status from its verified PLC log or did:web
-/// document and its PDS (design D10, *Account status*). It takes no other payload.
+/// Re-learns `did`'s identity, handle and account status from its verified PLC log or did:web
+/// document, its handle's DNS or HTTPS answer and its PDS (design D9, D10 *Account status*). It
+/// takes no other payload. Calling it for a DID the forge has no row for adds a row known for
+/// nothing (a cached person), which is not watched.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefreshIdentity {
     /// The DID.
@@ -177,6 +182,14 @@ pub struct Refreshed {
     pub status: String,
     /// The PDS the verified DID document names, when the DID could be resolved.
     pub pds: Option<String>,
+    /// The `#atproto` key (a `did:key`) the verified DID document names, when the DID could be
+    /// resolved now.
+    #[serde(default)]
+    pub atproto_key: Option<String>,
+    /// The handle stored after the refresh: the verified handle, `handle.invalid`, or the last
+    /// verified one when the check could not be completed.
+    #[serde(default)]
+    pub handle: Option<String>,
     /// Whether the status was learned now; false when a fetch failed and the previous status
     /// was kept.
     pub fresh: bool,
@@ -193,6 +206,10 @@ pub struct People {
 }
 
 identity_action!(People, "people", Vec<Option<Person>>);
+
+/// The handle stored for a DID whose claimed handle affirmatively failed verification
+/// (design D9, *Caching and display*).
+pub const INVALID_HANDLE: &str = "handle.invalid";
 
 // Sessions --------------------------------------------------------------------------------------
 
@@ -702,6 +719,238 @@ pub const SWEEP_SCHEDULE: &str = "sweep";
 pub struct Schedules {}
 
 identity_action!(Schedules, "schedules", Vec<String>);
+
+// Signature records (design D7, *Watching records*) ---------------------------------------------
+
+/// The most untracked records one DID may withdraw in advance (`pre_withdrawn` rows).
+pub const MAX_PRE_WITHDRAWN_PER_DID: u64 = 1_000;
+/// The most `pre_withdrawn` rows forge-wide.
+pub const MAX_PRE_WITHDRAWN: u64 = 100_000;
+/// The forge-wide count below which a DID with no `read` right that the forge does not know
+/// may still withdraw an untracked record, so strangers cannot use up the room readers and
+/// known signers need.
+pub const MAX_PRE_WITHDRAWN_FOR_STRANGERS: u64 = 50_000;
+/// The most pairs one [`SignerStanding`] call answers.
+pub const MAX_STANDING_PAIRS: usize = 1_000;
+
+/// Why a record was marked revoked (`signature_records.revoked_reason`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevokedReason {
+    /// A proof showed the record absent.
+    Deleted,
+    /// A proof showed another record at the same key.
+    Replaced,
+    /// The DID withdrew it on the forge.
+    Withdrawn,
+}
+
+impl RevokedReason {
+    /// The value stored and recorded in `signature.revoked`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Deleted => "deleted",
+            Self::Replaced => "replaced",
+            Self::Withdrawn => "withdrawn",
+        }
+    }
+
+    /// Parses a stored value.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "deleted" => Some(Self::Deleted),
+            "replaced" => Some(Self::Replaced),
+            "withdrawn" => Some(Self::Withdrawn),
+            _ => None,
+        }
+    }
+}
+
+/// Tracks the record that verified a stored result (design D8 step 6): inserts a
+/// `signature_records` row when none exists, leaving an existing row (revoked or not) as it
+/// is, and makes the DID known as a signer within the caps. Answers whether a row was added.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordSignature {
+    /// The signer.
+    pub did: String,
+    /// The record key (a TID).
+    pub rkey: String,
+    /// The record's CID.
+    pub cid: String,
+    /// The repository revision of the proof.
+    pub rev: String,
+}
+
+identity_action!(RecordSignature, "recordSignature", bool);
+
+/// Fetches and proves a tracked record again, never from the proof-reuse cache, and marks it
+/// revoked only after confirming a proved absence or another CID with freshly re-resolved
+/// evidence (design D7, *Confirming before revoking*). It never clears a revocation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReproveSignature {
+    /// The signer.
+    pub did: String,
+    /// The record key.
+    pub rkey: String,
+}
+
+/// What a [`ReproveSignature`] found.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum Reproved {
+    /// The forge does not track the record; nothing was fetched.
+    Untracked,
+    /// The record was already revoked; nothing was fetched.
+    AlreadyRevoked {
+        /// Why it was revoked.
+        reason: Option<RevokedReason>,
+    },
+    /// The repository still holds the record with its tracked CID.
+    Present,
+    /// The record is now marked revoked.
+    Revoked {
+        /// Why.
+        reason: RevokedReason,
+    },
+    /// Nothing could be concluded (a PDS or directory that cannot be reached, a proof that
+    /// does not verify, a confirmation that disagrees, an older repository state); nothing
+    /// changed.
+    Transient {
+        /// Why, without secrets.
+        reason: String,
+    },
+}
+
+identity_action!(ReproveSignature, "reproveSignature", Reproved);
+
+/// Marks a record revoked as `withdrawn` on the DID's own word, without fetching (design D7,
+/// *Watching records*). The gateway sends it only for the record's own DID from a browser or
+/// CLI session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WithdrawSignature {
+    /// The signer, who is the caller.
+    pub did: String,
+    /// The record key (a TID).
+    pub rkey: String,
+    /// The record CID the caller sent; recorded in `signature.revoked`, never checked.
+    pub cid: String,
+}
+
+/// What a [`WithdrawSignature`] did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum Withdrawn {
+    /// A tracked record is now revoked (or already was).
+    Tracked,
+    /// An untracked record now has an already-revoked `pre_withdrawn` row (or already had one).
+    PreWithdrawn,
+    /// An untracked record could not be withdrawn in advance: a cap is reached. Nothing was
+    /// stored.
+    Capped {
+        /// Which cap.
+        message: String,
+    },
+    /// The record key or CID is malformed. Nothing was stored.
+    Invalid {
+        /// What is wrong.
+        message: String,
+    },
+}
+
+identity_action!(WithdrawSignature, "withdrawSignature", Withdrawn);
+
+/// One `(did, rkey)` pair of a [`SignerStanding`] call.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RecordKey {
+    /// The signer.
+    pub did: String,
+    /// The record key.
+    pub rkey: String,
+}
+
+/// For each pair, whether its record is revoked (a pair without a row is not) and whether the
+/// DID's stored status is inactive. It reads only local state and fetches nothing (design D8,
+/// *Standing*); at most [`MAX_STANDING_PAIRS`] pairs per call.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignerStanding {
+    /// The pairs, de-duplicated by the caller.
+    pub pairs: Vec<RecordKey>,
+}
+
+/// The standing of one pair.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Standing {
+    /// When the record was marked revoked (clock milliseconds), if it was.
+    pub revoked_at: Option<i64>,
+    /// Why it was revoked.
+    pub revoked_reason: Option<RevokedReason>,
+    /// The DID's stored account status (`active` when the forge has none).
+    pub status: String,
+    /// Whether that status refuses the DID ([`status_is_inactive`]).
+    pub inactive: bool,
+}
+
+identity_action!(SignerStanding, "signerStanding", Vec<Standing>);
+
+/// A tracked signature record, for operators and tests.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignatureRecordInfo {
+    /// The signer.
+    pub did: String,
+    /// The record key.
+    pub rkey: String,
+    /// The tracked CID.
+    pub cid: String,
+    /// The repository revision of the proof (empty for a `pre_withdrawn` row).
+    pub rev: String,
+    /// When it was first proved, or withdrawn in advance.
+    pub first_proved_at: i64,
+    /// When it was marked revoked.
+    pub revoked_at: Option<i64>,
+    /// Why.
+    pub revoked_reason: Option<RevokedReason>,
+    /// Whether it was inserted by a withdrawal before any proof.
+    pub pre_withdrawn: bool,
+}
+
+/// The tracked row of one record, if any.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignatureRecordQuery {
+    /// The signer.
+    pub did: String,
+    /// The record key.
+    pub rkey: String,
+}
+
+identity_action!(
+    SignatureRecordQuery,
+    "signatureRecord",
+    Option<SignatureRecordInfo>
+);
+
+// Jetstream (design D10) ------------------------------------------------------------------------
+
+/// The DIDs the forge watches (`people.known_as` not empty), sorted: Jetstream's `wantedDids`
+/// and the consumer's own filter.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchedDids {}
+
+identity_action!(WatchedDids, "watchedDids", Vec<String>);
+
+/// The stored Jetstream cursor (Unix microseconds), if any.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetJetstreamCursor {}
+
+identity_action!(GetJetstreamCursor, "getJetstreamCursor", Option<i64>);
+
+/// Stores the Jetstream cursor.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetJetstreamCursor {
+    /// Unix microseconds of the last event handled.
+    pub cursor_us: i64,
+}
+
+identity_action!(SetJetstreamCursor, "setJetstreamCursor", ());
 
 #[cfg(test)]
 mod tests {

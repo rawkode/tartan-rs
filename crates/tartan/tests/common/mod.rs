@@ -689,6 +689,21 @@ impl Forge {
     /// Starts the engine, the actors and the gateway; `name` keeps this run's forge apart from
     /// earlier runs on the same engine.
     pub async fn start(name: &str) -> Self {
+        Self::start_with(
+            name,
+            Readers::default(),
+            tartan_forge::IdentityLimits::default(),
+        )
+        .await
+    }
+
+    /// Starts a forge whose deployment admits `readers` and whose identity actor enforces
+    /// `identity_limits` (tests lower caps so they can be reached).
+    pub async fn start_with(
+        name: &str,
+        readers: Readers,
+        identity_limits: tartan_forge::IdentityLimits,
+    ) -> Self {
         // Warnings show with a failing test's output.
         let _ = tracing_subscriber::fmt()
             .with_env_filter("warn")
@@ -714,8 +729,9 @@ impl Forge {
             extensions: extensions.clone(),
             clock: clock.clone(),
             owners: vec![identity.owner.clone()],
-            readers: Readers::default(),
+            readers: readers.clone(),
             resolver: identity.resolver.clone(),
+            identity_limits,
         })
         .expect("installed once");
         let mut actor_registry = Registry::new();
@@ -728,7 +744,7 @@ impl Forge {
         let base = format!("http://{}", listener.local_addr().expect("address"));
         let state = GatewayState {
             client: client.clone(),
-            access: identity.access(&base, Readers::default(), clock.clone()),
+            access: identity.access(&base, readers, clock.clone()),
             webhook_secret: Arc::from(WEBHOOK_SECRET),
             registry: registry.clone(),
         };

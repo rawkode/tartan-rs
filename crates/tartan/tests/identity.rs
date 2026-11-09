@@ -343,6 +343,7 @@ async fn identity_actor() {
         owners: vec![owner.did.clone()],
         readers: Readers::default(),
         resolver,
+        identity_limits: tartan_forge::IdentityLimits::default(),
     })
     .expect("installed once");
 

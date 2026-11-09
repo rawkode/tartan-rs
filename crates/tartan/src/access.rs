@@ -57,6 +57,17 @@ pub struct Access {
     cache: Mutex<HashMap<String, (Option<Authenticated>, i64)>>,
     /// Starting sign-ins, per client address.
     pub(crate) sign_ins: RateLimiter,
+    /// `GET /-/api/people` lookups of DIDs not cached yet, per client address.
+    pub(crate) people_lookups: RateLimiter,
+    /// `POST /-/api/people/resolve`, per client address.
+    pub(crate) resolves: RateLimiter,
+    /// `POST /-/auth/cli/token`, per client address.
+    pub(crate) cli_tokens: RateLimiter,
+    /// `self` calls that insert a row or make the forge fetch, per principal DID (design D4,
+    /// *Route classes*): 600 an hour, bursts of 100.
+    pub(crate) self_calls: RateLimiter,
+    /// DIDs whose background lookup is running, so each has at most one in flight.
+    pub(crate) lookups: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Access {
@@ -66,7 +77,12 @@ impl Access {
         Self {
             config,
             cache: Mutex::new(HashMap::new()),
-            sign_ins: RateLimiter::new(30, 6_000, clock),
+            sign_ins: RateLimiter::new(30, 6_000, clock.clone()),
+            people_lookups: RateLimiter::new(200, 500, clock.clone()),
+            resolves: RateLimiter::new(30, 2_000, clock.clone()),
+            cli_tokens: RateLimiter::new(10, 6_000, clock.clone()),
+            self_calls: RateLimiter::new(100, 6_000, clock),
+            lookups: Mutex::new(std::collections::HashSet::new()),
         }
     }
 

@@ -250,6 +250,7 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
         owners: vec![identity.owner.clone()],
         readers: tartan_config::deployment::Readers::default(),
         resolver: identity.resolver.clone(),
+        identity_limits: tartan_forge::IdentityLimits::default(),
     })
     .expect("installed once");
     // The deployment lists no modules until a test syncs some.

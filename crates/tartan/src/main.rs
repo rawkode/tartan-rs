@@ -126,6 +126,7 @@ async fn main() -> Result<()> {
             .collect(),
         readers: deployment.readers.clone(),
         resolver: resolver.clone(),
+        identity_limits: tartan_forge::IdentityLimits::default(),
     })?;
 
     let serve_config = ServeConfig::from_env()?;
@@ -166,6 +167,19 @@ async fn main() -> Result<()> {
         webhook_secret: Arc::from(webhook_secret.into_bytes()),
         registry: registry.clone(),
     };
+    // Jetstream turns identity, account and signature-record events into re-checks (design
+    // D10); an empty TARTAN_JETSTREAM_URL disables it, leaving the 6-hourly sweep.
+    match &settings.jetstream_url {
+        Some(url) => {
+            tartan::jetstream::spawn(
+                client.clone(),
+                tartan::jetstream::JetstreamOptions::new(url),
+                shutdown.clone(),
+            );
+        }
+        None => tracing::info!("Jetstream is disabled (TARTAN_JETSTREAM_URL is empty)"),
+    }
+
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .with_context(|| format!("bind {listen}"))?;

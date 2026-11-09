@@ -190,6 +190,7 @@ async fn forge_end_to_end() {
         owners: vec![identity.owner.clone()],
         readers: tartan_config::deployment::Readers::default(),
         resolver: identity.resolver.clone(),
+        identity_limits: tartan_forge::IdentityLimits::default(),
     })
     .expect("installed once");
     // The deployment lists no modules until a test syncs some.

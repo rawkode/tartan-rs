@@ -290,6 +290,8 @@ pub(crate) struct Shared {
     pub events: broadcast::Sender<Arc<jetstream::Event>>,
     pub http: reqwest::Client,
     pub tarpit: Mutex<Option<(Arc<tarpit::Tarpit>, JoinHandle<()>)>>,
+    /// Requests per XRPC method on the PDS hosts, so tests can show that nothing was fetched.
+    pub xrpc_counts: std::sync::Mutex<HashMap<String, u64>>,
 }
 
 impl Shared {
@@ -488,6 +490,7 @@ impl Devnet {
             events,
             http,
             tarpit: Mutex::new(None),
+            xrpc_counts: std::sync::Mutex::new(HashMap::new()),
         });
         let tasks = vec![
             server::spawn(main, server::main_router(shared.clone())),
@@ -702,6 +705,18 @@ impl Devnet {
     /// Starts (or restarts) the tarpit listener with `hosts` did:web hosts.
     pub async fn start_tarpit(&self, hosts: usize) -> anyhow::Result<TarpitInfo> {
         tarpit::start(&self.shared, hosts).await
+    }
+
+    /// How many requests the PDS hosts received for the XRPC method `nsid` (such as
+    /// `com.atproto.sync.getRecord`) since the devnet started.
+    pub fn xrpc_count(&self, nsid: &str) -> u64 {
+        self.shared
+            .xrpc_counts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(nsid)
+            .copied()
+            .unwrap_or_default()
     }
 
     /// Connection and request counts per tarpit host.

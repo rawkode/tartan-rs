@@ -10,10 +10,11 @@ use serde_json::json;
 use tartan_atproto::did::Did;
 use tartan_atproto::document::AtprotoIdentity;
 use tartan_atproto::fetch::FetchClient;
+use tartan_atproto::handle::HandleVerdict;
 use tartan_atproto::resolver::VerifyingResolver;
 use tartan_identity_api::{
-    KnowDid, KnownAs, MAX_SIGNERS, People, Person, RefreshIdentity, Refreshed, SignedIn, Sweep,
-    SweepReport,
+    INVALID_HANDLE, KnowDid, KnownAs, MAX_SIGNERS, People, Person, RefreshIdentity, Refreshed,
+    SignedIn, Sweep, SweepReport, WatchedDids,
 };
 
 use super::{DAY_MS, HOUR_MS, Identity, SOURCE, parse_did};
@@ -52,7 +53,7 @@ fn decode_known_as(stored: &str) -> Vec<KnownAs> {
 }
 
 const PERSON_COLUMNS: &str = "did, handle, pds, atproto_key, status, status_checked_at, known_as, \
-     first_seen_at, last_signed_at";
+     first_seen_at, last_signed_at, handle_checked_at";
 
 fn person_from_row(row: &[ColumnValue]) -> Result<Person> {
     Ok(Person {
@@ -65,6 +66,7 @@ fn person_from_row(row: &[ColumnValue]) -> Result<Person> {
         known_as: decode_known_as(&text(row, 6)?),
         first_seen_at: integer(row, 7)?,
         last_signed_at: optional_integer(row, 8)?,
+        handle_checked_at: optional_integer(row, 9)?,
     })
 }
 
@@ -85,6 +87,9 @@ struct Learned {
     identity: Option<AtprotoIdentity>,
     /// The account status, when it could be learned.
     status: Option<String>,
+    /// The handle check: the verified handle, [`INVALID_HANDLE`] for an affirmative mismatch,
+    /// or `None` when it could not be completed (the last verified handle is kept).
+    handle: Option<String>,
 }
 
 impl Identity {
@@ -151,7 +156,8 @@ impl Identity {
             .await
     }
 
-    /// Re-learns `did`'s identity and account status (design D10, *Account status*).
+    /// Re-learns `did`'s identity, handle and account status (design D9, D10 *Account
+    /// status*). A changed `#atproto` key or PDS drops the DID's proof-reuse cache.
     pub(super) async fn refresh(&self, ctx: &Ctx<Self>, did: &str) -> Result<Refreshed> {
         let parsed = parse_did(did)?;
         let resolver = services()?.resolver.clone();
@@ -175,37 +181,67 @@ impl Identity {
             .and_then(|identity| identity.signing_key.as_ref())
             .map(tartan_atproto::keys::AtprotoKey::did_key);
         let resolved = learned.identity.is_some();
-        let fresh = learned.status.is_some();
         let did_owned = did.to_owned();
-        let pds_stored = pds.clone();
-        let (status, changed) = ctx
+        let stored = (pds.clone(), key.clone());
+        let learned_handle = learned.handle.clone();
+        let learned_status = learned.status.clone();
+        let (status, handle, evidence_changed, recorded) = ctx
             .sql()
             .transaction(
                 move |tx| async move {
                     ensure_person(&tx, &did_owned, now).await?;
+                    let current = tx
+                        .execute(
+                            "SELECT status, handle, pds, atproto_key FROM people WHERE did = ?",
+                            Some(vec![param_text(did_owned.as_str())]),
+                        )
+                        .await?;
+                    let row = current
+                        .rows
+                        .first()
+                        .ok_or_else(|| anyhow::anyhow!("the person row is missing"))?;
+                    let previous_status = text(row, 0)?;
+                    let previous_handle = optional_text(row, 1)?;
+                    let previous_evidence = (optional_text(row, 2)?, optional_text(row, 3)?);
+                    let mut recorded = false;
+
+                    let mut evidence_changed = false;
                     if resolved {
+                        evidence_changed = previous_evidence != stored;
                         tx.execute(
                             "UPDATE people SET pds = ?, atproto_key = ? WHERE did = ?",
                             Some(vec![
-                                param_optional_text(pds_stored),
-                                param_optional_text(key),
+                                param_optional_text(stored.0),
+                                param_optional_text(stored.1),
                                 param_text(did_owned.as_str()),
                             ]),
                         )
                         .await?;
                     }
-                    let current = tx
-                        .execute(
-                            "SELECT status FROM people WHERE did = ?",
-                            Some(vec![param_text(did_owned.as_str())]),
+
+                    let mut handle = previous_handle.clone();
+                    if let Some(new) = learned_handle {
+                        tx.execute(
+                            "UPDATE people SET handle = ?, handle_checked_at = ? WHERE did = ?",
+                            Some(vec![
+                                param_text(new.as_str()),
+                                param_integer(now),
+                                param_text(did_owned.as_str()),
+                            ]),
                         )
                         .await?;
-                    let previous = match current.rows.first() {
-                        Some(row) => text(row, 0)?,
-                        None => "active".to_owned(),
-                    };
-                    let Some(status) = learned.status else {
-                        return Ok((previous, false));
+                        if let Some(old) = &previous_handle
+                            && *old != new
+                        {
+                            let data = json!({ "did": did_owned, "old": old, "new": new });
+                            append(&tx, SOURCE, "person.handle.changed", data).await?;
+                            recorded = true;
+                        }
+                        handle = Some(new);
+                    }
+
+                    let Some(status) = learned_status else {
+                        return Ok((previous_status, handle, evidence_changed, recorded));
                     };
                     tx.execute(
                         "UPDATE people SET status = ?, status_checked_at = ? WHERE did = ?",
@@ -216,12 +252,12 @@ impl Identity {
                         ]),
                     )
                     .await?;
-                    let changed = status != previous;
-                    if changed {
+                    if status != previous_status {
                         let data = json!({ "did": did_owned, "status": status });
                         append(&tx, SOURCE, "person.status.changed", data).await?;
+                        recorded = true;
                     }
-                    Ok((status, changed))
+                    Ok((status, handle, evidence_changed, recorded))
                 },
                 SqliteTransactionOptions {
                     name: Some("refresh_identity"),
@@ -229,10 +265,19 @@ impl Identity {
                 },
             )
             .await?;
-        if changed {
+        if evidence_changed {
+            crate::proof_cache::proof_cache().drop_did(did);
+        }
+        if recorded {
             self.flush_later(ctx);
         }
-        Ok(Refreshed { status, pds, fresh })
+        Ok(Refreshed {
+            status,
+            pds,
+            atproto_key: if resolved { key } else { None },
+            handle,
+            fresh: learned.status.is_some(),
+        })
     }
 
     /// Refreshes `did` and logs a failure: for background refreshes.
@@ -335,15 +380,31 @@ async fn learn(resolver: VerifyingResolver, did: Did) -> Learned {
         return Learned {
             identity: None,
             status: Some("deleted".to_owned()),
+            handle: None,
         };
     };
-    let status = match &identity.pds {
-        Some(pds) => repo_status(resolver.fetch(), pds, did.as_str()).await,
-        None => None,
+    let status_check = async {
+        match &identity.pds {
+            Some(pds) => repo_status(resolver.fetch(), pds, did.as_str()).await,
+            None => None,
+        }
+    };
+    let (status, verdict) = tokio::join!(status_check, resolver.verify_handle(&identity));
+    let handle = match verdict {
+        HandleVerdict::Verified(handle) => Some(handle.as_str().to_owned()),
+        HandleVerdict::Invalid(reason) => {
+            tracing::info!(%did, %reason, "a handle no longer verifies");
+            Some(INVALID_HANDLE.to_owned())
+        }
+        HandleVerdict::Unavailable(reason) => {
+            tracing::info!(%did, %reason, "could not check a handle; keeping the last one");
+            None
+        }
     };
     Learned {
         identity: Some(identity),
         status,
+        handle,
     }
 }
 
@@ -616,6 +677,19 @@ impl Handler<People> for Identity {
 impl Handler<Sweep> for Identity {
     async fn handle(self: Arc<Self>, ctx: Ctx<Self>, _action: Sweep) -> Result<SweepReport> {
         self.sweep(ctx).await
+    }
+}
+
+impl Handler<WatchedDids> for Identity {
+    async fn handle(self: Arc<Self>, ctx: Ctx<Self>, _action: WatchedDids) -> Result<Vec<String>> {
+        let rows = ctx
+            .sql()
+            .query(
+                "SELECT did FROM people WHERE known_as <> '[]' ORDER BY did",
+                None,
+            )
+            .await?;
+        rows.rows.iter().map(|row| text(row, 0)).collect()
     }
 }
 

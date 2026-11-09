@@ -29,6 +29,18 @@ pub enum ApiError {
         /// The extension's message.
         message: String,
     },
+    /// The caller is over a rate limit or cap; it may try again after `retry_after` seconds.
+    #[error("{message}")]
+    TooManyRequests {
+        /// What was limited.
+        message: String,
+        /// Seconds until a retry may succeed.
+        retry_after: u64,
+    },
+    /// A server the forge asked on the caller's behalf (a PLC directory, a handle's DNS or
+    /// HTTPS host, a PDS) could not be reached or answered badly.
+    #[error("{0}")]
+    Upstream(String),
     /// An actor or the Git host failed; the request can be retried.
     #[error("unavailable: {0}")]
     Unavailable(#[from] anyhow::Error),
@@ -50,6 +62,8 @@ impl IntoResponse for ApiError {
                 "unavailable" => StatusCode::SERVICE_UNAVAILABLE,
                 _ => StatusCode::BAD_GATEWAY,
             },
+            Self::TooManyRequests { .. } => StatusCode::TOO_MANY_REQUESTS,
+            Self::Upstream(_) => StatusCode::BAD_GATEWAY,
             Self::Unavailable(error) => {
                 tracing::error!(error = format!("{error:#}"), "request failed");
                 StatusCode::SERVICE_UNAVAILABLE
@@ -63,6 +77,14 @@ impl IntoResponse for ApiError {
             }
             other => json!({ "error": other.to_string() }),
         };
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        if let Self::TooManyRequests { retry_after, .. } = &self
+            && let Ok(value) = axum::http::HeaderValue::from_str(&retry_after.to_string())
+        {
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, value);
+        }
+        response
     }
 }

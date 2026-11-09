@@ -48,6 +48,7 @@ pub fn router(state: GatewayState) -> Router {
         .route("/subscribers/{name}/events", get(received))
         .merge(crate::extension_routes::routes())
         .merge(crate::account_routes::routes())
+        .merge(crate::people_routes::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate))
         .layer(middleware::from_fn(security_headers));
     let registry = crate::registry::routes().layer(middleware::from_fn(security_headers));
@@ -56,6 +57,7 @@ pub fn router(state: GatewayState) -> Router {
     Router::new()
         .nest("/-/api", api)
         .merge(crate::auth::routes())
+        .merge(crate::cli_auth::routes())
         .route("/-/hooks/git-host", post(git_host_events))
         .route("/-/health", get(|| async { "ok" }))
         .merge(registry)

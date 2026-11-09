@@ -86,7 +86,22 @@ pub(crate) fn main_router(shared: Arc<Shared>) -> Router {
         .merge(pds_router(shared, 0))
 }
 
-/// A PDS host's routes.
+/// A PDS host's routes, counting requests per XRPC method.
 pub(crate) fn pds_router(shared: Arc<Shared>, host: usize) -> Router {
-    pds::router().with_state(pds::Ctx { shared, host })
+    let counts = shared.clone();
+    pds::router()
+        .with_state(pds::Ctx { shared, host })
+        .layer(axum::middleware::from_fn(
+            move |request: axum::extract::Request, next: axum::middleware::Next| {
+                if let Some(nsid) = request.uri().path().strip_prefix("/xrpc/") {
+                    *counts
+                        .xrpc_counts
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .entry(nsid.to_owned())
+                        .or_default() += 1;
+                }
+                next.run(request)
+            },
+        ))
 }
