@@ -13,8 +13,12 @@ A call SHALL succeed only if the caller's manifest `permissions.calls` names the
 - **THEN** the call is refused with `denied` (the API answers 403) and the issue is unchanged
 
 ### Requirement: Calls stay inside the org
-The target SHALL be a repository installation in the caller's org; a repository's installation SHALL only call into its own repository. The call SHALL act as the principal of the calling call, and the target's errors SHALL be returned to the caller.
+The target SHALL be an installation on the caller's repository. The call SHALL act as the principal of the calling call, and the target's errors SHALL be returned to the caller.
 
 #### Scenario: Permitted call
-- **WHEN** Kanban, installed on `acme`, calls Issues' `update` on `acme/web`
+- **WHEN** Kanban on `acme/web` calls Issues' `update` on `acme/web`
 - **THEN** the issue in `acme/web` is updated
+
+#### Scenario: Another repository
+- **WHEN** an installation on `acme/web` calls into `acme/api`
+- **THEN** the call is refused with `denied`

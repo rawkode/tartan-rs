@@ -21,7 +21,7 @@ An installation is a published package installed on an org or a repository, with
 - **THEN** the API answers 404
 
 ### Requirement: Installations come only from configuration
-An installation SHALL exist only because a committed `tartan.cue` names it (see `config-reconciliation`). `GET /-/api/orgs/<org>/extensions` and `GET /-/api/orgs/<org>/repos/<repo>/extensions` SHALL list the enabled installations.
+An installation SHALL exist only because a repository's committed configuration names it (see `config-reconciliation`). `GET /-/api/orgs/<org>/repos/<repo>/extensions` SHALL list the repository's enabled installations.
 
 #### Scenario: Listing
 - **WHEN** a repository's configuration installs Issues
@@ -31,7 +31,7 @@ An installation SHALL exist only because a committed `tartan.cue` names it (see 
 An installation its configuration no longer names SHALL be disabled: its subscriptions are removed, calls to it answer 404, and its data is kept. Naming it again SHALL enable the same installation with its data.
 
 #### Scenario: Removed and restored
-- **WHEN** Issues is removed from `tartan.cue` and later added back
+- **WHEN** Issues is removed from the repository's configuration and later added back
 - **THEN** while removed its tools answer 404, and once restored its earlier issues are there
 
 ### Requirement: Upgrading runs the new package's migrations

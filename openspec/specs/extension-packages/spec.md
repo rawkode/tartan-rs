@@ -5,27 +5,34 @@ Extension packages (manifest, component, migrations) are published to object sto
 
 ## Requirements
 
-### Requirement: Publishing checks and stores a package
-`POST /-/api/packages {"manifest", "component" (base64), "migrations": [{path, sql}]}` SHALL check that the manifest targets `tartan:ext@0.1.0`, that the migrations match the manifest's list in order, and that the component fits the world, and SHALL store the package under its id, version and a digest of all its contents. An invalid package SHALL be refused with 400; the forge SHALL record `package.published`.
-
-#### Scenario: Publish
-- **WHEN** the Issues package is published
-- **THEN** the API answers 201 and the forge's log gains `package.published`
-
-#### Scenario: Not a component
-- **WHEN** a package's component is not WebAssembly
-- **THEN** the API answers 400
-
 ### Requirement: id@version never changes
-Publishing the same contents again SHALL answer 200 with the existing package; publishing other contents under a published `id@version` SHALL answer 409.
+A registered `id@version` SHALL keep its digest: a synced module with the same id and version but other contents SHALL not replace it.
 
 #### Scenario: Changed contents
-- **WHEN** a package with a changed migration is published under the same version
-- **THEN** the API answers 409
+- **WHEN** a module with a changed migration is listed under the same version
+- **THEN** the forge keeps the registered package and reports the mismatch
 
 ### Requirement: A package declares where it installs
-A manifest's `storage.scope` SHALL be `repo` or `org`; a package SHALL only be installed where its scope says.
+A manifest's `storage.scope` SHALL be `repo`; every package installs on repositories.
 
 #### Scenario: Wrong scope
-- **WHEN** an org-scoped package is installed on a repository
-- **THEN** it is refused
+- **WHEN** a module's manifest has `storage.scope: "org"`
+- **THEN** its package is not available
+
+### Requirement: Packages come from synced modules
+For each synced module holding a `tartan.json`, the forge SHALL check that the manifest targets `tartan:ext@0.1.0`, that its version equals the module's, that the migrations match the manifest's list in order, and that the component fits the world, and SHALL register the package under its id, version and the module's digest, recording `package.published`. A module that fails these checks SHALL not be available.
+
+#### Scenario: Register
+- **WHEN** the Issues module v0.6.0 is synced
+- **THEN** `rawkode.issues@0.6.0` is available and the forge's log gains `package.published`
+
+#### Scenario: Not a component
+- **WHEN** a module's `component.wasm` is not WebAssembly
+- **THEN** its package is not available and the sync reports why
+
+### Requirement: A package names its requirements
+A manifest MAY list the extensions it requires (`requires`). Reconciliation SHALL refuse installing a package whose required extensions the same configuration does not install.
+
+#### Scenario: Kanban without Issues
+- **WHEN** a repository's configuration installs Kanban but not Issues
+- **THEN** the configuration is refused, naming `rawkode.issues`

@@ -4,9 +4,11 @@ context: |
   Tartan is an event-driven Git forge. The backend is Rust on Rivet actors (one SQLite database per
   actor); walgit hosts Git in an object store (RustFS locally); extensions are WebAssembly
   components of the tartan:ext world (wit/tartan.wit) run in wasmtime.
-  Extensions and their settings come only from tartan.cue committed in repositories; the org's
-  configuration lives in its `tartan` repository. Nothing is installed or configured through the
-  HTTP API.
+  Extensions and their settings come only from the CUE package `tartan` committed at the root of
+  a repository (a CUE module), and install only on that repository. The forge applies exactly
+  what `cue export` of that package gives with CUE_REGISTRY pointed at the forge, which serves
+  the extension modules its deployment configuration (TARTAN_CONFIG) lists; it adds no files to
+  the evaluation. Nothing is installed or configured through the HTTP API.
   Every state change appends an event in the same transaction; delivery is in order per source
   and at least once.
   Prefer maintained open-source components over building infrastructure.
