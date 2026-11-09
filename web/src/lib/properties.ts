@@ -28,22 +28,33 @@ export const isEmpty = (value: PropertyValue | undefined): boolean =>
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const CURRENCY = /^[A-Z]{3}$/;
 
-/** Whether `YYYY-MM-DD` names a real calendar day. */
+/**
+ * Whether `YYYY-MM-DD` names a real calendar day, in any year from 0000 to 9999 (the
+ * proleptic Gregorian calendar, as Issues checks it).
+ */
 export const isDate = (text: string): boolean => {
 	if (!DATE.test(text)) return false;
 	const [y, m, d] = text.split("-").map(Number) as [number, number, number];
-	const at = new Date(Date.UTC(y, m - 1, d));
-	return at.getUTCFullYear() === y && at.getUTCMonth() === m - 1 && at.getUTCDate() === d;
+	const leap = y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
+	const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1];
+	return days !== undefined && d >= 1 && d <= days;
 };
 
-/** Whether text is an absolute http or https URL. */
+const URL_MAX_CHARS = 2048;
+
+/**
+ * Whether text is an absolute `http://` or `https://` URL as Issues accepts one: the scheme in
+ * lower case, a host, no whitespace, at most 2048 characters.
+ */
 export const isHttpUrl = (text: string): boolean => {
-	try {
-		const url = new URL(text);
-		return (url.protocol === "http:" || url.protocol === "https:") && url.host.length > 0;
-	} catch {
-		return false;
-	}
+	const rest = text.startsWith("https://")
+		? text.slice("https://".length)
+		: text.startsWith("http://")
+		? text.slice("http://".length)
+		: null;
+	if (rest === null || /\s/.test(text) || [...text].length > URL_MAX_CHARS) return false;
+	const hostEnd = rest.search(/[/?#]/);
+	return (hostEnd === -1 ? rest.length : hostEnd) > 0;
 };
 
 /** The number of minor-unit digits of a currency (2 for GBP, 0 for JPY). */

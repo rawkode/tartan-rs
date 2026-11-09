@@ -73,7 +73,11 @@ const dirty = computed(() => {
 	return draft.title !== current.title || draft.body !== (current.body ?? "") ||
 		Object.keys(propertyChanges.value).length > 0;
 });
-const errors = computed(() => validateAll(defs.data.value ?? [], draft.properties));
+// Only the properties being changed are checked: a stored value the form would not accept
+// must not keep the rest of the issue from being saved.
+const errors = computed(() =>
+	validateAll((defs.data.value ?? []).filter((def) => def.name in propertyChanges.value), draft.properties)
+);
 const titleProblem = computed(() =>
 	draft.title.trim().length === 0 ? "A title is required." : draft.title.length > 200 ? "At most 200 characters." : null
 );

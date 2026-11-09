@@ -5,6 +5,7 @@ import {
 	fromMinorUnits,
 	initialValues,
 	isDate,
+	isHttpUrl,
 	minorDigits,
 	propertyTitle,
 	toMinorUnits,
@@ -77,10 +78,26 @@ test("titles and formatting use labels", () => {
 	expect(formatValue(select, null)).toBe("—");
 });
 
+test("URLs are what Issues accepts", () => {
+	expect(isHttpUrl("https://example.com/x")).toBe(true);
+	expect(isHttpUrl("http://example.com")).toBe(true);
+	expect(isHttpUrl("HTTPS://Example.com/x")).toBe(false);
+	expect(isHttpUrl("https:///x")).toBe(false);
+	expect(isHttpUrl("https://example.com/a b")).toBe(false);
+	expect(isHttpUrl("ftp://example.com")).toBe(false);
+	expect(isHttpUrl(`https://example.com/${"a".repeat(2048)}`)).toBe(false);
+});
+
 test("dates are calendar days", () => {
 	expect(isDate("2026-11-08")).toBe(true);
 	expect(isDate("2026-13-01")).toBe(false);
 	expect(isDate("26-11-08")).toBe(false);
+	// Every year Issues accepts, the first hundred included; 0000 is a leap year.
+	expect(isDate("0000-01-01")).toBe(true);
+	expect(isDate("0000-02-29")).toBe(true);
+	expect(isDate("0099-12-31")).toBe(true);
+	expect(isDate("1900-02-29")).toBe(false);
+	expect(isDate("2024-02-29")).toBe(true);
 });
 
 test("a new issue starts with the defaults", () => {
