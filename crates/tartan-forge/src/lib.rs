@@ -27,7 +27,8 @@ mod sql;
 mod walgit;
 
 pub use crate::actors::extension::{
-    Act, CallReply, CallTool, DeliverEvents, Disable, Extension, InstallationSpec, Render,
+    Act, CallReply, CallTool, Caller, CallerKind, DeliverEvents, Disable, Extension,
+    InstallationSpec, Render,
 };
 pub use crate::actors::forge::{
     CreateOrg, Forge, ListOrgs, ListPackages, ListRecipients, ListSubscribers, OrgInfo,

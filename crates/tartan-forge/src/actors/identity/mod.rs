@@ -9,6 +9,7 @@
 //! Secrets never reach its database or its events: sessions, tokens and CLI codes are stored by
 //! the SHA-256 of their secret, and an action that creates one answers with the secret once.
 
+mod auth;
 mod cli;
 mod people;
 mod secrets;
@@ -23,9 +24,10 @@ use async_trait::async_trait;
 use rivetkit::prelude::*;
 use rivetkit::{CronEveryOptions, Handler, action};
 use tartan_identity_api::{
-    AdminCreateToken, AdminListTokens, AdminRevokeToken, Authenticate, CreateSession, CreateToken,
-    EndSession, IssueCliCode, KnowDid, KnownAs, ListSessions, ListTokens, People, RedeemCliCode,
-    RefreshIdentity, RevokeToken, SWEEP_SCHEDULE, Schedules, SignedIn, Sweep,
+    AdminCreateToken, AdminListTokens, AdminRevokeToken, Authenticate, BeginAuth, CompleteAuth,
+    CreateSession, CreateToken, EndSession, IssueCliCode, KnowDid, KnownAs, ListSessions,
+    ListTokens, People, PutOutcome, RedeemCliCode, RefreshIdentity, RevokeToken, SWEEP_SCHEDULE,
+    Schedules, SignInCapacity, SignedIn, Sweep, TakeOutcome,
 };
 
 use crate::Envelope;
@@ -157,6 +159,11 @@ impl Actor for Identity {
         AdminRevokeToken,
         IssueCliCode,
         RedeemCliCode,
+        SignInCapacity,
+        BeginAuth,
+        CompleteAuth,
+        PutOutcome,
+        TakeOutcome,
         Sweep,
         Schedules,
         ReadEvents,

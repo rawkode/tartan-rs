@@ -2,6 +2,8 @@
 //!
 //! Needs a Rivet engine binary: set `RIVET_ENGINE_BINARY_PATH` (see `scripts/e2e.sh`).
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -13,17 +15,19 @@ use rivetkit::{EngineSpawnMode, Registry, ServeConfig};
 use serde_json::{Value, json};
 use sha2::Sha256;
 use tartan::{GatewayState, RegistryStore, router};
-use tartan_atproto::Mode;
-use tartan_atproto::fetch::{FetchClient, FetchConfig};
-use tartan_atproto::resolver::{ResolverConfig, VerifyingResolver};
 use tartan_forge::{Extensions, GitHost, Services, SystemClock, install_services, register_actors};
 use tokio_util::sync::CancellationToken;
 
-const ADMIN_TOKEN: &str = "test-admin-token";
 const WEBHOOK_SECRET: &[u8] = b"test-webhook-secret";
 /// Where `rivetkit::test::setup` runs the engine.
 const ENGINE: &str = "http://127.0.0.1:6420";
 const DEADLINE: Duration = Duration::from_secs(60);
+/// The owner's access token, minted once the identity actor runs.
+static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn token() -> &'static str {
+    TOKEN.get().expect("the token is minted before any request")
+}
 
 #[derive(Default)]
 struct FakeGitHost {
@@ -75,7 +79,7 @@ impl Forge {
         let mut request = self
             .http
             .request(method, format!("{}{path}", self.base))
-            .bearer_auth(ADMIN_TOKEN);
+            .bearer_auth(token());
         if let Some(body) = body {
             request = request.json(&body);
         }
@@ -163,13 +167,6 @@ fn ref_event(repo: &str, seq: &str, name: &str, old: &str, new: &str) -> Value {
     })
 }
 
-/// An identity resolver with production rules; these scenarios reach no identity network.
-fn offline_resolver() -> VerifyingResolver {
-    let fetch = FetchClient::new(FetchConfig::new(Mode::Production)).expect("a fetch client");
-    let config = ResolverConfig::production().expect("the system DNS configuration");
-    VerifyingResolver::new(fetch, config)
-}
-
 /// One engine and one gateway for every scenario, which run in order.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn forge_end_to_end() {
@@ -184,14 +181,15 @@ async fn forge_end_to_end() {
         tartan_extensions::ExtensionRuntime::new().expect("runtime"),
         store.clone(),
     ));
+    let identity = common::IdentityWorld::start().await;
     install_services(Services {
         extensions: extensions.clone(),
         forge_id: format!("test-{nanos}"),
         git_host: git_host.clone(),
         clock: Arc::new(SystemClock),
-        owners: Vec::new(),
+        owners: vec![identity.owner.clone()],
         readers: tartan_config::deployment::Readers::default(),
-        resolver: offline_resolver(),
+        resolver: identity.resolver.clone(),
     })
     .expect("installed once");
     // The deployment lists no modules until a test syncs some.
@@ -218,23 +216,29 @@ async fn forge_end_to_end() {
     };
     tokio::spawn(dedicated.serve_with_config(dedicated_config, shutdown.clone()));
 
-    let state = GatewayState {
-        client: actors.client().clone(),
-        admin_token: Arc::from(ADMIN_TOKEN),
-        webhook_secret: Arc::from(WEBHOOK_SECRET),
-        registry: RegistryStore::new(store),
-    };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
     let base = format!("http://{}", listener.local_addr().expect("address"));
-    tokio::spawn(async move { axum::serve(listener, router(state)).await });
+    let state = GatewayState {
+        client: actors.client().clone(),
+        access: identity.access(
+            &base,
+            tartan_config::deployment::Readers::default(),
+            Arc::new(SystemClock),
+        ),
+        webhook_secret: Arc::from(WEBHOOK_SECRET),
+        registry: RegistryStore::new(store),
+    };
+    common::serve(listener, router(state));
+    let minted = common::admin_token(actors.client(), &identity.owner, common::all_scopes()).await;
+    TOKEN.set(minted).expect("minted once");
     let forge = Forge {
         base,
         http: reqwest::Client::new(),
     };
 
-    the_api_requires_the_admin_token(&forge).await;
+    the_api_requires_a_credential(&forge).await;
     orgs_and_repositories_emit_events(&forge, &git_host).await;
     ref_events_are_recorded_once_and_filtered_by_pattern(&forge).await;
     placement_puts_actors_in_their_pool(&forge, &dedicated_pool).await;
@@ -243,7 +247,7 @@ async fn forge_end_to_end() {
     actors.shutdown().await;
 }
 
-async fn the_api_requires_the_admin_token(forge: &Forge) {
+async fn the_api_requires_a_credential(forge: &Forge) {
     let status = forge
         .http
         .post(format!("{}/-/api/orgs", forge.base))

@@ -12,6 +12,9 @@ pub enum ApiError {
     /// The credentials are missing or wrong.
     #[error("unauthorized")]
     Unauthorized,
+    /// The caller may not do this.
+    #[error("{0}")]
+    Forbidden(String),
     /// The named org, repository, package or installation does not exist.
     #[error("{0} not found")]
     NotFound(String),
@@ -36,6 +39,7 @@ impl IntoResponse for ApiError {
         let status = match &self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Extension { kind, .. } => match kind.as_str() {

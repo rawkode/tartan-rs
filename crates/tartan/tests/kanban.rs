@@ -196,6 +196,20 @@ async fn boards_from_a_repository_configuration_importing_the_modules() {
         created["issue"]["properties"]["status"], "todo",
         "{created}"
     );
+    // The owner's token is an agent acting for her DID (spec: extension-runtime).
+    let author = &created["issue"]["author"];
+    assert_eq!(author["kind"], "agent", "{created}");
+    assert!(
+        author["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("token:")),
+        "{created}"
+    );
+    assert_eq!(
+        author["onBehalfOf"],
+        json!(forge.identity.owner),
+        "{created}"
+    );
 
     push(&forge, "acme/api", &config(&format!("{ISSUES}{KANBAN}"))).await;
     forge
@@ -424,5 +438,29 @@ extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
         .await;
     assert_eq!(status, 400, "{body}");
 
+    // Signed in, she is herself.
+    let session = common::sign_in(&forge.base, "alice.test", "/", None)
+        .await
+        .session();
+    let by_person: serde_json::Value = common::browser()
+        .post(format!(
+            "{}{}",
+            forge.base,
+            "/-/api/orgs/acme/repos/api/extensions/issues.tartan.rawkode.academy/tools/create"
+        ))
+        .header("cookie", format!("tartan_session={session}"))
+        .header("origin", &forge.base)
+        .json(&json!({"title": "Filed in the browser", "properties": {"status": "done"}}))
+        .send()
+        .await
+        .expect("answers")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(
+        by_person["issue"]["author"],
+        json!({"kind": "user", "id": forge.identity.owner}),
+        "{by_person}"
+    );
     forge.stop().await;
 }

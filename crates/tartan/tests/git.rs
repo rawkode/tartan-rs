@@ -21,13 +21,18 @@ use tartan_forge::{
 };
 use tokio::process::{Child, Command};
 
-const ADMIN_TOKEN: &str = "git-test-admin-token";
 const WEBHOOK_SECRET: &str = "git-test-webhook-secret";
 const GIT_HOST_TOKEN: &str = "git-test-host-token";
 const S3_ACCESS_KEY: &str = "tartantest";
 const S3_SECRET_KEY: &str = "tartantestsecret";
 const BUCKET: &str = "tartan-test";
 const DEADLINE: Duration = Duration::from_secs(60);
+/// The owner's access token, minted once the identity actor runs.
+static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn token() -> &'static str {
+    TOKEN.get().expect("the token is minted before any request")
+}
 
 /// The configuration the test pushes: Issues, through its module, with typed properties.
 const ISSUES_CONFIG: &str = r#"package tartan
@@ -164,7 +169,7 @@ fn walgit(config: &Path, log: &Path) -> Child {
 async fn api(http: &reqwest::Client, base: &str, path: &str, body: Value) -> Value {
     let response = http
         .post(format!("{base}{path}"))
-        .bearer_auth(ADMIN_TOKEN)
+        .bearer_auth(token())
         .json(&body)
         .send()
         .await
@@ -232,6 +237,8 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
         tartan_extensions::ExtensionRuntime::new().expect("runtime"),
         store,
     ));
+    let identity = common::IdentityWorld::start().await;
+    let clock = Arc::new(common::TestClock::default());
     install_services(Services {
         extensions: extensions.clone(),
         forge_id: format!("git-test-{nanos}"),
@@ -239,10 +246,10 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
             &format!("http://127.0.0.1:{walgit_port}"),
             Some(GIT_HOST_TOKEN.to_owned()),
         )),
-        clock: Arc::new(common::TestClock::default()),
-        owners: Vec::new(),
+        clock: clock.clone(),
+        owners: vec![identity.owner.clone()],
         readers: tartan_config::deployment::Readers::default(),
-        resolver: common::offline_resolver(),
+        resolver: identity.resolver.clone(),
     })
     .expect("installed once");
     // The deployment lists no modules until a test syncs some.
@@ -255,16 +262,18 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
     let client = actors.client().clone();
     let state = GatewayState {
         client: client.clone(),
-        admin_token: Arc::from(ADMIN_TOKEN),
+        access: identity.access(&base, tartan_config::deployment::Readers::default(), clock),
         webhook_secret: Arc::from(WEBHOOK_SECRET.as_bytes()),
         registry: registry.clone(),
     };
-    tokio::spawn(async move { axum::serve(listener, router(state)).await });
+    common::serve(listener, router(state));
+    let minted = common::admin_token(&client, &identity.owner, common::all_scopes()).await;
+    TOKEN.set(minted).expect("minted once");
 
     let http = reqwest::Client::new();
     let subscribed = http
         .put(format!("{base}/-/api/subscribers/refs"))
-        .bearer_auth(ADMIN_TOKEN)
+        .bearer_auth(token())
         .json(&json!({"pattern": "ref.>"}))
         .send()
         .await
@@ -361,7 +370,7 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
     let updates = loop {
         let events: Value = http
             .get(format!("{base}/-/api/subscribers/refs/events?limit=500"))
-            .bearer_auth(ADMIN_TOKEN)
+            .bearer_auth(token())
             .send()
             .await
             .expect("answers")
@@ -453,7 +462,7 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
     loop {
         let listed: Value = http
             .get(format!("{base}/-/api/orgs/acme/repos/api/extensions"))
-            .bearer_auth(ADMIN_TOKEN)
+            .bearer_auth(token())
             .send()
             .await
             .expect("answers")

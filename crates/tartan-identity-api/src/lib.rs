@@ -561,6 +561,118 @@ pub struct RedeemCliCode {
 
 identity_action!(RedeemCliCode, "redeemCliCode", Result<NewSession, CliRefusal>);
 
+// Sign-in bookkeeping (design D1) ---------------------------------------------------------------
+
+/// The most sign-ins one client address may have pending.
+pub const MAX_PENDING_SIGN_INS_PER_ADDRESS: usize = 20;
+
+/// The most sign-ins pending across the forge.
+pub const MAX_PENDING_SIGN_INS: usize = 10_000;
+
+/// How long a pending sign-in, and a failure's details, are kept (milliseconds).
+pub const SIGN_IN_LIFETIME_MS: i64 = 10 * 60 * 1000;
+
+/// The most failure details kept per client address; beyond it the oldest is dropped.
+pub const MAX_OUTCOMES_PER_ADDRESS: usize = 20;
+
+/// The most failure details kept across the forge; beyond it the oldest is dropped.
+pub const MAX_OUTCOMES: usize = 10_000;
+
+/// A sign-in that has passed PAR and waits for its callback.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingSignIn {
+    /// The OAuth `state`, single-use.
+    pub state: String,
+    /// The DID the sign-in started with.
+    pub did: String,
+    /// The handle the person typed, when it was verified in both directions at the start.
+    pub handle: Option<String>,
+    /// The authorization server's issuer.
+    pub issuer: String,
+    /// The PDS the DID document named at the start.
+    pub pds: String,
+    /// jacquard's serialized `AuthRequestData` (PKCE verifier, DPoP key and nonce, endpoints).
+    pub auth_request: String,
+    /// The validated path to return to.
+    pub return_to: String,
+    /// The client address that started the sign-in.
+    pub client_ip: String,
+    /// The SHA-256 of the pre-auth cookie, as lowercase hex.
+    pub browser_sha256: String,
+}
+
+/// Why a sign-in could not be started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignInRefusal {
+    /// The client address has [`MAX_PENDING_SIGN_INS_PER_ADDRESS`] sign-ins pending.
+    RateLimited,
+    /// The forge has [`MAX_PENDING_SIGN_INS`] sign-ins pending.
+    Busy,
+}
+
+/// Whether `client_ip` may start another sign-in, checked before any network work.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignInCapacity {
+    /// The client address.
+    pub client_ip: String,
+}
+
+identity_action!(SignInCapacity, "signInCapacity", Result<(), SignInRefusal>);
+
+/// Stores a pending sign-in after PAR succeeded, within the per-address and forge-wide caps.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BeginAuth {
+    /// The pending sign-in.
+    pub pending: PendingSignIn,
+}
+
+identity_action!(BeginAuth, "beginAuth", Result<(), SignInRefusal>);
+
+/// Consumes the pending sign-in of `state`: it is deleted whatever happens next. Answers
+/// nothing for an unknown, used or expired `state`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompleteAuth {
+    /// The callback's `state`.
+    pub state: String,
+}
+
+identity_action!(CompleteAuth, "completeAuth", Option<PendingSignIn>);
+
+/// Keeps a sign-in failure's details for the browser that ran the flow (design D1, *Outcome
+/// details*), and answers the outcome id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PutOutcome {
+    /// The problem code.
+    pub code: String,
+    /// The details, such as `host`, `error` and `error_description`.
+    pub details: std::collections::BTreeMap<String, String>,
+    /// The SHA-256 of the outcome cookie, as lowercase hex.
+    pub browser_sha256: String,
+    /// The client address.
+    pub client_ip: String,
+}
+
+identity_action!(PutOutcome, "putOutcome", String);
+
+/// Reads and deletes an outcome's details: answers them only when the outcome exists, has not
+/// expired, has `code`, and was bound to the cookie whose SHA-256 is `browser_sha256`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TakeOutcome {
+    /// The outcome id.
+    pub id: String,
+    /// The problem code the page shows.
+    pub code: String,
+    /// The SHA-256 of the presented outcome cookie, as lowercase hex.
+    pub browser_sha256: String,
+}
+
+identity_action!(
+    TakeOutcome,
+    "takeOutcome",
+    Option<std::collections::BTreeMap<String, String>>
+);
+
 // Housekeeping ----------------------------------------------------------------------------------
 
 /// The identity actor's scheduled housekeeping (design D3, *Scheduled sweep*): deletes expired

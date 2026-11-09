@@ -121,6 +121,64 @@ impl Action for Disable {
     const NAME: &'static str = "disable";
 }
 
+/// Who a call acts for (spec: extension-runtime): a person, or an agent acting on behalf of
+/// one. The gateway builds it from the request's principal; the extension sees it as the slot
+/// context's `viewer`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Caller {
+    /// A person, or an agent acting for one.
+    pub kind: CallerKind,
+    /// The person's DID, or `token:<id>` for an access token.
+    pub id: String,
+    /// The DID an agent acts for.
+    pub on_behalf_of: Option<String>,
+}
+
+/// The kinds of [`Caller`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallerKind {
+    /// A signed-in person.
+    User,
+    /// An access token acting for a person.
+    Agent,
+    /// The installation itself, for events and timers.
+    Ext,
+}
+
+impl Caller {
+    /// A signed-in person.
+    pub fn user(did: impl Into<String>) -> Self {
+        Self {
+            kind: CallerKind::User,
+            id: did.into(),
+            on_behalf_of: None,
+        }
+    }
+
+    /// An access token acting for `did`.
+    pub fn agent(token_id: &str, did: impl Into<String>) -> Self {
+        Self {
+            kind: CallerKind::Agent,
+            id: format!("token:{token_id}"),
+            on_behalf_of: Some(did.into()),
+        }
+    }
+
+    /// The caller as the extension world describes it.
+    fn to_extension(&self) -> ExtensionActor {
+        ExtensionActor {
+            kind: match self.kind {
+                CallerKind::User => ActorKind::User,
+                CallerKind::Agent => ActorKind::Agent,
+                CallerKind::Ext => ActorKind::Ext,
+            },
+            id: self.id.clone(),
+            on_behalf_of: self.on_behalf_of.clone(),
+        }
+    }
+}
+
 /// Calls one of the extension's tools.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CallTool {
@@ -129,7 +187,7 @@ pub struct CallTool {
     /// Its JSON arguments.
     pub args: Value,
     /// The principal calling it.
-    pub viewer: String,
+    pub viewer: Caller,
 }
 
 impl Action for CallTool {
@@ -146,7 +204,7 @@ pub struct Render {
     /// Properties for the render.
     pub props: Value,
     /// The principal viewing it.
-    pub viewer: String,
+    pub viewer: Caller,
 }
 
 impl Action for Render {
@@ -163,7 +221,7 @@ pub struct Act {
     /// Its JSON payload.
     pub payload: Value,
     /// The principal acting.
-    pub viewer: String,
+    pub viewer: Caller,
 }
 
 impl Action for Act {
@@ -303,14 +361,14 @@ impl Extension {
         ctx: &Ctx<Self>,
         spec: &InstallationSpec,
         loaded: &Loaded,
-        viewer: &str,
+        viewer: &Caller,
     ) -> CallEnvironment {
         let caller = ctx.client().ok().map(|client| {
             Arc::new(InstallationCaller {
                 client,
                 repo_id: spec.repo_id.clone(),
                 allowed: loaded.package.manifest.raw["permissions"]["calls"].clone(),
-                viewer: viewer.to_owned(),
+                viewer: viewer.clone(),
             }) as Arc<dyn ToolCaller>
         });
         CallEnvironment {
@@ -323,8 +381,12 @@ impl Extension {
     }
 
     /// The principal an installation acts as when no person does: for events and timers.
-    fn own_principal(&self) -> String {
-        format!("extension:{}", self.id)
+    fn own_principal(&self) -> Caller {
+        Caller {
+            kind: CallerKind::Ext,
+            id: format!("extension:{}", self.id),
+            on_behalf_of: None,
+        }
     }
 
     /// Applies a successful call's effects and turns its result into a reply.
@@ -677,7 +739,7 @@ fn to_extension_event(envelope: &Envelope, spec: &InstallationSpec) -> tartan_ex
 }
 
 /// The context of a call: the installation's repository and the principal calling.
-fn slot_context(spec: &InstallationSpec, slot: Option<&str>, viewer: &str) -> SlotContext {
+fn slot_context(spec: &InstallationSpec, slot: Option<&str>, viewer: &Caller) -> SlotContext {
     SlotContext {
         slot: slot.map(str::to_owned),
         node: spec.repo_id.clone(),
@@ -685,11 +747,7 @@ fn slot_context(spec: &InstallationSpec, slot: Option<&str>, viewer: &str) -> Sl
         git_ref: None,
         path: None,
         entity: None,
-        viewer: Some(ExtensionActor {
-            kind: ActorKind::User,
-            id: viewer.to_owned(),
-            on_behalf_of: None,
-        }),
+        viewer: Some(viewer.to_extension()),
         mode: InstallMode::Enforce,
         extra: None,
     }
@@ -731,7 +789,7 @@ struct InstallationCaller {
     repo_id: String,
     /// `permissions.calls`: extension id to the tools it may call.
     allowed: Value,
-    viewer: String,
+    viewer: Caller,
 }
 
 #[async_trait]
