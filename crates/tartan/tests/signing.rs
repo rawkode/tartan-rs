@@ -186,14 +186,23 @@ impl World {
 
     /// Waits until `main`'s configuration at `sha` is handled (applied or refused).
     async fn handled(&self, sha: &str) -> Value {
-        let sha = sha.to_owned();
-        self.forge
-            .until(
-                "the configuration is handled",
-                async || self.config_status().await,
-                |status| status["pending"].is_null() || status["pending"]["commit"] != sha.as_str(),
-            )
-            .await
+        let start = Instant::now();
+        loop {
+            let status = self.config_status().await;
+            if status["pending"].is_null() || status["pending"]["commit"] != sha {
+                return status;
+            }
+            if start.elapsed() > DEADLINE {
+                let signature = self.signature(sha).await.1;
+                let main = self
+                    .forge
+                    .get("/-/api/orgs/acme/repos/api/signatures?ref=refs/heads/main")
+                    .await
+                    .1;
+                panic!("{sha} is not handled: {status}\nsignature: {signature}\nmain: {main}");
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
     }
 
     async fn events(&self) -> Vec<(String, Value)> {
@@ -947,6 +956,81 @@ async fn signatures_are_verified_and_the_rule_gates_configuration() {
         world.applied().await.as_deref(),
         Some(late_bob.sha.as_str())
     );
+
+    // Re-checking one of an update's two `unverifiable` commits retries both, and an owner's
+    // token limited to this repository may re-check.
+    let first = world.sign("alice.test", &alice, &[], "first", true).await;
+    let second = world
+        .sign("alice.test", &alice, &[&first.sha], "second", true)
+        .await;
+    world.devnet().set_switches(|s| s.pds_offline = true).await;
+    world.push("refs/heads/pair", None, &second.sha).await;
+    world
+        .forge
+        .until(
+            "the pair fails once",
+            async || world.signature(&second.sha).await.1,
+            |view| view["attempts"].as_i64().unwrap_or(0) >= 1,
+        )
+        .await;
+    for _ in 0..7 {
+        world.forge.clock.advance(Duration::from_secs(10 * 60));
+        world.verify().await;
+    }
+    assert_eq!(world.judged(&second.sha).await["status"], "unverifiable");
+    assert_eq!(world.judged(&first.sha).await["status"], "unverifiable");
+    world.devnet().set_switches(|s| s.pds_offline = false).await;
+    let limited = identity_handle(&world.forge.client)
+        .expect("identity")
+        .send(tartan_identity_api::AdminCreateToken {
+            did: alice.clone(),
+            request: tartan_identity_api::TokenRequest {
+                name: "repository".to_owned(),
+                scopes: common::all_scopes(),
+                repos: Some(vec![REPO.to_owned()]),
+                expires_in_days: 1,
+            },
+        })
+        .await
+        .expect("answers")
+        .expect("a token")
+        .secret;
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/-/api/orgs/acme/repos/api/commits/{}/signature/recheck",
+            world.forge.base, second.sha
+        ))
+        .bearer_auth(&limited)
+        .send()
+        .await
+        .expect("answers");
+    assert_eq!(response.status(), 200, "{:?}", response.text().await);
+    assert_eq!(world.judged(&second.sha).await["status"], "verified");
+    assert_eq!(world.judged(&first.sha).await["status"], "verified");
+
+    // A signer's re-checks count toward the per-DID `self` rate limit (bursts of 100).
+    let mut limited_after = None;
+    for call in 0..150 {
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/-/api/orgs/acme/repos/api/commits/{}/signature/recheck",
+                world.forge.base, first.sha
+            ))
+            .bearer_auth(&bob_session)
+            .send()
+            .await
+            .expect("answers");
+        match response.status().as_u16() {
+            404 => {}
+            429 => {
+                assert!(response.headers().contains_key("retry-after"));
+                limited_after = Some(call);
+                break;
+            }
+            other => panic!("re-check {call}: {other}"),
+        }
+    }
+    assert!(limited_after.is_some_and(|n| n <= 100), "{limited_after:?}");
 
     // Two overlapping `verify` wakes judge an update once.
     let twice = world.unsigned(&[], "twice");
