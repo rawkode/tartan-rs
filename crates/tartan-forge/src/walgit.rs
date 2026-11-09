@@ -7,7 +7,10 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
+use std::sync::Arc;
+
 use crate::GitHost;
+use crate::git_objects::{GitCache, ObjectNotServed, Walk};
 
 /// A walgit server reached over HTTP.
 #[derive(Clone, Debug)]
@@ -15,6 +18,7 @@ pub struct WalgitClient {
     base_url: String,
     token: Option<String>,
     http: reqwest::Client,
+    cache: Option<Arc<GitCache>>,
 }
 
 impl WalgitClient {
@@ -24,6 +28,36 @@ impl WalgitClient {
             base_url: base_url.trim_end_matches('/').to_owned(),
             token,
             http: reqwest::Client::new(),
+            cache: None,
+        }
+    }
+
+    /// Reads pushed objects through `cache` (design D8, *Reading objects*).
+    pub fn with_cache(mut self, cache: GitCache) -> Self {
+        self.cache = Some(Arc::new(cache));
+        self
+    }
+
+    fn cache(&self) -> Result<Arc<GitCache>> {
+        self.cache
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("this Git host client has no object cache"))
+    }
+
+    /// Whether walgit still serves `oid` in `owner/name`. A fetch of an object walgit no longer
+    /// serves fails without a readable reason, so this asks walgit's API instead.
+    async fn serves(&self, owner: &str, name: &str, oid: &str) -> Result<bool> {
+        // `GET /{owner}/{repo}/api/resolve/{sha}` resolves a commit or tag id, 404 otherwise.
+        let url = format!("{}/{owner}/{name}/api/resolve/{oid}", self.base_url);
+        let mut request = self.http.get(&url);
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await.with_context(|| format!("GET {url}"))?;
+        match response.status() {
+            reqwest::StatusCode::NOT_FOUND => Ok(false),
+            status if status.is_success() => Ok(true),
+            status => bail!("GET {url}: {status}"),
         }
     }
 }
@@ -110,6 +144,68 @@ impl GitHost for WalgitClient {
             status if status.is_success() => Ok(Some(response.bytes().await?.to_vec())),
             status => bail!("GET {url}: {status}"),
         }
+    }
+
+    async fn read_new_objects(
+        &self,
+        owner: &str,
+        name: &str,
+        new: &str,
+        hidden: &[String],
+        limit: usize,
+        skip: &(dyn for<'s> Fn(&'s str) -> bool + Send + Sync),
+    ) -> Result<Walk> {
+        let cache = self.cache()?;
+        let (key, url) = (format!("{owner}/{name}"), self.clone_url(owner, name));
+        let (token, new_owned, hidden) = (self.token.clone(), new.to_owned(), hidden.to_vec());
+        // `skip` cannot cross into the blocking task, so the listing comes first and the bytes
+        // of the listed objects `skip` keeps are read after it.
+        let listed = tokio::task::spawn_blocking(move || {
+            cache.list_new_objects(&key, &url, token.as_deref(), &new_owned, &hidden, limit)
+        })
+        .await?;
+        let mut walk = match listed {
+            Ok(walk) => walk,
+            Err(error) if error.downcast_ref::<ObjectNotServed>().is_some() => return Err(error),
+            Err(error) => {
+                if let Ok(false) = self.serves(owner, name, new).await {
+                    return Err(ObjectNotServed {
+                        oid: new.to_owned(),
+                    }
+                    .into());
+                }
+                return Err(error);
+            }
+        };
+        let wanted: Vec<String> = walk
+            .listed
+            .iter()
+            .map(|(oid, _)| oid.clone())
+            .filter(|oid| !skip(oid))
+            .collect();
+        if !wanted.is_empty() {
+            let cache = self.cache()?;
+            let key = format!("{owner}/{name}");
+            walk.raw =
+                tokio::task::spawn_blocking(move || cache.read_objects(&key, &wanted)).await??;
+        }
+        Ok(walk)
+    }
+
+    async fn is_ancestor(
+        &self,
+        owner: &str,
+        name: &str,
+        ancestor: &str,
+        head: &str,
+    ) -> Result<bool> {
+        let cache = self.cache()?;
+        let (key, url) = (format!("{owner}/{name}"), self.clone_url(owner, name));
+        let (token, ancestor, head) = (self.token.clone(), ancestor.to_owned(), head.to_owned());
+        tokio::task::spawn_blocking(move || {
+            cache.is_ancestor(&key, &url, token.as_deref(), &ancestor, &head)
+        })
+        .await?
     }
 }
 

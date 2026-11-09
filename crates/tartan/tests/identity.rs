@@ -337,13 +337,15 @@ async fn identity_actor() {
         git_host: Arc::new(FakeGitHost::default()),
         extensions: Arc::new(Extensions::new(
             tartan_extensions::ExtensionRuntime::new().expect("runtime"),
-            store,
+            store.clone(),
         )),
         clock: clock.clone(),
         owners: vec![owner.did.clone()],
         readers: Readers::default(),
         resolver,
         identity_limits: tartan_forge::IdentityLimits::default(),
+        objects: store,
+        state_dir: std::env::temp_dir().join(format!("tartan-identity-test-{nanos}")),
     })
     .expect("installed once");
 

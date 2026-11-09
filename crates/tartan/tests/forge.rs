@@ -67,6 +67,29 @@ impl GitHost for FakeGitHost {
     ) -> Result<Option<Vec<u8>>> {
         Ok(None)
     }
+
+    // This host stores no objects, so a signature check gives up at once.
+    async fn read_new_objects(
+        &self,
+        _owner: &str,
+        _name: &str,
+        new: &str,
+        hidden: &[String],
+        limit: usize,
+        skip: &(dyn for<'s> Fn(&'s str) -> bool + Send + Sync),
+    ) -> Result<tartan_forge::Walk> {
+        tartan_forge::MemoryObjects::default().read_new_objects(new, hidden, limit, skip)
+    }
+
+    async fn is_ancestor(
+        &self,
+        _owner: &str,
+        _name: &str,
+        ancestor: &str,
+        head: &str,
+    ) -> Result<bool> {
+        tartan_forge::MemoryObjects::default().is_ancestor(ancestor, head)
+    }
 }
 
 struct Forge {
@@ -191,6 +214,8 @@ async fn forge_end_to_end() {
         readers: tartan_config::deployment::Readers::default(),
         resolver: identity.resolver.clone(),
         identity_limits: tartan_forge::IdentityLimits::default(),
+        objects: store.clone(),
+        state_dir: std::env::temp_dir().join(format!("tartan-forge-test-{nanos}")),
     })
     .expect("installed once");
     // The deployment lists no modules until a test syncs some.

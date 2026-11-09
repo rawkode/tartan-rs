@@ -235,22 +235,30 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
     let registry = RegistryStore::new(store.clone());
     let extensions = Arc::new(Extensions::new(
         tartan_extensions::ExtensionRuntime::new().expect("runtime"),
-        store,
+        store.clone(),
     ));
     let identity = common::IdentityWorld::start().await;
     let clock = Arc::new(common::TestClock::default());
     install_services(Services {
         extensions: extensions.clone(),
         forge_id: format!("git-test-{nanos}"),
-        git_host: Arc::new(WalgitClient::new(
-            &format!("http://127.0.0.1:{walgit_port}"),
-            Some(GIT_HOST_TOKEN.to_owned()),
-        )),
+        git_host: Arc::new(
+            WalgitClient::new(
+                &format!("http://127.0.0.1:{walgit_port}"),
+                Some(GIT_HOST_TOKEN.to_owned()),
+            )
+            .with_cache(tartan_forge::GitCache::new(
+                dir.join("state/git"),
+                tartan_forge::GIT_CACHE_MAX_BYTES,
+            )),
+        ),
         clock: clock.clone(),
         owners: vec![identity.owner.clone()],
         readers: tartan_config::deployment::Readers::default(),
         resolver: identity.resolver.clone(),
         identity_limits: tartan_forge::IdentityLimits::default(),
+        objects: store,
+        state_dir: dir.join("state"),
     })
     .expect("installed once");
     // The deployment lists no modules until a test syncs some.
@@ -436,6 +444,28 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
         .await
         .expect("read a missing file");
     assert_eq!(missing, None);
+
+    // It reads the commits a push introduced through its object cache, fetching a commit by
+    // id, and tells an object walgit no longer serves from a failure.
+    let walgit_client = walgit_client.with_cache(tartan_forge::GitCache::new(
+        dir.join("state/probe-git"),
+        tartan_forge::GIT_CACHE_MAX_BYTES,
+    ));
+    let walk = walgit_client
+        .read_new_objects("acme", "api", &second, &[], 1000, &|_| false)
+        .await
+        .expect("read the pushed objects");
+    assert_eq!(walk.listed[0].0, second);
+    assert_eq!(walk.raw.len(), walk.listed.len());
+    let gone = walgit_client
+        .read_new_objects("acme", "api", &"1".repeat(40), &[], 1000, &|_| false)
+        .await
+        .expect_err("not served");
+    assert!(
+        gone.downcast_ref::<tartan_forge::ObjectNotServed>()
+            .is_some(),
+        "{gone:#}"
+    );
 
     // A configuration pushed to main installs Issues through the module the forge synced: the
     // repository's module depends on Issues' module, and its tartan.cue unifies the entry with

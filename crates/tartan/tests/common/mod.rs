@@ -386,12 +386,57 @@ pub fn host(url: &str) -> String {
     }
 }
 
-/// A Git host that keeps each pushed commit's files.
+/// Git's empty tree.
+pub const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// The content of a commit with `parents`, made at `time` (Unix seconds), unsigned.
+pub fn commit_bytes(parents: &[&str], message: &str, time: i64) -> Vec<u8> {
+    let mut text = format!("tree {EMPTY_TREE}\n");
+    for parent in parents {
+        text.push_str(&format!("parent {parent}\n"));
+    }
+    text.push_str(&format!(
+        "author Tests <tests@example.com> {time} +0000\ncommitter Tests <tests@example.com> {time} +0000\n\n{message}\n"
+    ));
+    text.into_bytes()
+}
+
+/// A Git host that keeps each pushed commit's files and every object pushed, per repository.
 #[derive(Default)]
 pub struct FakeGitHost {
     pub created: Mutex<Vec<String>>,
     /// `(owner/name, sha)` to the commit's files, by path.
     files: Mutex<HashMap<(String, String), BTreeMap<String, String>>>,
+    objects: Mutex<HashMap<String, Arc<tartan_forge::MemoryObjects>>>,
+    /// While set, reading objects fails as an unreachable host does.
+    pub failing: std::sync::atomic::AtomicBool,
+    /// How many times objects were read.
+    pub reads: AtomicU64,
+}
+
+impl FakeGitHost {
+    /// The objects of `repo` (`owner/name`).
+    pub fn objects(&self, repo: &str) -> Arc<tartan_forge::MemoryObjects> {
+        self.objects
+            .lock()
+            .expect("never poisoned")
+            .entry(repo.to_owned())
+            .or_default()
+            .clone()
+    }
+
+    /// Stores an object in `repo` and returns its id.
+    pub fn insert(&self, repo: &str, kind: &str, bytes: Vec<u8>) -> String {
+        self.objects(repo).insert(kind, bytes)
+    }
+
+    /// Stores `files` as the files of commit `sha` in `repo`.
+    pub fn set_files(&self, repo: &str, sha: &str, files: BTreeMap<String, String>) {
+        self.files
+            .lock()
+            .expect("never poisoned")
+            .insert((repo.to_owned(), sha.to_owned()), files);
+    }
 }
 
 #[async_trait]
@@ -456,6 +501,37 @@ impl GitHost for FakeGitHost {
             .get(&(format!("{owner}/{name}"), rev.to_owned()))
             .and_then(|commit| commit.get(path))
             .map(|contents| contents.clone().into_bytes()))
+    }
+
+    async fn read_new_objects(
+        &self,
+        owner: &str,
+        name: &str,
+        new: &str,
+        hidden: &[String],
+        limit: usize,
+        skip: &(dyn for<'s> Fn(&'s str) -> bool + Send + Sync),
+    ) -> Result<tartan_forge::Walk> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        if self.failing.load(Ordering::SeqCst) {
+            anyhow::bail!("git.test: connection refused");
+        }
+        self.objects(&format!("{owner}/{name}"))
+            .read_new_objects(new, hidden, limit, skip)
+    }
+
+    async fn is_ancestor(
+        &self,
+        owner: &str,
+        name: &str,
+        ancestor: &str,
+        head: &str,
+    ) -> Result<bool> {
+        if self.failing.load(Ordering::SeqCst) {
+            anyhow::bail!("git.test: connection refused");
+        }
+        self.objects(&format!("{owner}/{name}"))
+            .is_ancestor(ancestor, head)
     }
 }
 
@@ -719,7 +795,7 @@ impl Forge {
         let registry = RegistryStore::new(store.clone());
         let extensions = Arc::new(Extensions::new(
             ExtensionRuntime::new().expect("runtime"),
-            store,
+            store.clone(),
         ));
         let clock = Arc::new(TestClock::default());
         let identity = IdentityWorld::start().await;
@@ -732,6 +808,8 @@ impl Forge {
             readers: readers.clone(),
             resolver: identity.resolver.clone(),
             identity_limits,
+            objects: store.clone(),
+            state_dir: std::env::temp_dir().join(format!("tartan-test-{name}-{nanos}")),
         })
         .expect("installed once");
         let mut actor_registry = Registry::new();
@@ -906,33 +984,48 @@ impl Forge {
     /// Pushes a commit to `repo`'s `main` holding exactly `files`, and returns the commit.
     pub async fn push_files(&self, repo: &str, files: &[(&str, &str)]) -> String {
         let seq = self.seq.fetch_add(1, Ordering::SeqCst);
-        let sha = format!("{seq:040x}");
-        let commit = files
-            .iter()
-            .map(|(path, contents)| ((*path).to_owned(), (*contents).to_owned()))
-            .collect();
-        self.git
-            .files
-            .lock()
-            .expect("never poisoned")
-            .insert((repo.to_owned(), sha.clone()), commit);
         let old = self
             .heads
             .lock()
             .expect("never poisoned")
-            .insert(repo.to_owned(), sha.clone())
-            .unwrap_or_else(|| "0".repeat(40));
+            .get(repo)
+            .cloned();
+        let parents: Vec<&str> = old.iter().map(String::as_str).collect();
+        let sha = self.git.insert(
+            repo,
+            "commit",
+            commit_bytes(&parents, &format!("push {seq}"), commit_time(seq)),
+        );
+        self.git.set_files(
+            repo,
+            &sha,
+            files
+                .iter()
+                .map(|(path, contents)| ((*path).to_owned(), (*contents).to_owned()))
+                .collect(),
+        );
+        self.heads
+            .lock()
+            .expect("never poisoned")
+            .insert(repo.to_owned(), sha.clone());
+        let old = old.unwrap_or_else(|| "0".repeat(40));
         let event = json!([ref_event(repo, seq, "refs/heads/main", &old, &sha)]);
         assert_eq!(self.hook(&event).await, 204, "the push is recorded");
         sha
     }
 
-    /// Pushes a commit to another branch of `repo`.
+    /// Pushes a new branch `branch` of `repo` at a root commit holding `config` as its
+    /// `tartan.cue`.
     pub async fn push_branch(&self, repo: &str, branch: &str, config: &str) {
         let seq = self.seq.fetch_add(1, Ordering::SeqCst);
-        let sha = format!("{seq:040x}");
-        self.git.files.lock().expect("never poisoned").insert(
-            (repo.to_owned(), sha.clone()),
+        let sha = self.git.insert(
+            repo,
+            "commit",
+            commit_bytes(&[], &format!("push {seq}"), commit_time(seq)),
+        );
+        self.git.set_files(
+            repo,
+            &sha,
             BTreeMap::from([
                 ("cue.mod/module.cue".to_owned(), PLAIN_MODULE.to_owned()),
                 ("tartan.cue".to_owned(), config.to_owned()),
@@ -940,6 +1033,29 @@ impl Forge {
         );
         let event = json!([ref_event(repo, seq, branch, &"0".repeat(40), &sha)]);
         assert_eq!(self.hook(&event).await, 204);
+    }
+
+    /// Records a push of `ref_name` in `repo` from `old` to `new`, objects already stored, and
+    /// makes `new` `main`'s head when `ref_name` is `main`.
+    pub async fn push_ref(&self, repo: &str, ref_name: &str, old: &str, new: &str) {
+        let seq = self.seq.fetch_add(1, Ordering::SeqCst);
+        if ref_name == "refs/heads/main" {
+            self.heads
+                .lock()
+                .expect("never poisoned")
+                .insert(repo.to_owned(), new.to_owned());
+        }
+        let event = json!([ref_event(repo, seq, ref_name, old, new)]);
+        assert_eq!(self.hook(&event).await, 204, "the push is recorded");
+    }
+
+    /// `main`'s head in `repo`, if pushed.
+    pub fn head(&self, repo: &str) -> Option<String> {
+        self.heads
+            .lock()
+            .expect("never poisoned")
+            .get(repo)
+            .cloned()
     }
 
     /// A walgit log sequence number not used before in this forge.
@@ -1024,6 +1140,11 @@ impl Forge {
             .map(|list| list.iter().map(|r| r["event"].clone()).collect())
             .unwrap_or_default()
     }
+}
+
+/// The commit time of the commit made for push `seq`, increasing with it.
+pub fn commit_time(seq: u64) -> i64 {
+    1_700_000_000 + i64::try_from(seq).expect("small")
 }
 
 /// One walgit ref event.

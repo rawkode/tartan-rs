@@ -20,6 +20,7 @@ mod envelope;
 mod event_log;
 mod event_pattern;
 mod extensions;
+mod git_objects;
 mod outbox;
 pub mod proof_cache;
 mod services;
@@ -52,6 +53,10 @@ pub use crate::envelope::Envelope;
 pub use crate::event_log::ReadEvents;
 pub use crate::event_pattern::{EventPattern, EventPatternError};
 pub use crate::extensions::{Extensions, Loaded, RegisterError, register_package};
+pub use crate::git_objects::{
+    GIT_CACHE_MAX_BYTES, GitCache, MemoryObjects, ObjectKind, ObjectNotServed, RawObject,
+    WALK_LIMIT, Walk,
+};
 pub use crate::outbox::{Flush, FlushTree};
 pub use crate::services::{GitHost, IdentityLimits, Services, install_services};
 pub use crate::slug::{Slug, SlugError};

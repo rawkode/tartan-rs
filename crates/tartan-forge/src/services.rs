@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Result, anyhow};
@@ -36,6 +37,30 @@ pub trait GitHost: Send + Sync {
         rev: &str,
         path: &str,
     ) -> Result<Option<Vec<u8>>>;
+
+    /// Lists the objects the update `hidden..new` of `owner/name` introduced and reads those
+    /// `skip` does not exclude (design D8, *Reading objects*): the annotated tags `new` names
+    /// and the commit they peel to, then every commit reachable from it but not from `hidden`,
+    /// newest first, up to `limit` commits. Fails with [`ObjectNotServed`](crate::ObjectNotServed)
+    /// when the host no longer serves `new`.
+    async fn read_new_objects(
+        &self,
+        owner: &str,
+        name: &str,
+        new: &str,
+        hidden: &[String],
+        limit: usize,
+        skip: &(dyn for<'s> Fn(&'s str) -> bool + Send + Sync),
+    ) -> Result<crate::Walk>;
+
+    /// Whether `ancestor` is `head` or one of its ancestors in `owner/name`.
+    async fn is_ancestor(
+        &self,
+        owner: &str,
+        name: &str,
+        ancestor: &str,
+        head: &str,
+    ) -> Result<bool>;
 }
 
 /// What the actors of this process reach outside the actor system.
@@ -59,6 +84,11 @@ pub struct Services {
     pub resolver: VerifyingResolver,
     /// The caps the identity actor enforces.
     pub identity_limits: IdentityLimits,
+    /// The object store, under the forge's `tartan/` prefix: proof bundles are stored at
+    /// `proofs/sha256/<hex>.json`, beside `registry/` and `packages/` (design D8, *Store*).
+    pub objects: Arc<dyn object_store::ObjectStore>,
+    /// `TARTAN_STATE_DIR`: local state that can be rebuilt, such as the Git object cache.
+    pub state_dir: PathBuf,
 }
 
 /// Caps the identity actor enforces (design D4, *Route classes*). The `tartan` binary always

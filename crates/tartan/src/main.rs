@@ -43,7 +43,8 @@ use tartan_atproto::resolver::{ResolverConfig, VerifyingResolver};
 use tartan_config::deployment::{self, Deployment, Readers};
 use tartan_extensions::ExtensionRuntime;
 use tartan_forge::{
-    Extensions, Services, SystemClock, WalgitClient, install_services, register_actors,
+    Extensions, GIT_CACHE_MAX_BYTES, GitCache, Services, SystemClock, WalgitClient,
+    install_services, register_actors,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -94,7 +95,11 @@ async fn main() -> Result<()> {
     let git_host = WalgitClient::new(
         &required("TARTAN_GIT_HOST_URL")?,
         std::env::var("TARTAN_GIT_HOST_TOKEN").ok(),
-    );
+    )
+    .with_cache(GitCache::new(
+        settings.state_dir.join("git"),
+        GIT_CACHE_MAX_BYTES,
+    ));
     let object_store = AmazonS3Builder::new()
         .with_endpoint(required("TARTAN_S3_ENDPOINT")?)
         .with_allow_http(true)
@@ -113,7 +118,7 @@ async fn main() -> Result<()> {
             .iter()
             .map(|m| (m.path.as_str(), m.version.as_str())),
     );
-    let extensions = Arc::new(Extensions::new(ExtensionRuntime::new()?, store));
+    let extensions = Arc::new(Extensions::new(ExtensionRuntime::new()?, store.clone()));
     install_services(Services {
         forge_id: env_or("TARTAN_FORGE_ID", "forge"),
         git_host: Arc::new(git_host),
@@ -127,6 +132,8 @@ async fn main() -> Result<()> {
         readers: deployment.readers.clone(),
         resolver: resolver.clone(),
         identity_limits: tartan_forge::IdentityLimits::default(),
+        objects: store,
+        state_dir: settings.state_dir.clone(),
     })?;
 
     let serve_config = ServeConfig::from_env()?;
