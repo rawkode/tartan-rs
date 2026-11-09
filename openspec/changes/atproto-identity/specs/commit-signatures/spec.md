@@ -259,7 +259,7 @@ A check that gives up (after an hour, after seven days when waiting on signers, 
 - **THEN** the tip is recorded `unverifiable`, the update is judged non-compliant, and an owner's re-check queues the update again and checks every commit it adds
 
 ### Requirement: Signatures are readable
-`GET /-/api/orgs/<org>/repos/<repo>/commits/<sha>/signature` SHALL answer the stored result with its annotations and a proof URL, and `GET /-/api/orgs/<org>/repos/<repo>/signatures?ref=<ref>` the result and compliance of the ref's latest update. While the commit's check, or the ref's latest update, is queued, they SHALL answer `{status: "pending", attempts, next_at, last_error, did}`.
+`GET /-/api/orgs/<org>/repos/<repo>/commits/<sha>/signature` SHALL answer the stored result with its annotations and a proof URL, and `GET /-/api/orgs/<org>/repos/<repo>/signatures?ref=<ref>` the result and compliance of the ref's latest update; without `ref` it SHALL answer the same for every branch head. While the commit's check, or the ref's latest update, is queued, they SHALL answer `{status: "pending", attempts, next_at, last_error, did}`.
 
 #### Scenario: Older update finishes last
 - **WHEN** `main` moves to W and then to X, and W's check finishes after X's

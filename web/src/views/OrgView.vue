@@ -13,6 +13,7 @@ import ProblemAlert from "../components/ui/ProblemAlert.vue";
 import Skeleton from "../components/ui/Skeleton.vue";
 import { client } from "../lib/client.ts";
 import { useResource } from "../lib/resource.ts";
+import { hasRight } from "../lib/account.ts";
 import { settings } from "../lib/settings.ts";
 import { notify } from "../lib/toast.ts";
 
@@ -103,6 +104,7 @@ const styles = {
 			</template>
 			<template #actions>
 				<button
+					v-if="hasRight('admin')"
 					type="button"
 					:class="button({ variant: 'solid' })"
 					:aria-expanded="creating"
@@ -113,7 +115,7 @@ const styles = {
 			</template>
 		</PageHeader>
 
-		<div v-if="creating" :class="styles.create">
+		<div v-if="creating && hasRight('admin')" :class="styles.create">
 			<CreateSlugForm
 				label="Repository name"
 				placeholder="api"
@@ -132,7 +134,7 @@ const styles = {
 				title="No repositories yet"
 				description="A repository is a Git repository on the forge's Git host. Its committed tartan.cue decides which extensions it runs."
 			>
-				<button type="button" :class="button({ variant: 'solid' })" @click="creating = true">
+				<button v-if="hasRight('admin')" type="button" :class="button({ variant: 'solid' })" @click="creating = true">
 					<Icon name="plus" /> Create a repository
 				</button>
 			</EmptyState>

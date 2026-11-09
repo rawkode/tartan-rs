@@ -2,11 +2,13 @@
 /**
  * A board view: lanes as rows, columns across, and headed groups inside each cell. Cards
  * move by drag and drop, or by their column picker; either way the parent performs the move.
+ * A read-only board offers neither. A person lane or group is labelled by handle.
  */
 import { computed, reactive, ref } from "vue";
 import { css } from "styled-system/css";
 import { columnCount } from "../../lib/kanban.ts";
 import type { BoardView, Card, PropertyDef } from "../../lib/types.ts";
+import PersonDisplay from "../PersonDisplay.vue";
 import Icon from "../ui/Icon.vue";
 import KanbanCard from "./KanbanCard.vue";
 
@@ -17,6 +19,8 @@ const props = defineProps<{
 	pending: Set<number>;
 	/** Builds the link to a card's issue, when Issues is installed. */
 	issueLink?: (number: number) => { name: string; params: Record<string, string | number> };
+	/** The viewer may not move cards. */
+	readonly?: boolean;
 }>();
 const emit = defineEmits<{ move: [number: number, column: string]; dragging: [active: boolean] }>();
 
@@ -59,7 +63,7 @@ const onDragEnd = () => {
 };
 const dropKey = (lane: string | null, column: string) => `${laneKey(lane)}\u0001${column}`;
 const onDragOver = (event: DragEvent, lane: string | null, column: string) => {
-	if (!dragged.value) return;
+	if (!dragged.value || props.readonly) return;
 	event.preventDefault();
 	if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
 	over.value = dropKey(lane, column);
@@ -71,6 +75,7 @@ const onDragLeave = (event: DragEvent, lane: string | null, column: string) => {
 };
 const onDrop = (event: DragEvent, column: string) => {
 	event.preventDefault();
+	if (props.readonly) return;
 	const number = Number(event.dataTransfer?.getData(DRAG_TYPE) || dragged.value?.number);
 	const from = dragged.value?.from ?? null;
 	onDragEnd();
@@ -219,7 +224,8 @@ const styles = {
 						@click="collapsed[laneKey(lane.value)] = !collapsed[laneKey(lane.value)]"
 					>
 						<Icon name="chevron-down" :class="styles.laneChevron" :data-collapsed="!!collapsed[laneKey(lane.value)]" />
-						<span :class="lane.value === null && styles.laneNone">{{ lane.title || (lane.value === null ? "None" : lane.value) }}</span>
+						<PersonDisplay v-if="lane.person" :did="lane.person" />
+						<span v-else :class="lane.value === null && styles.laneNone">{{ lane.title || (lane.value === null ? "None" : lane.value) }}</span>
 						<span :class="styles.laneCount">{{ laneCount(laneIndex) }}</span>
 					</button>
 				</div>
@@ -240,7 +246,8 @@ const styles = {
 						<template v-else>
 						<section v-for="group in cell.groups" :key="laneKey(group.value)" :class="styles.group">
 							<h4 v-if="group.title || group.value !== null || board.group" :class="styles.groupHead" :data-none="group.value === null">
-								{{ group.title || (group.value === null ? "None" : group.value) }} · {{ group.cards.length }}
+								<PersonDisplay v-if="group.person" :did="group.person" />
+								<template v-else>{{ group.title || (group.value === null ? "None" : group.value) }}</template> · {{ group.cards.length }}
 							</h4>
 							<KanbanCard
 								v-for="card in group.cards"
@@ -254,6 +261,7 @@ const styles = {
 								:issue-link="props.issueLink?.(card.number)"
 								:pending="props.pending.has(card.number)"
 								:dragging="dragged?.number === card.number"
+								:readonly="props.readonly"
 								@dragstart="onDragStart($event, card, cell.column)"
 								@dragend="onDragEnd"
 								@move="(to) => emit('move', card.number, to)"
@@ -286,6 +294,7 @@ const styles = {
 				:issue-link="props.issueLink?.(card.number)"
 				:pending="props.pending.has(card.number)"
 				:dragging="dragged?.number === card.number"
+								:readonly="props.readonly"
 				@dragstart="onDragStart($event, card, null)"
 				@dragend="onDragEnd"
 				@move="(to) => emit('move', card.number, to)"

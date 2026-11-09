@@ -4,6 +4,7 @@ import { computed } from "vue";
 import { css } from "styled-system/css";
 import { formatValue, isEmpty, optionTitle, propertyTitle } from "../../lib/properties.ts";
 import type { PropertyDef, PropertyValue } from "../../lib/types.ts";
+import PersonDisplay from "../PersonDisplay.vue";
 
 const props = defineProps<{
 	defs: PropertyDef[];
@@ -18,6 +19,8 @@ interface Chip {
 	text: string;
 	title: string;
 	tone: "option" | "plain" | "flag";
+	/** A person's DID, shown by handle after the text. */
+	person?: string;
 }
 
 const chips = computed<Chip[]>(() => {
@@ -31,6 +34,8 @@ const chips = computed<Chip[]>(() => {
 			for (const option of value) {
 				out.push({ key: `${def.name}:${option}`, text: optionTitle(def, option), title: label, tone: "option" });
 			}
+		} else if (def.kind === "person" && typeof value === "string") {
+			out.push({ key: def.name, text: `${label}:`, title: label, tone: "plain", person: value });
 		} else if (def.kind === "boolean") {
 			if (value === true) out.push({ key: def.name, text: label, title: label, tone: "flag" });
 		} else {
@@ -70,7 +75,7 @@ const styles = {
 <template>
 	<div v-if="chips.length" :class="styles.row">
 		<span v-for="chip in chips" :key="chip.key" :class="[styles.chip, styles[chip.tone]]" :title="chip.title">
-			{{ chip.text }}
+			{{ chip.text }}<template v-if="chip.person">&nbsp;<PersonDisplay :did="chip.person" /></template>
 		</span>
 	</div>
 </template>

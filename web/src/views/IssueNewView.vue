@@ -1,5 +1,8 @@
 <script setup lang="ts">
-/** Opening an issue: title, project, Markdown body and the repository's typed properties. */
+/**
+ * Opening an issue: title, project, Markdown body and the repository's typed properties. A
+ * caller without the `write` right sees why instead of the form.
+ */
 import { computed, reactive, ref, watch } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 import { css } from "styled-system/css";
@@ -9,6 +12,8 @@ import PropertyEditor from "../components/issues/PropertyEditor.vue";
 import Icon from "../components/ui/Icon.vue";
 import ProblemAlert from "../components/ui/ProblemAlert.vue";
 import Skeleton from "../components/ui/Skeleton.vue";
+import { hasRight, signedIn } from "../lib/account.ts";
+import { READ_ONLY_MESSAGE } from "../lib/api.ts";
 import { client } from "../lib/client.ts";
 import { initialValues, setValues, validateAll } from "../lib/properties.ts";
 import { useRepo } from "../lib/repo-context.ts";
@@ -21,7 +26,11 @@ const { org, repo } = useRepo();
 const router = useRouter();
 const api = () => client.issues(org.value, repo.value);
 
-const defs = useResource((signal) => api().properties(signal), [org, repo, () => settings.sandbox]);
+const canWrite = computed(() => hasRight("write"));
+const defs = useResource(
+	(signal) => (canWrite.value ? api().properties(signal) : Promise.resolve([])),
+	[org, repo, () => settings.sandbox, canWrite],
+);
 
 const title = ref("");
 const project = ref("");
@@ -93,7 +102,8 @@ const styles = {
 
 <template>
 	<h2 :class="styles.heading">New issue</h2>
-	<form :class="styles.grid" novalidate @submit.prevent="submit">
+	<p v-if="!canWrite" role="note" data-read-only>{{ READ_ONLY_MESSAGE }}</p>
+	<form v-else :class="styles.grid" novalidate @submit.prevent="submit">
 		<div :class="styles.stack">
 			<div>
 				<label for="issue-title" :class="styles.label">Title</label>
@@ -155,7 +165,7 @@ const styles = {
 							v-model="values[def.name]"
 							:def="def"
 							:error="submitted ? errors[def.name] : null"
-							:people="['admin']"
+							:people="signedIn ? [signedIn.did] : []"
 						/>
 					</template>
 				</div>

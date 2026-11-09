@@ -8,9 +8,9 @@
 
 /** The module versions the example pins. */
 export const MODULE_VERSIONS = {
-	types: "v0.1.0",
-	issues: "v0.6.0",
-	kanban: "v0.3.0",
+	types: "v0.2.0",
+	issues: "v0.7.0",
+	kanban: "v0.4.0",
 } as const;
 
 /** `cue.mod/module.cue` for a repository. */

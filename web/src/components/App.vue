@@ -1,15 +1,36 @@
 <script setup lang="ts">
-/** The application shell: the header with breadcrumbs, theme and settings, and the routed view. */
+/**
+ * The application shell: the header with breadcrumbs, theme, settings and the account menu,
+ * and the routed view. A signed-in person the forge does not admit sees only the private-forge
+ * page (design D15), which makes no request beyond `GET /-/api/me`; a reader sees the
+ * read-only notice under the header.
+ */
 import { computed } from "vue";
-import { RouterLink, RouterView, useRoute } from "vue-router";
+import { RouterLink, RouterView, useRoute, useRouter } from "vue-router";
 import { css } from "styled-system/css";
-import { badge, button } from "styled-system/recipes";
+import { badge, button, card } from "styled-system/recipes";
+import { account, isPrivate, isReadOnly, signedIn } from "../lib/account.ts";
+import { READ_ONLY_MESSAGE } from "../lib/api.ts";
+import { loadAccount, signOut } from "../lib/client.ts";
 import { settings, type ThemePreference } from "../lib/settings.ts";
+import { OPEN_TO_EVERYONE_SIGNED_IN } from "../router.ts";
+import AccountMenu from "./AccountMenu.vue";
 import Icon, { type IconName } from "./ui/Icon.vue";
 import Logo from "./ui/Logo.vue";
+import ProblemAlert from "./ui/ProblemAlert.vue";
 import Toasts from "./ui/Toasts.vue";
 
 const route = useRoute();
+const router = useRouter();
+
+const open = computed(() => OPEN_TO_EVERYONE_SIGNED_IN.includes(String(route.name)));
+const showPrivate = computed(() => isPrivate.value && !open.value);
+const showError = computed(() => account.status === "error" && route.name !== "sign-in");
+
+const leave = async () => {
+	await signOut();
+	await router.push({ name: "sign-in" });
+};
 
 const org = computed(() => (typeof route.params.org === "string" ? route.params.org : undefined));
 const repo = computed(() => (typeof route.params.repo === "string" ? route.params.repo : undefined));
@@ -90,7 +111,23 @@ const styles = {
 	narrow: css({ maxW: "6xl" }),
 	wideMain: css({ maxW: "none" }),
 	hideSm: css({ display: { base: "none", sm: "inline" } }),
+	notice: css({
+		display: "flex",
+		alignItems: "center",
+		gap: "2",
+		px: { base: "4", md: "6" },
+		py: "2",
+		fontSize: "sm",
+		bg: "warning.subtle",
+		color: "warning.fg",
+		borderBottomWidth: "1px",
+		borderColor: "warning.border",
+	}),
+	private: css({ maxW: "xl", mx: "auto", mt: "12" }),
+	privateBody: css({ display: "grid", gap: "4", textAlign: "center", justifyItems: "center" }),
+	privateTitle: css({ fontSize: "lg", fontWeight: "semibold" }),
 };
+const cardStyles = card();
 </script>
 
 <template>
@@ -135,6 +172,7 @@ const styles = {
 				<Icon :name="theme.icon" />
 			</button>
 			<RouterLink
+				v-if="!showPrivate"
 				:to="{ name: 'settings' }"
 				:class="button({ variant: 'ghost', size: 'sm' })"
 				aria-label="Settings"
@@ -142,10 +180,28 @@ const styles = {
 			>
 				<Icon name="settings" />
 			</RouterLink>
+			<AccountMenu v-if="!showPrivate" />
+		</div>
+		<div v-if="isReadOnly && !showPrivate" :class="styles.notice" role="note" data-read-only-notice>
+			<Icon name="lock" :size="14" /> {{ READ_ONLY_MESSAGE }}
 		</div>
 	</header>
 	<main id="main" tabindex="-1" :class="[styles.main, wide ? styles.wideMain : styles.narrow]">
-		<RouterView />
+		<section v-if="showPrivate" :class="[cardStyles.root, styles.private]" data-private-forge>
+			<div :class="[cardStyles.body, styles.privateBody]">
+				<Icon name="lock" :size="28" />
+				<p :class="styles.privateTitle">This forge is private; ask an owner for access.</p>
+				<p>
+					You are signed in as
+					<strong>{{ signedIn?.handle ? `@${signedIn.handle}` : signedIn?.did }}</strong>.
+				</p>
+				<button type="button" :class="button()" @click="leave">
+					<Icon name="logout" :size="14" /> Sign out
+				</button>
+			</div>
+		</section>
+		<ProblemAlert v-else-if="showError" :error="account.error" title="Could not tell who you are" @retry="loadAccount(true)" />
+		<RouterView v-else />
 	</main>
 	<Toasts />
 </template>

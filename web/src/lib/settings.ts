@@ -1,6 +1,7 @@
 /**
- * Per-browser settings, kept in `localStorage`: the gateway and Git host tokens, the theme,
- * the address `cue` reaches the gateway at, and whether to use the in-browser sandbox.
+ * Per-browser settings, kept in `localStorage`: the Git host token, the theme, the address
+ * `cue` reaches the gateway at, and whether to use the in-browser sandbox. The forge itself
+ * knows the browser by its session cookie, never by a token kept here.
  * Storage can be unavailable (private windows, blocked site data), so every access is guarded and
  * the defaults always work.
  */
@@ -10,8 +11,6 @@ import { reactive, watch } from "vue";
 export type ThemePreference = "system" | "light" | "dark";
 
 export interface Settings {
-	/** The gateway's admin bearer token. */
-	token: string;
 	/** The Git host's token for pushes, shown in the onboarding commands. */
 	gitToken: string;
 	theme: ThemePreference;
@@ -26,15 +25,12 @@ export interface Settings {
 	pollSeconds: number;
 }
 
-/** The gateway token `scripts/dev.sh` configures. */
-export const DEV_TOKEN = "dev-admin-token";
 /** The Git host token `scripts/dev.sh` configures for walgit. */
 export const DEV_GIT_TOKEN = "dev-git-host-token";
 
 const KEY = "tartan.settings.v1";
 
 export const defaultSettings = (): Settings => ({
-	token: DEV_TOKEN,
 	gitToken: DEV_GIT_TOKEN,
 	theme: "system",
 	gatewayAddress: "",
@@ -49,7 +45,6 @@ const load = (): Settings => {
 		if (!raw) return defaults;
 		const stored = JSON.parse(raw) as Partial<Settings>;
 		return {
-			token: typeof stored.token === "string" ? stored.token : defaults.token,
 			gitToken: typeof stored.gitToken === "string" ? stored.gitToken : defaults.gitToken,
 			theme: stored.theme === "light" || stored.theme === "dark" || stored.theme === "system"
 				? stored.theme

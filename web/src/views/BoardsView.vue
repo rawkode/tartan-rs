@@ -14,6 +14,7 @@ import Icon from "../components/ui/Icon.vue";
 import ProblemAlert from "../components/ui/ProblemAlert.vue";
 import Skeleton from "../components/ui/Skeleton.vue";
 import { ApiError, ISSUES_ID } from "../lib/api.ts";
+import { hasRight } from "../lib/account.ts";
 import { client } from "../lib/client.ts";
 import { columnOf, findCard, moveCard } from "../lib/kanban.ts";
 import { useRepo } from "../lib/repo-context.ts";
@@ -254,6 +255,7 @@ const styles = {
 					:defs="defs.data.value ?? []"
 					:pending="pending"
 					:issue-link="issueLink"
+					:readonly="!hasRight('write')"
 					@move="move"
 					@dragging="(active) => (dragging = active)"
 				/>

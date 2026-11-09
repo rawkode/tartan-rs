@@ -9,8 +9,8 @@ import { cueRegistry } from "./settings.ts";
 test("the module names the repository and pins the extension modules", () => {
 	const text = moduleCue("acme", "api");
 	expect(text).toContain('module: "tartan.example/acme/api"');
-	expect(text).toContain('"tartan.rawkode.academy/issues@v0": v: "v0.6.0"');
-	expect(text).toContain('"tartan.rawkode.academy/kanban@v0": v: "v0.3.0"');
+	expect(text).toContain('"tartan.rawkode.academy/issues@v0": v: "v0.7.0"');
+	expect(text).toContain('"tartan.rawkode.academy/kanban@v0": v: "v0.4.0"');
 });
 
 test("the configuration binds Kanban to the repository's Issues entry", () => {

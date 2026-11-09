@@ -2,18 +2,22 @@
 /**
  * One issue: its title, Markdown body and typed properties, edited as one draft and saved
  * in a single `update` guarded by the version it was loaded at, and closing or reopening it.
+ * A caller without the `write` right sees the issue without any edit control.
  */
 import { computed, reactive, ref, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 import { css } from "styled-system/css";
 import { badge, button, card, field } from "styled-system/recipes";
+import AuthorDisplay from "../components/AuthorDisplay.vue";
 import MarkdownEditor from "../components/issues/MarkdownEditor.vue";
 import MarkdownView from "../components/issues/MarkdownView.vue";
 import PropertyEditor from "../components/issues/PropertyEditor.vue";
+import PropertyValueView from "../components/issues/PropertyValueView.vue";
 import StateBadge from "../components/issues/StateBadge.vue";
 import Icon from "../components/ui/Icon.vue";
 import ProblemAlert from "../components/ui/ProblemAlert.vue";
 import Skeleton from "../components/ui/Skeleton.vue";
+import { hasRight, signedIn } from "../lib/account.ts";
 import { ApiError } from "../lib/api.ts";
 import { client } from "../lib/client.ts";
 import { changedProperties, propertyTitle, validateAll } from "../lib/properties.ts";
@@ -32,6 +36,13 @@ const api = () => client.issues(org.value, repo.value);
 const sources = [org, repo, number, () => settings.sandbox];
 const issue = useResource((signal) => api().get(number.value, signal), sources);
 const defs = useResource((signal) => api().properties(signal), [org, repo, () => settings.sandbox]);
+
+const canWrite = computed(() => hasRight("write"));
+/** People the person fields offer: the viewer and the issue's author. */
+const suggested = computed(() => {
+	const author = issue.data.value?.author;
+	return [signedIn.value?.did, author?.onBehalfOf ?? author?.id].filter((d): d is string => !!d);
+});
 
 const longDefs = computed(() => (defs.data.value ?? []).filter((d) => d.kind === "longtext"));
 const shortDefs = computed(() => (defs.data.value ?? []).filter((d) => d.kind !== "longtext"));
@@ -209,12 +220,13 @@ const styles = {
 				</h2>
 				<div :class="styles.headerButtons">
 					<button
-						v-if="!editingTitle"
+						v-if="!editingTitle && canWrite"
 						type="button"
 						:class="button({ size: 'sm' })"
 						@click="editingTitle = true"
 					>Edit title</button>
 					<button
+						v-if="canWrite"
 						type="button"
 						:class="button({ size: 'sm', variant: issue.data.value.state === 'open' ? 'danger' : 'outline' })"
 						:disabled="toggling"
@@ -228,8 +240,7 @@ const styles = {
 			<div :class="styles.meta">
 				<StateBadge :state="issue.data.value.state" />
 				<span>
-					<strong>{{ issue.data.value.author.id }}</strong>
-					<template v-if="issue.data.value.author.onBehalfOf"> for {{ issue.data.value.author.onBehalfOf }}</template>
+					<strong><AuthorDisplay :principal="issue.data.value.author" /></strong>
 					opened this
 					<time :datetime="new Date(issue.data.value.createdAt).toISOString()" :title="absoluteTime(issue.data.value.createdAt)">{{ relativeTime(issue.data.value.createdAt) }}</time>
 				</span>
@@ -243,7 +254,7 @@ const styles = {
 				<section :class="cardStyles.root" aria-labelledby="body-title">
 					<div :class="cardStyles.header">
 						<h3 id="body-title" :class="cardStyles.title">Description</h3>
-						<button v-if="!editingBody" type="button" :class="button({ size: 'xs', variant: 'ghost' })" @click="editingBody = true">Edit</button>
+						<button v-if="!editingBody && canWrite" type="button" :class="button({ size: 'xs', variant: 'ghost' })" @click="editingBody = true">Edit</button>
 					</div>
 					<div :class="cardStyles.body">
 						<MarkdownEditor v-if="editingBody" v-model="draft.body" :max-length="20000" :rows="10" />
@@ -253,7 +264,7 @@ const styles = {
 				<section v-for="def in longDefs" :key="def.name" :class="cardStyles.root" :aria-labelledby="`long-${def.name}`">
 					<div :class="cardStyles.header">
 						<h3 :id="`long-${def.name}`" :class="cardStyles.title">{{ propertyTitle(def) }}</h3>
-						<button v-if="!editingLong[def.name]" type="button" :class="button({ size: 'xs', variant: 'ghost' })" @click="editingLong[def.name] = true">Edit</button>
+						<button v-if="!editingLong[def.name] && canWrite" type="button" :class="button({ size: 'xs', variant: 'ghost' })" @click="editingLong[def.name] = true">Edit</button>
 					</div>
 					<div :class="cardStyles.body">
 						<PropertyEditor v-if="editingLong[def.name]" v-model="draft.properties[def.name]" :def="def" :error="errors[def.name]" />
@@ -269,16 +280,19 @@ const styles = {
 						<ProblemAlert v-if="defs.error.value" :error="defs.error.value" compact @retry="defs.reload()" />
 						<Skeleton v-else-if="!defs.data.value" :rows="3" />
 						<p v-else-if="shortDefs.length === 0" :class="styles.none">No properties defined.</p>
-						<template v-else>
+						<template v-else-if="canWrite">
 							<PropertyEditor
 								v-for="def in shortDefs"
 								:key="def.name"
 								v-model="draft.properties[def.name]"
 								:def="def"
 								:error="errors[def.name]"
-								:people="['admin', issue.data.value.author.id]"
+								:people="suggested"
 							/>
 						</template>
+						<dl v-else data-read-only-properties>
+							<PropertyValueView v-for="def in shortDefs" :key="def.name" :def="def" :value="draft.properties[def.name]" />
+						</dl>
 					</div>
 				</section>
 			</aside>
@@ -290,7 +304,7 @@ const styles = {
 			<span :class="styles.savebarText">Someone changed this issue since you opened it. Reload to see their version; your edits will be discarded.</span>
 			<button type="button" :class="button({ variant: 'solid', size: 'sm' })" @click="reloadLatest">Reload latest</button>
 		</div>
-		<div v-else-if="dirty" :class="styles.savebar" role="region" aria-label="Unsaved changes">
+		<div v-else-if="dirty && canWrite" :class="styles.savebar" role="region" aria-label="Unsaved changes">
 			<span :class="styles.savebarText">Unsaved changes <kbd :class="styles.kbd">Ctrl</kbd>+<kbd :class="styles.kbd">Enter</kbd> saves</span>
 			<button type="button" :class="button({ variant: 'ghost', size: 'sm' })" @click="reset(issue.data.value)">Discard</button>
 			<button type="button" :class="button({ variant: 'solid', size: 'sm' })" :disabled="!valid || saving" @click="save">
