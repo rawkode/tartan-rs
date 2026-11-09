@@ -374,7 +374,7 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
         second
     );
 
-    // The ref events, once each, in push order.
+    // The ref updates, once each, in push order.
     let start = Instant::now();
     let updates = loop {
         let events: Value = http
@@ -390,6 +390,8 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
             .as_array()
             .expect("a list")
             .iter()
+            // Signature checks of the same pushes are `ref.*` events too.
+            .filter(|received| received["event"]["type"] == "ref.updated")
             .map(|received| {
                 let data = &received["event"]["data"];
                 let text = |key: &str| data[key].as_str().unwrap_or_default().to_owned();

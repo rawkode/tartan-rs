@@ -19,6 +19,8 @@
 // Each test binary uses part of this module.
 #![allow(dead_code)]
 
+pub mod tt;
+
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
