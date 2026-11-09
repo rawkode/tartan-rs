@@ -232,6 +232,17 @@ After a successful write, `tt` SHALL drain the queue within the remaining time. 
 - **WHEN** a person's forge is reachable only over a VPN and `tt sign --login` is refused with `invalid_client_metadata`
 - **THEN** the message suggests `tt sign --login --client localhost`, and that login succeeds where the authorization server allows the localhost client
 
+### Requirement: Hosted development client
+A `tt` built with the `dev-identity` feature SHALL accept `--client-metadata-url <https URL>` (or `TT_CLIENT_METADATA_URL`) on `tt sign --login`, `tt login` and `tt sign revoke`, using a public native client whose `client_id` is that URL. Before the PAR it SHALL load the document there and, when it cannot or the document is not `tt`'s (its `client_id`, both loopback redirect URIs, the declared scope, `token_endpoint_auth_method` `none` and DPoP-bound tokens), fail and print the exact JSON to host. A release build SHALL refuse the option. Plain `http` SHALL be accepted only under `TARTAN_DEV_IDENTITY`. The authorization server must still grant the granular `repo:` scope: `tt` SHALL NOT fall back to broader access.
+
+#### Scenario: Authorization server refuses the localhost client
+- **WHEN** a person whose authorization server refuses the `http://localhost` client runs `tt sign --login --client-metadata-url https://example.com/tt.json` before hosting anything there
+- **THEN** it fails, printing the JSON to host at that URL; once that document is served, the same command signs in with that client where the server grants the scope
+
+#### Scenario: Release build
+- **WHEN** a person runs a release `tt` with `--client-metadata-url`
+- **THEN** it fails, saying the option is a development option of `dev-identity` builds
+
 ### Requirement: Agents sign from a persistent host
 An agent running anywhere but its person's own machine SHALL sign as its own ATProto account with a session made once by `tt sign --login --no-open --port` on a persistent host. A signing session SHALL NOT be shared between machines; `tt` SHALL name that cause when a refresh is refused. Ephemeral CI without a persistent credential store is not supported.
 

@@ -56,7 +56,16 @@ impl Store {
     }
 
     /// Reads the secret `name`, if one is stored.
+    ///
+    /// A file is read first: [`Store::set`] removes the file whenever the credential store takes
+    /// a secret, so a file exists only when the newest write fell back to it, and a keyring
+    /// entry beside it (from an earlier write the store did take) is stale. A signing session's
+    /// refresh token rotates on every refresh, so reading the stale copy would replay a used
+    /// refresh token.
     pub fn get(&self, name: &str) -> Result<Option<String>> {
+        if let Some(text) = self.read_file(name)? {
+            return Ok(Some(text));
+        }
         if let Store::Keyring(_) = self
             && let Some(entry) = keyring_entry(name)
         {
@@ -66,7 +75,7 @@ impl Store {
                 Err(_) => {}
             }
         }
-        self.read_file(name)
+        Ok(None)
     }
 
     fn read_file(&self, name: &str) -> Result<Option<String>> {
@@ -97,6 +106,13 @@ impl Store {
         paths::check_private(dir)?;
         let path = self.file(name);
         paths::write_private(&path, secret.as_bytes())?;
+        // The file now shadows any keyring entry (see `get`); drop that entry too where the
+        // store can still be reached, so no stale copy outlives this write.
+        if let Store::Keyring(_) = self
+            && let Some(entry) = keyring_entry(name)
+        {
+            let _ = blocking(|| entry.delete_credential());
+        }
         Ok(Written::File(path))
     }
 
@@ -150,6 +166,23 @@ fn blocking<T>(call: impl FnOnce() -> T) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fallback_file_is_read_before_the_credential_store() {
+        // Only the file is consulted when one exists, so this never reaches the real store.
+        let temp = tempfile::tempdir().expect("temp");
+        let dir = temp.path().join("credentials");
+        let file_store = Store::File(dir.clone());
+        file_store
+            .set("did:plc:abc", "rotated session")
+            .expect("set");
+        let keyring_store = Store::Keyring(dir);
+        assert_eq!(
+            keyring_store.get("did:plc:abc").expect("get").as_deref(),
+            Some("rotated session")
+        );
+    }
 
     #[cfg(unix)]
     #[test]

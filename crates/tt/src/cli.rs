@@ -30,7 +30,7 @@ pub struct Cli {
 pub enum Command {
     /// Sign in to a forge from this terminal, then set up signing for the same account.
     Login(LoginArgs),
-    /// End the forge session and the signing session and delete local credentials.
+    /// End the forge session and the signing sessions and delete local credentials.
     #[command(after_help = COMPROMISE)]
     Logout(LogoutArgs),
     /// Show the forge session, signing sessions, queued signature records and the last
@@ -71,6 +71,11 @@ pub struct LoginArgs {
     /// The OAuth client the signing login uses.
     #[arg(long, value_enum)]
     pub client: Option<ClientChoice>,
+    /// A development client: the https URL where you host tt's client metadata, for
+    /// authorization servers that refuse `--client localhost` (dev-identity builds only; tt
+    /// prints the document to host).
+    #[arg(long, env = "TT_CLIENT_METADATA_URL", conflicts_with = "client")]
+    pub client_metadata_url: Option<String>,
     /// Do not set up signing after signing in.
     #[arg(long)]
     pub no_signing: bool,
@@ -82,9 +87,13 @@ pub struct LoginArgs {
 /// `tt logout`.
 #[derive(Debug, Args)]
 pub struct LogoutArgs {
-    /// The forge to sign out of (default: `TT_FORGE`, then the default forge).
+    /// The forge to sign out of (default: `TT_FORGE`, then the default forge; none is needed
+    /// to end signing sessions).
     #[arg(long)]
     pub forge: Option<String>,
+    /// End only this DID's signing session (default: every stored signing session).
+    #[arg(long)]
+    pub did: Option<String>,
 }
 
 /// `tt status`.
@@ -177,6 +186,11 @@ pub struct SignArgs {
     /// With --login: the OAuth client.
     #[arg(long, value_enum)]
     pub client: Option<ClientChoice>,
+    /// With --login: a development client: the https URL where you host tt's client metadata, for
+    /// authorization servers that refuse `--client localhost` (dev-identity builds only; tt
+    /// prints the document to host).
+    #[arg(long, env = "TT_CLIENT_METADATA_URL", conflicts_with = "client")]
+    pub client_metadata_url: Option<String>,
     /// With --login: print the URL instead of opening a browser.
     #[arg(long)]
     pub no_open: bool,
@@ -239,6 +253,11 @@ pub struct RevokeArgs {
     /// The OAuth client for the one-off authorization.
     #[arg(long, value_enum)]
     pub client: Option<ClientChoice>,
+    /// A development client: the https URL where you host tt's client metadata, for
+    /// authorization servers that refuse `--client localhost` (dev-identity builds only; tt
+    /// prints the document to host).
+    #[arg(long, env = "TT_CLIENT_METADATA_URL", conflicts_with = "client")]
+    pub client_metadata_url: Option<String>,
     /// Print the URL instead of opening a browser.
     #[arg(long)]
     pub no_open: bool,

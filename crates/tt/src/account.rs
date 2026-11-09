@@ -143,7 +143,12 @@ pub async fn login(ctx: &Ctx, args: LoginArgs) -> Result<i32> {
         println!("A signing session for {did} is already stored.");
         return Ok(0);
     }
-    let client = client_spec(args.client, &origin);
+    let client = client_spec(
+        ctx,
+        args.client,
+        args.client_metadata_url.as_deref(),
+        &origin,
+    )?;
     match signing_login(
         ctx,
         &mut config,
@@ -213,14 +218,22 @@ async fn login_with_token(
     Ok(0)
 }
 
-/// The client a signing login uses.
-pub fn client_spec(choice: Option<ClientChoice>, forge: &str) -> ClientSpec {
-    match choice {
+/// The client a signing login uses: `--client-metadata-url`, else `--client`, else the forge's.
+pub fn client_spec(
+    ctx: &Ctx,
+    choice: Option<ClientChoice>,
+    hosted: Option<&str>,
+    forge: &str,
+) -> Result<ClientSpec> {
+    if let Some(url) = hosted {
+        return crate::oauth::hosted_client(url, ctx.mode);
+    }
+    Ok(match choice {
         Some(ClientChoice::Localhost) => ClientSpec::Localhost,
         None => ClientSpec::Forge {
             forge: forge.to_owned(),
         },
-    }
+    })
 }
 
 /// `tt sign --login`'s work: signs in, stores the session, applies the default signing DID
@@ -264,62 +277,94 @@ pub async fn signing_login(
     Ok(())
 }
 
-/// `tt logout`.
+/// `tt logout`: ends the chosen forge's CLI session when a forge is configured or named, and
+/// revokes and forgets every stored signing session (only the one of `--did` when given),
+/// whether or not a forge is configured.
 pub async fn logout(ctx: &Ctx, args: LogoutArgs) -> Result<i32> {
     let config = Config::load(&ctx.dirs.config)?;
-    let Some(origin) = forge::choose(ctx, args.forge.as_deref(), &config)? else {
-        bail!("no forge configured: pass `--forge <url>`");
-    };
-    let client = Forge::new(ctx, &origin)?;
     let mut code = 0;
-    let index = state::index(&ctx.dirs)?;
-    let did = index.forges.get(&origin).map(|entry| entry.did.clone());
-    match client.credential() {
-        None => println!("Not signed in to {origin}."),
-        Some(credential) if credential.is_token() => {
-            println!("Forgot the access token for {origin} (revoke it on the forge if it leaked).");
+    let mut deleted = 0_usize;
+    match forge::choose(ctx, args.forge.as_deref(), &config)? {
+        None => println!("No forge is configured; only signing sessions are ended."),
+        Some(origin) => {
+            let client = Forge::new(ctx, &origin)?;
+            match client.credential() {
+                None => println!("Not signed in to {origin}."),
+                Some(credential) if credential.is_token() => {
+                    println!(
+                        "Forgot the access token for {origin} (revoke it on the forge if it leaked)."
+                    );
+                    deleted += 1;
+                }
+                Some(_) => {
+                    deleted += 1;
+                    match client
+                        .send(Method::DELETE, "/-/api/sessions/current", None)
+                        .await
+                    {
+                        Ok(_) => println!("Ended the forge session on {origin}."),
+                        Err(error) if error.status == Some(reqwest::StatusCode::UNAUTHORIZED) => {
+                            println!("The forge session on {origin} had already ended.");
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "tt: the forge session could not be ended ({error}); the local credential is deleted anyway"
+                            );
+                            code = 1;
+                        }
+                    }
+                }
+            }
+            forge::forget(ctx, &origin)?;
         }
-        Some(_) => match client
-            .send(Method::DELETE, "/-/api/sessions/current", None)
-            .await
-        {
-            Ok(_) => println!("Ended the forge session on {origin}."),
-            Err(error) if error.status == Some(reqwest::StatusCode::UNAUTHORIZED) => {
-                println!("The forge session on {origin} had already ended.");
-            }
-            Err(error) => {
-                eprintln!(
-                    "tt: the forge session could not be ended ({error}); the local credential is deleted anyway"
-                );
-                code = 1;
-            }
-        },
     }
-    forge::forget(ctx, &origin)?;
 
-    // The signing session of the same DID.
-    if let Some(did) = did.filter(|did| !did.is_empty())
-        && let Some(session) = SigningSession::load(ctx, &did).ok().flatten()
-    {
-        match oauth::revoke_session(ctx, &session).await {
-            Ok(true) => {
-                println!("Revoked the signing session of {did} at its authorization server.")
-            }
-            Ok(false) => println!(
-                "The authorization server of {did} offers no revocation; the signing session is forgotten."
-            ),
+    let index = state::index(&ctx.dirs)?;
+    let dids: Vec<String> = match &args.did {
+        Some(did) => vec![did.trim().to_owned()],
+        None => index.signing.keys().cloned().collect(),
+    };
+    for did in dids {
+        let session = match SigningSession::load(ctx, &did) {
+            Ok(Some(session)) => Some(session),
+            Ok(None) => None,
             Err(error) => {
-                eprintln!(
-                    "tt: the signing session could not be revoked ({error:#}); it is deleted locally"
-                );
+                eprintln!("tt: {error:#}; it is deleted locally");
                 code = 1;
+                None
             }
+        };
+        match session {
+            None if args.did.is_some() && !index.signing.contains_key(&did) => {
+                println!("No signing session of {did} is stored.");
+                continue;
+            }
+            None => {}
+            Some(session) => match oauth::revoke_session(ctx, &session).await {
+                Ok(true) => {
+                    println!("Revoked the signing session of {did} at its authorization server.")
+                }
+                Ok(false) => println!(
+                    "The authorization server of {did} offers no revocation; the signing session is forgotten."
+                ),
+                Err(error) => {
+                    eprintln!(
+                        "tt: the signing session of {did} could not be revoked ({error:#}); it is deleted locally"
+                    );
+                    code = 1;
+                }
+            },
         }
         oauth::forget(ctx, &did)?;
+        deleted += 1;
     }
-    println!(
-        "Local credentials are deleted. If a credential may be compromised, follow `tt sign revoke --help`."
-    );
+    if deleted == 0 {
+        println!("No credentials were stored.");
+    } else {
+        println!(
+            "Local credentials are deleted. If a credential may be compromised, follow `tt sign revoke --help`."
+        );
+    }
     Ok(code)
 }
 

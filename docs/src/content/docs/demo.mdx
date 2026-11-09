@@ -55,7 +55,7 @@ Open the web interface and use **Sign in as @alice.test**, or type a handle: `al
 For scripts, an owner's token comes from the operator command, which needs no browser:
 
 ```sh
-tt admin token create --did <alice's DID> --name script --scopes read,write
+tt admin token create --did <alice's DID> --name script --scopes read,write --expires-in-days 1
 ```
 
 ## Signing your own commits
@@ -86,7 +86,7 @@ git -c "http.extraHeader=Authorization: Bearer dev-git-host-token" push origin m
 Everything the demo keeps is in `.dev/demo`: the object store, the source registry, the Rivet engine's data, the logs (`.dev/demo/logs`) and the seeded repository's working copy.
 
 - `scripts/demo.sh` starts from nothing: it deletes `.dev/demo` and seeds again, so every run shows the same demo.
-- `scripts/demo.sh --keep` reuses the previous demo's state, with the changes made in it (the web client's key and alice's and bob's `tt` sign-ins included), and seeds only when an earlier run never finished seeding. The devnet itself starts empty each time, so commits signed in an earlier run show their stored results but could not be proved again. A state directory seeded before people were DIDs keeps its bare-name assignees (such as `admin`), shown as plain text; delete `.dev/demo`, or run without `--keep`, for the DID-based demo.
+- `scripts/demo.sh --keep` reuses the previous demo's state, with the changes made in it (the web client's key included), and seeds only when an earlier run never finished seeding. The devnet's authorization server starts empty, so the demo signs alice and bob in to `tt` again. The devnet itself starts empty each time, so commits signed in an earlier run show their stored results but could not be proved again. A state directory seeded before people were DIDs keeps its bare-name assignees (such as `admin`), shown as plain text; delete `.dev/demo`, or run without `--keep`, for the DID-based demo.
 
 The demo uses the same ports as `scripts/dev.sh`, so run one at a time; the script stops early if one of the forge's ports is taken.
 
@@ -104,4 +104,6 @@ Your authorization server cannot reach a forge on `127.0.0.1`, so the forge cann
 - By default, ATProto's `http://localhost` client. Servers that follow the reference implementation, such as bsky.social, accept it.
 - Some self-hosted servers accept only `https` client ids and refuse it; sign-in then shows that your server refused this forge's configuration, with the server's message ("client_id must be a safe https metadata URL"). For those, run the demo once with `--client-metadata-url <https URL>`, publish exactly what `http://127.0.0.1:<web port>/-/auth/client-metadata.json` then serves at that URL (keep the same web port), and sign in again.
 
-Both are public clients, acceptable only on your own machine. Signing commits as yourself works with `tt sign --login --client localhost` where your server accepts that client; see [Signing](/signing/#setting-up).
+Both are public clients, acceptable only on your own machine.
+
+Signing commits as yourself needs a `tt` signing session, which uses the same kind of development client: `tt sign --login --client localhost --handle <your handle>` where your server accepts that client, or, where it does not, `tt sign --login --client-metadata-url <https URL> --handle <your handle>` with a `tt` built with `--features dev-identity`. Run that once to have `tt` print the JSON to publish at that URL (it differs from the web client's), publish it, and run it again. Your authorization server must also grant the granular scope `repo:academy.rawkode.tartan.signature?action=create`; one that offers only `atproto` and `transition:generic` refuses it, and `tt` never asks for broader access. See [Signing](/signing/#setting-up).

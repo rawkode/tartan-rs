@@ -1583,6 +1583,14 @@ async fn verification_failures_are_badsig_or_errsig() {
         "{}",
         text(&output)
     );
+    // Git takes `%GK` from ERRSIG up to the next space: the key is the DID alone.
+    let output = world.git(&repo, &["log", "-1", "--format=%G?[%GK]", "HEAD~1"]);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        format!("E[{alice}]"),
+        "{}",
+        text(&output)
+    );
     world.devnet.set_switches(|s| s.pds_offline = false).await;
     let _ = std::fs::remove_file(world.home().join("cache/tt/hosts.json"));
 

@@ -140,11 +140,15 @@ Once the CLI session is stored, unless `--no-signing` is given or a signing sess
 - **THEN** the token is revoked and `tt token list` shows it revoked
 
 ### Requirement: Signing out
-`tt logout [--forge <url>]` SHALL end the CLI session at the forge, revoke the signing OAuth session at the authorization server when one is stored, and delete the stored credentials, even when the forge cannot be reached. Its help SHALL point to the compromise procedure, which does not start with `tt logout`.
+`tt logout [--forge <url>] [--did <DID>]` SHALL end the CLI session at the forge when a forge is configured or named, revoke every stored signing OAuth session at its authorization server (only that DID's with `--did`) whether or not a forge is configured, and delete the stored credentials, even when the forge cannot be reached. It SHALL say the local credentials are deleted only when it deleted some. Its help SHALL point to the compromise procedure, which does not start with `tt logout`.
 
 #### Scenario: Forge down
 - **WHEN** a person runs `tt logout` while the forge is unreachable
 - **THEN** the local credentials are deleted and `tt` says the forge session could not be ended
+
+#### Scenario: Signing session without a forge
+- **WHEN** a person who ran only `tt sign --login --client localhost` runs `tt logout`
+- **THEN** the signing session is revoked at its authorization server, its stored credential is deleted, and `tt status` lists no signing session
 
 ### Requirement: Operator commands
 `tt admin token create|list|revoke --did <DID>` SHALL reach the identity actor keyed by `TARTAN_FORGE_ID` (default `forge`) through Rivet (`RIVET_ENDPOINT`, `RIVET_TOKEN`, `RIVET_NAMESPACE`), read no deployment configuration, and need neither a PDS nor a signed-in person. The identity actor SHALL refuse a DID not in the forge's `owners`, and `tt admin` SHALL report that refusal. `tt admin oauth keygen` SHALL print a fresh ES256 private JWKS.

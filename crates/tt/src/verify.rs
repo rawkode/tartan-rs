@@ -70,7 +70,7 @@ pub async fn git_verify(ctx: &Ctx, status_fd: i32, file: &str) -> i32 {
         Ok(signature) => signature,
         Err(error) => {
             status.line("NEWSIG");
-            status.line("ERRSIG tartan");
+            status.line(&errsig("tartan"));
             eprintln!("tt: cannot read the signature file {file}: {error}");
             return 1;
         }
@@ -82,7 +82,7 @@ pub async fn git_verify(ctx: &Ctx, status_fd: i32, file: &str) -> i32 {
             let trusted = trusted_signers(ctx).contains(&proved.did);
             if !(status_safe(&proved.did) && status_safe(&proved.name) && status_safe(&proved.cid))
             {
-                status.line("ERRSIG tartan");
+                status.line(&errsig("tartan"));
                 eprintln!("tt: the signature names values that cannot be shown safely");
                 return 1;
             }
@@ -134,12 +134,12 @@ pub async fn git_verify(ctx: &Ctx, status_fd: i32, file: &str) -> i32 {
             let did = did
                 .filter(|did| status_safe(did))
                 .unwrap_or_else(|| "tartan".to_owned());
-            status.line(&format!("ERRSIG {did}"));
+            status.line(&errsig(&did));
             eprintln!("tt: cannot verify the signature: {reason}");
             1
         }
         Verdict::Unsupported => {
-            status.line("ERRSIG unsupported");
+            status.line(&errsig("unsupported"));
             eprintln!(
                 "tt: this is not a Tartan signature; verify it with its own program, for example \
                  `git -c gpg.x509.program=gitsign verify-commit` (or gpgsm)"
@@ -162,10 +162,17 @@ pub fn openpgp_verify(status_fd: Option<i32>) -> i32 {
     if let Some(fd) = status_fd {
         let status = StatusWriter::new(fd);
         status.line("NEWSIG");
-        status.line("ERRSIG tartan");
+        status.line(&errsig("tartan"));
     }
     eprintln!("{FORMAT_MESSAGE}");
     1
+}
+
+/// An `ERRSIG` line in gpg's field layout (key id, public-key and hash algorithms, class,
+/// time, reason 9 "missing key", fingerprint). Git reads the key id up to the next space, so
+/// the fields after it keep the line's end out of `%GK`.
+fn errsig(id: &str) -> String {
+    format!("ERRSIG {id} 0 8 00 0 9 -")
 }
 
 fn trusted_signers(ctx: &Ctx) -> Vec<String> {

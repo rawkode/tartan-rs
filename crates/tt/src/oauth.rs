@@ -1,8 +1,10 @@
 //! `tt`'s ATProto OAuth client for signing (design D7, *tt's OAuth client*).
 //!
 //! `tt` is a public native client. Its `client_id` is the configured forge's
-//! `/-/auth/tt/client-metadata.json`, or, with `--client localhost`, ATProto's `http://localhost`
-//! development client id carrying both loopback redirect URIs and the declared scope. It sends a
+//! `/-/auth/tt/client-metadata.json`; with `--client localhost`, ATProto's `http://localhost`
+//! development client id carrying both loopback redirect URIs and the declared scope; or, in
+//! `dev-identity` builds, with `--client-metadata-url`, a document the developer hosts at that
+//! `https` URL (for authorization servers that refuse the localhost client). It sends a
 //! PAR with PKCE S256, DPoP from the first request and `login_hint`, receives the code on its own
 //! loopback listener, checks `state`, `iss` and `sub`, and keeps the session (tokens and the DPoP
 //! key) as one secret in the credential store.
@@ -60,6 +62,31 @@ pub enum ClientSpec {
     },
     /// ATProto's `http://localhost` development client.
     Localhost,
+    /// A development client whose metadata document (see [`hosted_document`]) the developer
+    /// hosts at the `https` URL `client_id`.
+    Hosted {
+        /// The document's URL.
+        client_id: String,
+    },
+}
+
+/// The client metadata document for a hosted `tt` client at `client_id`: the forge's `tt`
+/// document with that client id.
+pub fn hosted_document(client_id: &str) -> Value {
+    json!({
+        "client_id": client_id,
+        "client_name": "tt (development)",
+        "application_type": "native",
+        "redirect_uris": [
+            format!("http://127.0.0.1{CALLBACK}"),
+            format!("http://[::1]{CALLBACK}"),
+        ],
+        "response_types": ["code"],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "scope": DECLARED_SCOPE,
+        "token_endpoint_auth_method": "none",
+        "dpop_bound_access_tokens": true,
+    })
 }
 
 impl ClientSpec {
@@ -73,6 +100,7 @@ impl ClientSpec {
                 percent(&format!("http://[::1]{CALLBACK}")),
                 percent(DECLARED_SCOPE)
             ),
+            ClientSpec::Hosted { client_id } => client_id.clone(),
         }
     }
 
@@ -80,7 +108,7 @@ impl ClientSpec {
     pub fn forge(&self) -> Option<&str> {
         match self {
             ClientSpec::Forge { forge } => Some(forge),
-            ClientSpec::Localhost => None,
+            ClientSpec::Localhost | ClientSpec::Hosted { .. } => None,
         }
     }
 
@@ -326,13 +354,17 @@ fn oauth_error(error: &RequestError) -> Option<(String, String)> {
 /// Checks that the forge's client metadata can be loaded, so a forge that is down is named as
 /// such before the authorization server is asked.
 async fn check_client_metadata(ctx: &Ctx, client: &ClientSpec) -> Result<()> {
+    if let ClientSpec::Hosted { client_id } = client {
+        return check_hosted(ctx, client_id).await;
+    }
     let ClientSpec::Forge { forge } = client else {
         return Ok(());
     };
     if !ctx.forge_serves_client_metadata(forge) {
         bail!(
             "the forge {forge} is not on https, so authorization servers cannot load tt's client \
-             metadata from it; use `tt sign --login --client localhost`"
+             metadata from it; use `tt sign --login --client localhost`, or with a dev-identity \
+             build `--client-metadata-url <https URL>`"
         );
     }
     let url = client.client_id();
@@ -353,6 +385,76 @@ async fn check_client_metadata(ctx: &Ctx, client: &ClientSpec) -> Result<()> {
         bail!("the client metadata at {url} names another client_id");
     }
     Ok(())
+}
+
+/// Checks that the hosted client document at `url` is the one `tt` needs, naming the document
+/// to host when it is not.
+async fn check_hosted(ctx: &Ctx, url: &str) -> Result<()> {
+    let expected = hosted_document(url);
+    let host_it = || {
+        format!(
+            "Host exactly this JSON at {url} (served as application/json over public https):\n{}",
+            serde_json::to_string_pretty(&expected).unwrap_or_default()
+        )
+    };
+    let fetch = ctx.fetch(Duration::from_secs(10), None)?;
+    let fetched = match fetch.get(url, 64 * 1024).await {
+        Ok(fetched) if fetched.status.is_success() => fetched,
+        Ok(fetched) => bail!(
+            "the client metadata at {url} could not be loaded (answer {}). {}",
+            fetched.status,
+            host_it()
+        ),
+        Err(error) => bail!(
+            "the client metadata at {url} could not be loaded: {error}. {}",
+            host_it()
+        ),
+    };
+    let document: Value = serde_json::from_slice(&fetched.body)
+        .map_err(|_| anyhow!("the client metadata at {url} is not JSON. {}", host_it()))?;
+    let same = |key: &str| document.get(key) == expected.get(key);
+    let ok = [
+        "client_id",
+        "redirect_uris",
+        "scope",
+        "token_endpoint_auth_method",
+    ]
+    .iter()
+    .all(|key| same(key))
+        && document.get("dpop_bound_access_tokens") == Some(&Value::Bool(true))
+        && document.get("application_type").and_then(Value::as_str) == Some("native");
+    if !ok {
+        bail!(
+            "the client metadata at {url} is not tt's development client. {}",
+            host_it()
+        );
+    }
+    Ok(())
+}
+
+/// Parses `--client-metadata-url`: an `https` URL with a path (plain `http` too under
+/// `TARTAN_DEV_IDENTITY`, for the devnet). Only `dev-identity` builds offer the hosted
+/// development client.
+pub fn hosted_client(url: &str, mode: tartan_atproto::Mode) -> Result<ClientSpec> {
+    if !cfg!(feature = "dev-identity") {
+        bail!(
+            "--client-metadata-url is a development option, and this tt is a release build \
+             without it; build tt with `--features dev-identity`"
+        );
+    }
+    let parsed = reqwest::Url::parse(url.trim())
+        .map_err(|_| anyhow!("{url:?} is not a URL for --client-metadata-url"))?;
+    let scheme_ok =
+        parsed.scheme() == "https" || (mode.is_development() && parsed.scheme() == "http");
+    if !scheme_ok || parsed.host_str().is_none() || parsed.path() == "/" {
+        bail!(
+            "--client-metadata-url must be an https URL with a path, such as \
+             https://example.com/tt-client-metadata.json (got {url})"
+        );
+    }
+    Ok(ClientSpec::Hosted {
+        client_id: parsed.to_string(),
+    })
 }
 
 /// Signs in for signing: PAR, the browser, the loopback callback and the code exchange.
@@ -395,7 +497,11 @@ pub async fn login(request: LoginRequest<'_>) -> Result<SigningSession> {
     );
     loopback::present(
         &location,
-        &format!("let tt sign Git objects as {}", account.did),
+        &if request.scope == DELETE_SCOPE {
+            format!("let tt delete a signature record of {}", account.did)
+        } else {
+            format!("let tt sign Git objects as {}", account.did)
+        },
         request.no_open,
     );
     let query = listener
@@ -542,6 +648,14 @@ fn par_refused(client: &ClientSpec, issuer: &str, error: &RequestError) -> anyho
                  over public https, or the server does not accept loopback redirects for it, try \
                  `tt sign --login --client localhost`",
                 client.client_id()
+            )
+        }
+        "invalid_client" | "invalid_client_metadata" if *client == ClientSpec::Localhost => {
+            anyhow!(
+                "{issuer} refused the authorization request: {code}{detail}. This server does not \
+                 accept ATProto's http://localhost client; sign in through a forge on public \
+                 https, or, with a dev-identity build of tt, host tt's client metadata and pass \
+                 `--client-metadata-url <https URL>`"
             )
         }
         _ => anyhow!("{issuer} refused the authorization request: {code}{detail}"),
@@ -857,6 +971,44 @@ mod tests {
                 "repo:academy.rawkode.tartan.signature?action=delete"
             ]
         );
+    }
+
+    #[test]
+    fn the_hosted_client_document_matches_the_forge_one() {
+        let url = "https://example.com/tt.json";
+        let document = hosted_document(url);
+        assert_eq!(document["client_id"], url);
+        assert_eq!(document["scope"], DECLARED_SCOPE);
+        assert_eq!(
+            document["redirect_uris"],
+            json!(["http://127.0.0.1/callback", "http://[::1]/callback"])
+        );
+        assert_eq!(document["token_endpoint_auth_method"], "none");
+        let spec = ClientSpec::Hosted {
+            client_id: url.to_owned(),
+        };
+        assert_eq!(spec.client_id(), url);
+        assert_eq!(spec.forge(), None);
+        let metadata = spec.metadata(29100, CREATE_SCOPE).expect("metadata");
+        assert_eq!(metadata.client_id.as_str(), url);
+    }
+
+    #[test]
+    fn hosted_clients_need_https_and_a_dev_build() {
+        let production = tartan_atproto::Mode::Production;
+        let parsed = hosted_client("https://example.com/tt.json", production);
+        if cfg!(feature = "dev-identity") {
+            assert_eq!(
+                parsed.expect("accepted"),
+                ClientSpec::Hosted {
+                    client_id: "https://example.com/tt.json".to_owned()
+                }
+            );
+            assert!(hosted_client("http://example.com/tt.json", production).is_err());
+            assert!(hosted_client("https://example.com/", production).is_err());
+        } else {
+            assert!(parsed.is_err());
+        }
     }
 
     #[test]

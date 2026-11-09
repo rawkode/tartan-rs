@@ -23,12 +23,12 @@ Put it on your `PATH`. Git runs it by name when `gpg.x509.program` is `tt`, so a
 | --- | --- |
 | `tt login [--forge <url>] [--set-default] [--no-open] [--port <n>] [--client localhost] [--no-signing]` | Sign in to a forge from this terminal, then (first run) set up signing for the same account. |
 | `tt login --with-token [--forge <url>] [--set-default]` | Act with an access token read from standard input, for CI and remote machines. |
-| `tt logout [--forge <url>]` | End the forge session, revoke the signing session at your authorization server, and delete local credentials, even when the forge is down. |
+| `tt logout [--forge <url>] [--did <DID>]` | End the forge session (when a forge is configured or named), revoke every stored signing session at its authorization server (only that DID's with `--did`), and delete local credentials, even when the forge is down. No forge is needed to end signing sessions. |
 | `tt status [--json]` | The forge you are signed in to (handle, DID, rights), each signing session with its client and when it ends, queued signature records and paused windows, records reported by a drain, and the last signing failure. |
 | `tt token create --name <n> --scopes <list> [--repos <list>] --expires-in-days <d>` | Create an access token (see [Access tokens](/tokens/)); the secret is printed once. |
 | `tt token list`, `tt token revoke <id>` | List or revoke your access tokens. |
 | `tt identity resolve <handle-or-DID>` | Print the DID, the verified handle and the PDS, verified as the forge verifies them. Needs no forge. |
-| `tt sign --login [--handle <h>] [--forge <url>] [--client localhost] [--no-open] [--port <n>] [--set-default]` | Sign in to your PDS for signing. |
+| `tt sign --login [--handle <h>] [--forge <url>] [--client localhost \| --client-metadata-url <https URL>] [--no-open] [--port <n>] [--set-default]` | Sign in to your PDS for signing. |
 | `tt sign --setup [--global] [--did <DID>] [--program <path>] [--no-tags] [--verify-only] [--hook] [--hooks-path-ok]` | Configure Git to sign and verify with `tt`. |
 | `tt sign --setup --undo [--global]` | Remove what `--setup` wrote and restore your own `pre-push` hook. |
 | `tt sign --flush [--hook]` | Publish queued signature records. |
@@ -120,7 +120,7 @@ The signing consent that follows reuses port 8765 and prints its own URL. `tt si
 
 Your authorization server loads `tt`'s client metadata from the forge (`<forge>/-/auth/tt/client-metadata.json`), so it must be reachable over public `https`. For a forge that is not (behind a VPN, or on your own machine), `tt sign --login --client localhost` uses ATProto's `http://localhost` development client instead. Authorization servers may refuse it: the reference implementation (bsky.social) accepts it, and some self-hosted servers refuse it with `invalid_client`. When an authorization server refuses the forge's loopback redirects (`invalid_redirect_uri` or `invalid_client_metadata`), `tt` suggests `--client localhost`.
 
-A forge on `http://127.0.0.1` (a forge on your own machine) is accepted for the forge commands (`tt login`, `tt token`, `tt status`); signing through it needs `--client localhost`.
+A forge on `http://127.0.0.1` (a forge on your own machine) is accepted for the forge commands (`tt login`, `tt token`, `tt status`); signing through it needs `--client localhost`, or, for authorization servers that refuse that client, `--client-metadata-url <https URL>` (also `TT_CLIENT_METADATA_URL`): a development option of `tt` builds made with `--features dev-identity`, naming a client metadata document you host. When `tt` cannot load the document there, it prints the exact JSON to publish (a public native client with both loopback redirects and `tt`'s declared scope). `tt sign revoke` and `tt login` accept the same options.
 
 ## Credentials
 

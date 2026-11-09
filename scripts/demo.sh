@@ -30,8 +30,9 @@
 # people by DID.
 #
 #   scripts/demo.sh          start from nothing: earlier demo state is deleted and reseeded
-#   scripts/demo.sh --keep   reuse the previous demo's state (the OAuth key, tt sign-ins and
-#                            the seeded forge); seed only if seeding never finished
+#   scripts/demo.sh --keep   reuse the previous demo's state (the OAuth key and the seeded
+#                            forge; alice and bob sign in to tt again, since tartan-devnet keeps
+#                            no state); seed only if seeding never finished
 #
 # With --owner, the forge runs against the real ATProto network instead, with that DID as its
 # only owner, so you can sign in to the web interface as yourself:
@@ -704,6 +705,13 @@ ISSUES='[
 
 if [[ -f "$state/seeded" ]]; then
 	step "Reusing the seeded demo in $state"
+	if $devnet_mode; then
+		# tartan-devnet keeps its PDS and authorization server state in memory, so the signing
+		# sessions from the previous run ended with it.
+		step "Signing alice and bob in to tt again"
+		tt_login alice
+		tt_login bob
+	fi
 else
 	seed
 fi
@@ -756,9 +764,12 @@ EOF
 EOF
 	fi
 	cat <<EOF
-  Signing         tt sign --login --client localhost --handle <your handle>, then
+  Signing         tt sign --login --client localhost --handle <your handle>, or, where the
+                  authorization server refuses that client, host the document tt prints and run
+                  tt sign --login --client-metadata-url <https URL> --handle <your handle>; then
                   git -c gpg.format=x509 -c gpg.x509.program=$tt -c user.signingKey=$owner commit -S
-                  (the same localhost client: a server that refuses it cannot sign from here)
+                  (signing also needs the server to grant the granular scope
+                  repo:academy.rawkode.tartan.signature?action=create)
   Gateway API     $gateway/-/api   (Authorization: Bearer <a token from Settings, Access tokens>)
   Clone           git clone http://127.0.0.1:9200/acme/api.git
   Logs            $state/logs

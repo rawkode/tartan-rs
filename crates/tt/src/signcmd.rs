@@ -61,9 +61,11 @@ pub async fn run(ctx: &Ctx, args: SignArgs) -> Result<i32> {
 
 /// `tt sign --login`: returns the DID signed in.
 async fn login(ctx: &Ctx, config: &mut Config, args: &SignArgs) -> Result<String> {
-    let client = match args.client {
-        Some(choice) => account::client_spec(Some(choice), ""),
-        None => {
+    let client = match (args.client, args.client_metadata_url.as_deref()) {
+        (choice, hosted) if choice.is_some() || hosted.is_some() => {
+            account::client_spec(ctx, choice, hosted, "")?
+        }
+        _ => {
             let Some(forge) = forge::choose(ctx, args.forge.as_deref(), config)? else {
                 bail!("no forge configured: run `tt login --forge <url>` or pass `--forge`");
             };
@@ -252,9 +254,11 @@ async fn revoke_signature(ctx: &Ctx, args: RevokeArgs) -> Result<i32> {
 
     let config = Config::load(&ctx.dirs.config)?;
     let origin = forge::choose(ctx, args.forge.as_deref(), &config)?;
-    let client = match args.client {
-        Some(choice) => account::client_spec(Some(choice), ""),
-        None => match &origin {
+    let client = match (args.client, args.client_metadata_url.as_deref()) {
+        (choice, hosted) if choice.is_some() || hosted.is_some() => {
+            account::client_spec(ctx, choice, hosted, "")?
+        }
+        _ => match &origin {
             Some(forge) => ClientSpec::Forge {
                 forge: forge.clone(),
             },
