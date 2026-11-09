@@ -22,9 +22,9 @@ mod extension_routes;
 mod gateway;
 pub mod jetstream;
 mod people_routes;
-mod signature_routes;
 pub mod registry;
 pub mod settings;
+mod signature_routes;
 pub mod sync;
 
 pub use crate::access::{Access, AccessConfig, Principal, Rights};

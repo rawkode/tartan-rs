@@ -171,7 +171,10 @@ impl Actor for Repo {
         self.outbox.flush_later(&ctx, SubscriberSource::Forge);
         // Queued signature checks are scheduled first; a schedule lost to a crash is recovered
         // and a surviving one is not duplicated.
-        self.schedule_queue(&ctx).await?;
+        if let Err(error) = self.schedule_queue(&ctx).await {
+            // The next push or start schedules the queue again.
+            tracing::error!(repo = %self.id, %error, "could not schedule queued signature checks");
+        }
         // Verified records the identity actor was not told of are told now.
         let (repo, background) = (Arc::clone(&self), ctx.clone());
         ctx.wait_until(async move {
