@@ -7,7 +7,7 @@ Who is calling the forge (a signed-in person, an agent acting for one, or nobody
 ## ADDED Requirements
 
 ### Requirement: Every request has a principal
-The gateway SHALL resolve each request to a principal from a `tartan_pat_` bearer token, else from the session cookie, else anonymous. An invalid, expired or revoked bearer token SHALL be refused with 401 even when a valid cookie is present.
+The gateway SHALL resolve each request to a principal from a bearer token (`tartan_pat_` access token or `tartan_cli_` CLI session), else from the session cookie, else anonymous. An invalid, expired or revoked bearer token SHALL be refused with 401 even when a valid cookie is present.
 
 #### Scenario: Bad token with a good cookie
 - **WHEN** a request carries a revoked token and a valid session cookie
@@ -21,7 +21,7 @@ A principal SHALL be an owner when its DID, or the DID it acts on behalf of, is 
 - **THEN** `GET /-/api/me` answers their DID, handle and `owner: true`
 
 ### Requirement: What callers may do
-Anonymous callers SHALL get 401 from `/-/api` except `GET /-/api/me`. Readers, the non-owners admitted by the deployment configuration's `readers`, SHALL only read: `GET` routes and extension `render` calls. Other signed-in non-owners SHALL get 403 except `GET /-/api/me`, which reports `rights: []`. Writes (extension `tool` and `act` calls) SHALL need an owner. Creating orgs and repositories, placements and subscribers SHALL need an owner with `admin` rights.
+Anonymous callers SHALL get 401 from `/-/api` except `GET /-/api/me`. Readers, the non-owners admitted by the deployment configuration's `readers`, SHALL only read: `GET` routes and extension `render` calls. Other signed-in non-owners SHALL get 403 except `GET /-/api/me`, which reports `rights: []`, and the `self` routes. Writes (extension `tool` and `act` calls) SHALL need an owner. Creating orgs and repositories, placements and subscribers SHALL need an owner with `admin` rights.
 
 #### Scenario: Person who is not an owner
 - **WHEN** a signed-in reader who is not an owner calls an Issues tool that creates an issue
@@ -41,6 +41,29 @@ Anonymous callers SHALL get 401 from `/-/api` except `GET /-/api/me`. Readers, t
 
 #### Scenario: Write token
 - **WHEN** an owner's token with scope `write` but not `admin` creates an org
+- **THEN** the forge answers 403
+
+### Requirement: Signers reach their own signature records
+`POST /-/api/people/<did>/signatures/<rkey>/refresh` SHALL be allowed to any principal whose DID is `<did>`, whatever its rights, including readers and people with `rights: []`; owners MAY call it without a body for any DID. A body with `withdraw` SHALL be accepted only from a browser or CLI session; every `tartan_pat_` token SHALL get 403 for it, whatever its scopes. Calls that insert a row or fetch SHALL be rate-limited per DID; withdrawing a tracked record SHALL NOT be.
+
+#### Scenario: Non-reader signer withdraws
+- **WHEN** `readers` is `"owners"` and a signed-in person who is not an owner withdraws their own signature record with a CLI session
+- **THEN** the record is marked revoked as `withdrawn`
+
+#### Scenario: Reader signer withdraws
+- **WHEN** a reader withdraws their own signature record from a browser session
+- **THEN** the record is marked revoked as `withdrawn`
+
+#### Scenario: Access token cannot withdraw
+- **WHEN** a person's `tartan_pat_` token with scopes `read`, `write` and `admin` calls the route for that person's own record with `withdraw`
+- **THEN** the forge answers 403 and nothing is revoked
+
+#### Scenario: Re-proofs are rate-limited
+- **WHEN** a person with `rights: []` sends 101 body-less re-proofs of their own records at once
+- **THEN** the calls beyond the burst answer 429 with `Retry-After`, and the forge makes no fetch for them
+
+#### Scenario: Another person's record
+- **WHEN** a signed-in non-owner calls the route for another DID's record
 - **THEN** the forge answers 403
 
 ### Requirement: The web UI shows read-only access
@@ -71,14 +94,14 @@ The deployment configuration's `readers` SHALL decide which non-owners may read:
 
 #### Scenario: Stranger signs in to a private forge
 - **WHEN** a DID with no read right signs in
-- **THEN** it gets a session, but no `person.signed_in` is recorded and the forge does not watch its keys
+- **THEN** it gets a session, but no `person.signed_in` is recorded and the forge does not watch the DID
 
 ### Requirement: Inactive accounts are refused
 The forge SHALL refuse sessions and tokens of a DID whose verified account status is inactive (any status but active, throttled or desynchronized), within 30 seconds of learning it. Status SHALL come only from the DID's verified PLC log and `com.atproto.sync.getRepoStatus` on its verified PDS, refreshed on Jetstream identity or account events, at sign-in and at least every 6 hours; a Jetstream event's payload SHALL never set it, and a failed fetch SHALL keep the last status.
 
 #### Scenario: Takendown signer
 - **WHEN** a person's PDS reports their account `takendown`
-- **THEN** their session and tokens are refused, and their new commits are `unknown_key` with the account status as detail
+- **THEN** their sessions and tokens are refused, and their newly checked commits are `signer_inactive`
 
 #### Scenario: Forged account event
 - **WHEN** Jetstream reports a person's account as `takendown` but their PDS reports it active

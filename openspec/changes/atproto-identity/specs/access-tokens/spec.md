@@ -7,11 +7,15 @@ Scoped, expiring, revocable bearer tokens through which agents and automation ac
 ## ADDED Requirements
 
 ### Requirement: A person creates tokens for themselves
-A signed-in person SHALL create a token with `POST /-/api/tokens {name, scopes, repos?, expires_in_days}`; the answer SHALL show the secret (`tartan_pat_` and 43 base64url characters) once. A token SHALL NOT create tokens. A DID SHALL hold at most 50 unexpired, unrevoked tokens.
+A person signed in through the browser or `tt login` SHALL create a token with `POST /-/api/tokens {name, scopes, repos?, expires_in_days}`; the answer SHALL show the secret (`tartan_pat_` and 43 base64url characters) once. A token SHALL NOT create tokens. A DID SHALL hold at most 50 unexpired, unrevoked tokens.
 
 #### Scenario: Create
 - **WHEN** a signed-in person creates a token named `ci` with scope `read`
 - **THEN** the answer carries the secret, and later reads of the token show its name, scopes and expiry but not the secret
+
+#### Scenario: From the CLI
+- **WHEN** a person signed in with `tt login` runs `tt token create`
+- **THEN** the token is created for their DID
 
 #### Scenario: Token creating a token
 - **WHEN** a request authenticated by a token calls `POST /-/api/tokens`
@@ -58,8 +62,8 @@ The token's DID or any owner SHALL revoke it with `DELETE /-/api/tokens/<id>`, r
 - **THEN** the request is refused with 401
 
 ### Requirement: Operators can mint tokens
-`tartan token create --did <DID> --name <name> --scopes <list> --expires-in-days <n>` SHALL create a token for a DID listed in `owners` and print its secret, so scripts can act before anyone signs in. It SHALL refuse a DID that is not an owner.
+`tt admin token create --did <DID> --name <name> --scopes <list> --expires-in-days <n>` SHALL create a token for a DID listed in `owners` and print its secret, so scripts can act before anyone signs in. It SHALL refuse a DID that is not an owner.
 
 #### Scenario: Seeding the demo
-- **WHEN** `scripts/demo.sh` mints an `admin` token for the development owner
+- **WHEN** `scripts/demo.sh` mints an `admin` token for the development owner with `tt admin token create`
 - **THEN** its seeding requests succeed with that token

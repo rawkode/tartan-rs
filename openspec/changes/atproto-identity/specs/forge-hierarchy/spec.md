@@ -4,7 +4,7 @@
 
 ### Requirement: The forge API requires the admin token
 **Reason**: The shared admin token and the single `admin` principal are replaced by ATProto sign-in, access tokens and owners listed in the deployment configuration.
-**Migration**: List administrators' DIDs in `owners` in the deployment configuration (package `forge`), remove `TARTAN_ADMIN_TOKEN`, sign in through the web UI, and give scripts a token from `tartan token create` or the access-token settings. See the `forge-access`, `sign-in` and `access-tokens` capabilities.
+**Migration**: List administrators' DIDs in `owners` in the deployment configuration (package `forge`), remove `TARTAN_ADMIN_TOKEN`, sign in through the web UI, and give scripts a token from `tt admin token create`, `tt token create` or the access-token settings. See the `forge-access`, `sign-in` and `access-tokens` capabilities.
 
 ## MODIFIED Requirements
 

@@ -13,16 +13,12 @@ The forge SHALL serve its OAuth client metadata at `<TARTAN_PUBLIC_URL>/-/auth/c
 - **WHEN** an authorization server fetches the `client_id` URL
 - **THEN** it receives `application/json` whose `client_id` equals that URL exactly
 
-### Requirement: Every requested scope is declared
-The client metadata `scope` SHALL be exactly `atproto repo:org.tangled.key.sshKey?action=create repo:org.tangled.key.sshKey?action=delete`. Every authorization request SHALL ask only for tokens that appear verbatim in it: `atproto` for sign-in, plus exactly one of the two `repo:` tokens for a key write, because authorization servers compare scope tokens literally.
-
-#### Scenario: Key write scope
-- **WHEN** a person starts adding a key
-- **THEN** the request asks for `atproto repo:org.tangled.key.sshKey?action=create`, both tokens of which appear verbatim in the client metadata
+### Requirement: Sign-in asks only to prove the DID
+The client metadata `scope` SHALL be exactly `atproto`, and every sign-in authorization request SHALL ask for exactly `atproto`: the forge never writes to a person's repository. The forge SHALL NOT declare or request any `repo:`, `rpc:` or `transition:` scope for its web client.
 
 #### Scenario: Sign-in asks only for atproto
 - **WHEN** a person starts signing in
-- **THEN** the PAR request body the authorization server receives has `scope` exactly `atproto`, although the client metadata declares more
+- **THEN** the PAR request body the authorization server receives has `scope` exactly `atproto`, and the client metadata declares exactly `atproto`
 
 ### Requirement: The forge must be reachable by authorization servers
 `TARTAN_PUBLIC_URL` SHALL be reachable over public HTTPS by the authorization servers of everyone who signs in, since they fetch the client metadata and JWKS themselves. A forge that is not reachable SHALL still start, and be administered with operator-minted tokens.
@@ -103,15 +99,11 @@ Problem redirects SHALL carry only the problem code, a known account status, an 
 - **THEN** the page shows the generic `client_rejected` message and none of the server's text
 
 ### Requirement: Pending requests are bound to the browser
-`POST /-/auth/login` and `POST /-/auth/keys` SHALL set a pre-auth cookie (`__Host-tartan_oauth`; `tartan_oauth` in development over HTTP), HttpOnly, SameSite=Lax, Path=/, lasting at most 10 minutes, holding 32 random bytes whose SHA-256 the pending request stores. The callback SHALL fail unless that cookie matches, and for a key write unless the current session started it. Every callback SHALL clear the cookie.
+`POST /-/auth/login` SHALL set a pre-auth cookie (`__Host-tartan_oauth`; `tartan_oauth` in development over HTTP), HttpOnly, SameSite=Lax, Path=/, lasting at most 10 minutes, holding 32 random bytes whose SHA-256 the pending request stores. The callback SHALL fail unless that cookie matches. Every callback SHALL clear the cookie.
 
 #### Scenario: Callback opened in another browser
 - **WHEN** a callback carrying a valid `state` arrives from a browser without the matching pre-auth cookie
 - **THEN** it fails and no session is created
-
-#### Scenario: Key write finished by another session
-- **WHEN** a key-write callback arrives with the matching cookie but a session other than the one that started it
-- **THEN** it fails and nothing is written to the PDS
 
 ### Requirement: Sign-in capacity is limited per client
 The forge SHALL derive the client address from the peer, or, only when the peer is in `TARTAN_TRUSTED_PROXIES`, from the right-most `X-Forwarded-For` address that is not a trusted proxy. It SHALL rate-limit sign-in and handle resolution per address and allow 20 pending sign-ins per address and 10,000 in all. A refused sign-in SHALL redirect to the sign-in page with `rate_limited` (per address) or `busy` (global), keeping `return_to`.
@@ -180,4 +172,4 @@ A successful sign-in by a DID that may read (an owner or a reader) SHALL record 
 
 #### Scenario: First sign-in
 - **WHEN** a DID that may read signs in for the first time
-- **THEN** `person.signed_in` is recorded and the forge starts watching the DID's keys
+- **THEN** `person.signed_in` is recorded and the forge starts watching the DID's identity and account status
