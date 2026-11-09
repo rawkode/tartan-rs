@@ -1,0 +1,156 @@
+# Spec Delta
+
+## Purpose
+
+Signing in to the forge with an ATProto identity through ATProto OAuth, and the forge session that follows, so people use the web UI as themselves.
+
+## ADDED Requirements
+
+### Requirement: The forge publishes confidential client metadata
+The forge SHALL serve its OAuth client metadata at `<TARTAN_PUBLIC_URL>/-/auth/client-metadata.json` (its `client_id`), where `TARTAN_PUBLIC_URL` is the browser-facing origin serving the web UI and proxying `/-/` to the gateway, with `application_type` `web`, the callback `/-/auth/callback` as its only redirect URI, `response_types` `["code"]`, `grant_types` `["authorization_code"]`, `dpop_bound_access_tokens` true, `private_key_jwt` with ES256, and `jwks_uri` `/-/auth/jwks.json`.
+
+#### Scenario: Metadata matches its URL
+- **WHEN** an authorization server fetches the `client_id` URL
+- **THEN** it receives `application/json` whose `client_id` equals that URL exactly
+
+### Requirement: Every requested scope is declared
+The client metadata `scope` SHALL be exactly `atproto repo:org.tangled.key.sshKey?action=create repo:org.tangled.key.sshKey?action=delete`. Every authorization request SHALL ask only for tokens that appear verbatim in it: `atproto` for sign-in, plus exactly one of the two `repo:` tokens for a key write, because authorization servers compare scope tokens literally.
+
+#### Scenario: Key write scope
+- **WHEN** a person starts adding a key
+- **THEN** the request asks for `atproto repo:org.tangled.key.sshKey?action=create`, both tokens of which appear verbatim in the client metadata
+
+#### Scenario: Sign-in asks only for atproto
+- **WHEN** a person starts signing in
+- **THEN** the PAR request body the authorization server receives has `scope` exactly `atproto`, although the client metadata declares more
+
+### Requirement: The forge must be reachable by authorization servers
+`TARTAN_PUBLIC_URL` SHALL be reachable over public HTTPS by the authorization servers of everyone who signs in, since they fetch the client metadata and JWKS themselves. A forge that is not reachable SHALL still start, and be administered with operator-minted tokens.
+
+#### Scenario: Private forge
+- **WHEN** a forge on a private network is asked to sign someone in
+- **THEN** the person's authorization server refuses the client and the sign-in page reports `client_rejected`
+
+### Requirement: The client keys are the operator's
+The forge SHALL load its ES256 client keys from the JWKS file at `TARTAN_OAUTH_KEYS_FILE`, sign client assertions with the first key, publish the public halves of all of them, and refuse to start without at least one valid key. Private key material SHALL never appear in responses, events or logs.
+
+#### Scenario: Key rotation
+- **WHEN** the operator puts a new key first in the file and restarts
+- **THEN** new sign-ins use the new key and the old key stays published until removed
+
+### Requirement: Sign-in follows the ATProto OAuth profile
+`POST /-/auth/login {handle}` (a handle or DID) SHALL resolve the person, their PDS and its authorization server, check the server's `issuer`, push the request with PAR, PKCE S256, a random single-use `state`, a fresh DPoP key and scope `atproto`, and redirect to the authorization endpoint. Pending requests SHALL expire after 10 minutes.
+
+#### Scenario: Start
+- **WHEN** a person submits `alice.example` on the sign-in page
+- **THEN** the forge answers 303 to the authorization server with only `client_id` and `request_uri` in the URL
+
+#### Scenario: Unknown handle
+- **WHEN** the handle does not resolve
+- **THEN** the sign-in page shows that the handle was not found and no request is stored
+
+#### Scenario: Server unreachable
+- **WHEN** the PLC directory, the person's PDS or its authorization server cannot be reached
+- **THEN** the sign-in page says the person's server could not be reached, naming the host, not that the handle was not found, and no request is stored
+
+### Requirement: Sign-in failures are explained
+Every sign-in failure SHALL redirect to the sign-in page with a problem code and the original `return_to`, never a raw 500. A callback carrying `error` SHALL show that sign-in was cancelled, with `error_description` as text. An expired `state` SHALL show that sign-in took too long. An OAuth client error from PAR or the token endpoint SHALL give `client_rejected` with the server's message escaped, telling the person to inform the operator; `server_unreachable` is only for connection failures.
+
+#### Scenario: Consent denied
+- **WHEN** the callback arrives with `error=access_denied` and no `code`
+- **THEN** the pending request is consumed, no session is created, and the sign-in page says sign-in was cancelled
+
+#### Scenario: Client refused
+- **WHEN** the authorization server answers PAR with `invalid_client_metadata` because it cannot fetch the client metadata
+- **THEN** the sign-in page shows `client_rejected` with the server's message as text and says the forge's operator should be told, not that the person's server is unreachable
+
+#### Scenario: Too slow
+- **WHEN** the callback arrives 11 minutes after sign-in started
+- **THEN** the sign-in page says sign-in took too long and offers to try again
+
+### Requirement: Inactive accounts cannot sign in
+Before creating a session, the callback SHALL refresh the DID's account status from its verified PLC log and PDS. If the status is inactive, the forge SHALL create no session, record no `person.signed_in`, and redirect to the sign-in page with problem `account_inactive`, the status and the PDS host, keeping `return_to`. A failed status fetch SHALL keep the stored status.
+
+#### Scenario: Deactivated account
+- **WHEN** the DID's PDS answers `getRepoStatus` with `active: false` and `status: deactivated` at the callback
+- **THEN** no session is created, and the sign-in page shows `account_inactive`, saying the account at that PDS is deactivated and to reactivate it there and sign in again
+
+#### Scenario: Stale inactive status
+- **WHEN** the forge stored `deactivated` for a DID whose PDS now reports it active, and that DID signs in
+- **THEN** the status becomes `active`, the session is created and the person is not sent back to the sign-in page
+
+### Requirement: Pending requests are bound to the browser
+`POST /-/auth/login` and `POST /-/auth/keys` SHALL set a pre-auth cookie (`__Host-tartan_oauth`; `tartan_oauth` in development over HTTP), HttpOnly, SameSite=Lax, Path=/, lasting at most 10 minutes, holding 32 random bytes whose SHA-256 the pending request stores. The callback SHALL fail unless that cookie matches, and for a key write unless the current session started it. Every callback SHALL clear the cookie.
+
+#### Scenario: Callback opened in another browser
+- **WHEN** a callback carrying a valid `state` arrives from a browser without the matching pre-auth cookie
+- **THEN** it fails and no session is created
+
+#### Scenario: Key write finished by another session
+- **WHEN** a key-write callback arrives with the matching cookie but a session other than the one that started it
+- **THEN** it fails and nothing is written to the PDS
+
+### Requirement: Sign-in capacity is limited per client
+The forge SHALL derive the client address from the peer, or, only when the peer is in `TARTAN_TRUSTED_PROXIES`, from the right-most `X-Forwarded-For` address that is not a trusted proxy. It SHALL rate-limit sign-in and handle resolution per address and allow 20 pending sign-ins per address and 10,000 in all. A refused sign-in SHALL redirect to the sign-in page with `rate_limited` (per address) or `busy` (global), keeping `return_to`.
+
+#### Scenario: Spoofed header
+- **WHEN** a client that is not a trusted proxy sends `X-Forwarded-For` with a different address
+- **THEN** the header is ignored and the client is limited by its own address
+
+#### Scenario: One client at its cap
+- **WHEN** one client address has 20 sign-ins pending
+- **THEN** its next sign-in redirects to the sign-in page with problem `rate_limited` and its `return_to`, saying to try again in a few minutes, and a sign-in from another address behind the same trusted proxy succeeds
+
+#### Scenario: Forge-wide cap
+- **WHEN** 10,000 sign-ins are pending across all addresses
+- **THEN** the next sign-in redirects to the sign-in page with problem `busy`, not a bare 503
+
+### Requirement: The callback proves the DID
+`GET /-/auth/callback` SHALL accept only a pending `state` from the browser that started it, SHALL check `iss` against the stored issuer, exchange the code with DPoP and a client assertion, and require the token's `sub` to be the expected DID and its scope to include `atproto`. Any failure SHALL create no session.
+
+#### Scenario: Wrong subject
+- **WHEN** the token response's `sub` is a different DID from the one the sign-in started with
+- **THEN** the callback fails and no session is created
+
+#### Scenario: Replayed state
+- **WHEN** a callback arrives with a `state` that was already used
+- **THEN** it fails and no session is created
+
+### Requirement: The forge keeps no OAuth tokens after sign-in
+After a successful callback the forge SHALL discard the access and refresh tokens and the DPoP key, revoking the tokens when the authorization server advertises a revocation endpoint. Sign-in only proves the DID; the forge session that follows does not depend on the OAuth session.
+
+#### Scenario: Revoking the app at the PDS
+- **WHEN** a signed-in person revokes the forge in their PDS's settings
+- **THEN** their forge session continues until it expires or they sign out
+
+### Requirement: Forge sessions are cookies
+A successful sign-in SHALL set an HttpOnly, SameSite=Lax cookie (`__Host-tartan_session`, Secure; `tartan_session` only in development over HTTP) holding 32 random bytes, of which the forge stores only the SHA-256. A session SHALL expire 30 days after sign-in or 7 days after its last use, whichever is first.
+
+#### Scenario: Idle session
+- **WHEN** a session has not been used for 8 days
+- **THEN** a request with it is treated as anonymous
+
+### Requirement: Sign-in returns to where it started
+The sign-in page SHALL take a `return_to` path on `TARTAN_PUBLIC_URL`, including a fragment route such as `/#/acme/api/issues`. The callback SHALL redirect there only when it starts with a single `/`, not `//` or `/\`, has no control characters and parses as a path-absolute reference; otherwise it SHALL redirect to `/`.
+
+#### Scenario: Open redirect
+- **WHEN** a sign-in starts with `return_to=//evil.example/` or `return_to=/\evil.example`
+- **THEN** the callback redirects to `/`
+
+#### Scenario: Back to the page in development
+- **WHEN** a person signs in from `/#/acme/api/issues` in the web UI of a development forge and then creates an issue
+- **THEN** the browser lands on `/#/acme/api/issues` and the issue creation is accepted, because its `Origin` is `TARTAN_PUBLIC_URL`
+
+### Requirement: Signing out ends the session
+`POST /-/auth/logout` SHALL delete the session and clear the cookie. A person SHALL be able to list their own sessions and end any of them at `/-/api/sessions`.
+
+#### Scenario: Sign out
+- **WHEN** a signed-in person signs out
+- **THEN** later requests with the old cookie are treated as anonymous
+
+### Requirement: Sign-ins are recorded
+A successful sign-in SHALL record `person.signed_in {did, handle}` on the `identity` source, and the first sign-in of a DID SHALL add it to the people the forge knows.
+
+#### Scenario: First sign-in
+- **WHEN** a DID signs in for the first time
+- **THEN** `person.signed_in` is recorded and the forge starts watching the DID's keys
