@@ -223,9 +223,7 @@ async fn forge_end_to_end() {
 
     let mut registry = Registry::new();
     register_actors(&mut registry);
-    let actors = rivetkit::test::setup(registry)
-        .await
-        .expect("engine and registry");
+    let actors = common::Actors::start(registry, "forge").await;
 
     // A second pool on the same engine, standing in for dedicated machines.
     let dedicated_pool = format!("dedicated-{nanos}");

@@ -265,9 +265,7 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
     extensions.set_available([]);
     let mut actor_registry = Registry::new();
     register_actors(&mut actor_registry);
-    let actors = rivetkit::test::setup(actor_registry)
-        .await
-        .expect("engine and registry");
+    let actors = common::Actors::start(actor_registry, "git").await;
     let client = actors.client().clone();
     let state = GatewayState {
         client: client.clone(),

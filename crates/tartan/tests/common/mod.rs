@@ -30,9 +30,9 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
-use rivetkit::Registry;
-use rivetkit::client::Client;
+use rivetkit::client::{Client, ClientConfig};
 use rivetkit::test::TestHandle;
+use rivetkit::{EngineSpawnMode, Registry, ServeConfig};
 use serde_json::{Value, json};
 use sha2::Sha256;
 use tartan::settings::{PublicUrl, PublicUrlRules, WebClient};
@@ -51,9 +51,79 @@ use tartan_forge::{
     Clock, Extensions, GitHost, Services, identity_handle, install_services, register_actors,
 };
 use tartan_identity_api::{AdminCreateToken, TokenRequest, TokenScope};
+use tokio_util::sync::CancellationToken;
 
 pub const WEBHOOK_SECRET: &[u8] = b"test-webhook-secret";
 pub const DEADLINE: Duration = Duration::from_secs(60);
+
+/// The forge's actors served on the shared local engine in a pool of their own.
+///
+/// `rivetkit::test::setup` names its pool by a counter that restarts in every process, and the
+/// engine outlives each test binary. An actor an earlier binary left with a pending schedule
+/// would then wake on whichever later process serves that same pool, running against that
+/// process's services and fakes. A pool named after the run keeps every actor on the process
+/// that created it.
+pub struct Actors {
+    engine: TestHandle,
+    shutdown: CancellationToken,
+    serving: tokio::task::JoinHandle<anyhow::Result<()>>,
+    client: Client,
+}
+
+impl Actors {
+    /// Starts (or reuses) the engine and serves `registry` in a pool named `prefix` plus the
+    /// time, so no earlier run's pool is reused.
+    pub async fn start(registry: Registry, prefix: &str) -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after 1970")
+            .as_nanos();
+        // A pool name is a DNS label: at most 63 lowercase letters, digits and hyphens.
+        let mut pool = format!("{prefix}-{:x}-{nanos:x}", std::process::id());
+        pool.truncate(63);
+        let pool = pool.trim_end_matches('-');
+        // An empty registry only brings the engine up; its pool never hosts an actor.
+        let engine = rivetkit::test::setup(Registry::new())
+            .await
+            .expect("engine");
+        let shutdown = CancellationToken::new();
+        let config = ServeConfig {
+            endpoint: ENGINE.to_owned(),
+            token: Some("default".to_owned()),
+            namespace: "default".to_owned(),
+            pool_name: pool.to_owned(),
+            engine_spawn: EngineSpawnMode::Never,
+            ..ServeConfig::default()
+        };
+        let serving = tokio::spawn(registry.serve_with_config(config, shutdown.clone()));
+        let client = Client::new(
+            ClientConfig::new(ENGINE)
+                .token("default")
+                .namespace("default")
+                .pool_name(pool),
+        );
+        Self {
+            engine,
+            shutdown,
+            serving,
+            client,
+        }
+    }
+
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
+    /// Stops serving the pool; the engine stays up for reuse.
+    pub async fn shutdown(self) {
+        self.shutdown.cancel();
+        let _ = self.serving.await;
+        self.engine.shutdown().await;
+    }
+}
+
+/// Where `rivetkit::test::setup` runs the engine.
+pub const ENGINE: &str = "http://127.0.0.1:6420";
 
 /// The forge's clock in tests (design D12, *Time in tests*): wall-clock time plus an offset the
 /// test advances. Only this harness has it; the `tartan` binary always runs on real time.
@@ -845,7 +915,7 @@ pub struct Forge {
     pub client: Client,
     /// The forge id the identity actor is keyed by (`TARTAN_FORGE_ID`).
     pub forge_id: String,
-    actors: Option<TestHandle>,
+    actors: Option<Actors>,
     seq: AtomicU64,
     heads: Mutex<HashMap<String, String>>,
 }
@@ -904,9 +974,7 @@ impl Forge {
         .expect("installed once");
         let mut actor_registry = Registry::new();
         register_actors(&mut actor_registry);
-        let actors = rivetkit::test::setup(actor_registry)
-            .await
-            .expect("engine and registry");
+        let actors = Actors::start(actor_registry, "forge").await;
         let client = actors.client().clone();
         let listener = gateway_listener().await;
         let base = format!("http://{}", listener.local_addr().expect("address"));

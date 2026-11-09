@@ -315,9 +315,7 @@ async fn sign_in_sign_push_and_protect_main() {
     extensions.set_available([]);
     let mut actor_registry = Registry::new();
     register_actors(&mut actor_registry);
-    let actors = rivetkit::test::setup(actor_registry)
-        .await
-        .expect("engine and registry");
+    let actors = common::Actors::start(actor_registry, "e2e").await;
     let client = actors.client().clone();
     let state = GatewayState {
         client: client.clone(),
