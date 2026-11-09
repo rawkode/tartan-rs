@@ -1,0 +1,39 @@
+[package]
+name = "tartan-atproto"
+description = "ATProto identity for Tartan: DID and handle resolution, PLC verification, record proofs and signature formats."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# Development switches (plain HTTP, private addresses, a local PLC directory and
+# handle resolver); they act only with TARTAN_DEV_IDENTITY=1 (design D12).
+dev-identity = []
+
+[dependencies]
+anyhow.workspace = true
+atrium-crypto.workspace = true
+base64.workspace = true
+cid.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+hmac.workspace = true
+ipnet.workspace = true
+jacquard-common.workspace = true
+jacquard-identity.workspace = true
+jacquard-oauth.workspace = true
+jacquard-repo.workspace = true
+k256.workspace = true
+p256.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_ipld_dagcbor.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

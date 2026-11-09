@@ -1,0 +1,19 @@
+[package]
+name = "tartan-identity-api"
+description = "The message types of Tartan's identity actor, shared by the forge and the tt command-line interface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# Implements rivetkit's `Action` on every message type. The forge, which hosts the actor,
+# enables it; `tt` does not, since the rivetkit server SDK roughly quadruples `tt`'s clean build.
+rivetkit = ["dep:rivetkit"]
+
+[dependencies]
+rivetkit = { workspace = true, optional = true }
+serde.workspace = true
+
+[lints]
+workspace = true
