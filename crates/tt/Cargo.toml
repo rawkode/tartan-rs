@@ -25,9 +25,14 @@ gethostname.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 hmac.workspace = true
+# jacquard-oauth's DPoP helpers take the `http` crate's request type; the version is the one
+# tartan-atproto pins.
+http = "=1.5.0"
 jacquard-common.workspace = true
 jacquard-oauth.workspace = true
 keyring.workspace = true
+# `tt admin oauth keygen` draws a P-256 key for the forge's private JWKS.
+p256.workspace = true
 reqwest.workspace = true
 rivetkit-client.workspace = true
 serde.workspace = true
@@ -41,6 +46,11 @@ tokio.workspace = true
 toml.workspace = true
 tracing.workspace = true
 webbrowser.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+tartan-devnet = { path = "../tartan-devnet" }
+tempfile.workspace = true
 
 [lints]
 workspace = true
