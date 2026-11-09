@@ -50,6 +50,17 @@ impl Action for RefSignatures {
     const NAME: &'static str = "refSignatures";
 }
 
+/// Every branch head's answer, as [`RefSignatures`] gives it, for branches with a judged or
+/// queued update.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct BranchSignatures {}
+
+impl Action for BranchSignatures {
+    type Output = Vec<Value>;
+
+    const NAME: &'static str = "branchSignatures";
+}
+
 /// The applied configuration and any pending one with what it waits on.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ConfigStatusQuery {}
@@ -188,26 +199,45 @@ impl Repo {
             .await?;
         if let Some(row) = result.rows.first() {
             let stored = stored_row(row)?;
+            // The stored-result shape of design D15 (*Answer shapes the web UI reads*); `kind`,
+            // `committed_at`, `checked_at`, `proof_sha256` and `handle` are extra.
+            let record_uri = match (&stored.did, &stored.rkey) {
+                (Some(did), Some(rkey)) => Some(format!(
+                    "at://{did}/{}/{rkey}",
+                    tartan_atproto::signature::COLLECTION
+                )),
+                _ => None,
+            };
+            let verified = stored.status == super::Status::Verified;
+            let record_missing = stored.status == super::Status::Unverifiable
+                && stored
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("not found"));
             let mut view = json!({
                 "oid": stored.oid,
                 "kind": stored.kind.as_str(),
                 "status": stored.status.as_str(),
                 "did": stored.did,
                 "detail": stored.detail,
+                "rkey": stored.rkey,
+                "record_cid": stored.record_cid,
+                "record_uri": record_uri,
+                "record_rev": stored.record_rev,
+                "verified_at": verified.then_some(stored.checked_at),
+                "revoked_at": null,
+                "revoked_reason": null,
+                "did_deactivated_at": null,
+                "did_status": null,
+                "record_missing": record_missing,
+                "author": null,
+                "committer": null,
+                "proof_sha256": stored.proof_sha256,
+                "proof_url": null,
+                "annotations": [],
                 "committed_at": stored.committed_at,
                 "checked_at": stored.checked_at,
             });
-            if let (Some(did), Some(rkey)) = (&stored.did, &stored.rkey) {
-                view["record"] = json!({
-                    "uri": format!("at://{did}/{}/{rkey}", tartan_atproto::signature::COLLECTION),
-                    "rkey": rkey,
-                    "cid": stored.record_cid,
-                    "rev": stored.record_rev,
-                });
-            }
-            if let Some(sha) = &stored.proof_sha256 {
-                view["proof_sha256"] = json!(sha);
-            }
             if let Some(did) = stored.did.clone() {
                 let identity = identity_handle(&ctx.client()?)?;
                 if let Some(rkey) = stored.rkey.clone() {
@@ -270,7 +300,7 @@ fn pending_view(oid: &str, failures: &[(String, StoredFailure)], row: &super::Ch
         "next_at": row.next_at,
         "last_error": row.last_error,
         "did": failure.and_then(|f| f.did.clone()),
-        "waiting_on_record": failure.is_some_and(|f| f.waiting && f.reason.contains("not found")),
+        "record_missing": failure.is_some_and(|f| f.waiting && f.reason.contains("not found")),
     })
 }
 
@@ -290,14 +320,50 @@ impl Handler<RefSignatures> for Repo {
         ctx: Ctx<Self>,
         action: RefSignatures,
     ) -> Result<Option<Value>> {
+        self.ref_view(&ctx, &action.ref_name).await
+    }
+}
+
+impl Handler<BranchSignatures> for Repo {
+    async fn handle(
+        self: Arc<Self>,
+        ctx: Ctx<Self>,
+        _action: BranchSignatures,
+    ) -> Result<Vec<Value>> {
+        let refs = ctx
+            .sql()
+            .query(
+                "SELECT ref_name FROM ref_signing WHERE ref_name LIKE 'refs/heads/%'
+                 UNION
+                 SELECT ref_name FROM signature_checks WHERE ref_name LIKE 'refs/heads/%'
+                 ORDER BY 1",
+                None,
+            )
+            .await?;
+        let mut out = Vec::new();
+        for row in &refs.rows {
+            let ref_name = text(row, 0)?;
+            if let Some(view) = self.ref_view(&ctx, &ref_name).await? {
+                out.push(view);
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl Repo {
+    /// A ref's answer (design D15, *Answer shapes*): its head's result, stored or pending,
+    /// plus `{ref, oid, covered, compliant, violations}` for its latest update. `None` for a
+    /// ref never judged or queued.
+    async fn ref_view(&self, ctx: &Ctx<Self>, ref_name: &str) -> Result<Option<Value>> {
         let judged = ctx
             .sql()
             .query(
-                "SELECT r.seq, r.head, r.compliant, u.problem, u.rule
+                "SELECT r.seq, r.head, r.compliant, u.problem, u.rule, u.violations
                  FROM ref_signing r LEFT JOIN update_signing u
                    ON u.seq = r.seq AND u.ref_name = r.ref_name
                  WHERE r.ref_name = ?",
-                Some(vec![param_text(action.ref_name.as_str())]),
+                Some(vec![param_text(ref_name)]),
             )
             .await?;
         let judged_seq = judged.rows.first().map(|r| integer(r, 0)).transpose()?;
@@ -308,15 +374,19 @@ impl Handler<RefSignatures> for Repo {
                     "SELECT {CHECK_COLUMNS} FROM signature_checks WHERE ref_name = ?
                      ORDER BY seq DESC LIMIT 1"
                 ),
-                Some(vec![param_text(action.ref_name.as_str())]),
+                Some(vec![param_text(ref_name)]),
             )
             .await?;
         if let Some(row) = queued.rows.first() {
             let row = check_row(row)?;
             if judged_seq.is_none_or(|seq| row.seq > seq) {
                 let mut view = pending_view(&row.new, &row.failures, &row);
-                view["ref_name"] = json!(action.ref_name);
-                view["head"] = json!(row.new);
+                view["ref"] = json!(ref_name);
+                view["host_seq"] = json!(row.seq);
+                view["covered"] = json!(coverage(row.rule.as_deref(), ref_name).is_covered());
+                view["compliant"] = Value::Null;
+                view["violations"] = json!([]);
+                view["problem"] = Value::Null;
                 return Ok(Some(view));
             }
         }
@@ -325,16 +395,27 @@ impl Handler<RefSignatures> for Repo {
         };
         let head = text(r, 1)?;
         let rule = optional_text(r, 4)?;
-        Ok(Some(json!({
-            "ref_name": action.ref_name,
-            "status": "checked",
-            "host_seq": integer(r, 0)?,
-            "head": head,
-            "compliant": integer(r, 2)? == 1,
-            "covered": coverage(rule.as_deref(), &action.ref_name).is_covered(),
-            "problem": optional_text(r, 3)?,
-            "head_signature": self.signature_view(&ctx, &head).await?,
-        })))
+        let covered = coverage(rule.as_deref(), ref_name).is_covered();
+        let violations = optional_text(r, 5)?
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .unwrap_or_else(|| json!([]));
+        let mut view = self
+            .signature_view(ctx, &head)
+            .await?
+            .unwrap_or_else(|| json!({ "oid": head, "status": "not_checked", "detail": null }));
+        view["ref"] = json!(ref_name);
+        view["oid"] = json!(head);
+        view["host_seq"] = json!(integer(r, 0)?);
+        view["covered"] = json!(covered);
+        // `null` when the rule does not cover the ref (design D15).
+        view["compliant"] = if covered {
+            json!(integer(r, 2)? == 1)
+        } else {
+            Value::Null
+        };
+        view["problem"] = json!(optional_text(r, 3)?);
+        view["violations"] = violations;
+        Ok(Some(view))
     }
 }
 
@@ -362,6 +443,7 @@ impl Handler<ConfigStatusQuery> for Repo {
         {
             let commit = text(r, 0)?;
             let mut waiting_on = Value::Null;
+            let mut check = Value::Null;
             if let Some((seq, _)) = self.head_update(&ctx).await? {
                 let queued = ctx
                     .sql()
@@ -375,16 +457,36 @@ impl Handler<ConfigStatusQuery> for Repo {
                 if let Some(row) = queued.rows.first() {
                     let row = check_row(row)?;
                     if coverage(row.rule.as_deref(), CONFIG_BRANCH).is_covered() {
-                        waiting_on = json!({
-                            "signature_check": row.new,
+                        waiting_on = json!("signature_check");
+                        check = json!({
+                            "oid": row.new,
                             "attempts": row.attempts,
                             "next_at": row.next_at,
                             "last_error": row.last_error,
                         });
                     }
+                } else {
+                    let judged = ctx
+                        .sql()
+                        .query(
+                            "SELECT compliant, rule FROM update_signing
+                             WHERE seq = ? AND ref_name = ?",
+                            Some(vec![param_integer(seq), param_text(CONFIG_BRANCH)]),
+                        )
+                        .await?;
+                    if let Some(r) = judged.rows.first()
+                        && integer(r, 0)? == 0
+                        && coverage(optional_text(r, 1)?.as_deref(), CONFIG_BRANCH).is_covered()
+                    {
+                        waiting_on = json!("signing_violation");
+                    }
                 }
             }
-            pending = json!({ "commit": commit, "waiting_on": waiting_on });
+            if waiting_on.is_null() {
+                waiting_on = json!("evaluation");
+            }
+            // `waiting_on` is the word of design D15; `check` details a signature check.
+            pending = json!({ "commit": commit, "waiting_on": waiting_on, "check": check });
         }
         let rule = ctx
             .sql()

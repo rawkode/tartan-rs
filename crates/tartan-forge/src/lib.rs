@@ -45,8 +45,8 @@ pub use crate::actors::org::{
 };
 pub use crate::actors::repo::{RecordRefEvents, Repo, RepoStatus, RepoStatusQuery};
 pub use crate::actors::signing::{
-    ConfigStatus, ConfigStatusQuery, ProofReferenced, RecheckOutcome, RecheckSignature,
-    RefSignatures, SignatureQuery, SignatureView, Verify, VerifySchedules,
+    BranchSignatures, ConfigStatus, ConfigStatusQuery, ProofReferenced, RecheckOutcome,
+    RecheckSignature, RefSignatures, SignatureQuery, SignatureView, Verify, VerifySchedules,
 };
 pub use crate::actors::subscriber::{Received, ReceivedEvent, Subscriber};
 pub use crate::clients::{

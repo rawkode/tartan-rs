@@ -17,8 +17,8 @@ use crate::actors::installations::{
     ListInstallations, Wanted,
 };
 use crate::actors::signing::{
-    self, CONFIG_BRANCH, ConfigStatusQuery, Gate, ProofReferenced, RecheckSignature, RefSignatures,
-    SIGNING_SCHEMA, SignatureQuery, Verify, VerifySchedules,
+    self, BranchSignatures, CONFIG_BRANCH, ConfigStatusQuery, Gate, ProofReferenced,
+    RecheckSignature, RefSignatures, SIGNING_SCHEMA, SignatureQuery, Verify, VerifySchedules,
 };
 use crate::actors::{apply_schema, key_id};
 use crate::event_log::{EVENT_LOG_SCHEMA, ReadEvents, append, read};
@@ -140,6 +140,7 @@ impl Actor for Repo {
         Verify,
         SignatureQuery,
         RefSignatures,
+        BranchSignatures,
         ConfigStatusQuery,
         RecheckSignature,
         ProofReferenced,

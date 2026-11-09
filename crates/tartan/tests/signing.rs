@@ -319,8 +319,9 @@ async fn signatures_are_verified_and_the_rule_gates_configuration() {
         .get("/-/api/orgs/acme/repos/api/signatures?ref=refs/heads/junk")
         .await;
     assert_eq!(status, 200, "{refs}");
-    assert_eq!(refs["compliant"], false);
-    assert_eq!(refs["covered"], false);
+    assert_eq!(refs["covered"], false, "{refs}");
+    assert!(refs["compliant"].is_null(), "an uncovered ref: {refs}");
+    assert_eq!(refs["ref"], "refs/heads/junk");
 
     // A commit signed by Alice is verified, with a proof bundle only readers can download.
     let signed = world.sign("alice.test", &alice, &[], "signed", true).await;
@@ -329,7 +330,7 @@ async fn signatures_are_verified_and_the_rule_gates_configuration() {
     assert_eq!(view["status"], "verified", "{view}");
     assert_eq!(view["did"], alice.as_str());
     assert_eq!(
-        view["record"]["uri"],
+        view["record_uri"],
         format!("at://{alice}/{COLLECTION}/{}", signed.rkey)
     );
     let proof_url = view["proof_url"].as_str().expect("a proof").to_owned();
@@ -498,6 +499,41 @@ async fn signatures_are_verified_and_the_rule_gates_configuration() {
         refused[0].contains("may not sign refs/heads/main"),
         "{refused:?}"
     );
+    // The ref answer of design D15 lists the violation with its signer, whom the rule does
+    // not allow; the branch listing has main.
+    let (status, main) = world
+        .forge
+        .get("/-/api/orgs/acme/repos/api/signatures?ref=refs/heads/main")
+        .await;
+    assert_eq!(status, 200, "{main}");
+    assert_eq!(main["ref"], "refs/heads/main", "{main}");
+    assert_eq!(main["oid"], by_bob.sha.as_str(), "{main}");
+    assert_eq!(main["status"], "verified", "{main}");
+    assert_eq!(main["covered"], true, "{main}");
+    assert_eq!(main["compliant"], false, "{main}");
+    assert_eq!(
+        main["violations"],
+        serde_json::json!([{
+            "oid": by_bob.sha,
+            "problem": format!("is signed by {bob}, who may not sign refs/heads/main"),
+            "did": bob,
+            "allowed": false,
+        }]),
+        "{main}"
+    );
+    let (status, branches) = world
+        .forge
+        .get("/-/api/orgs/acme/repos/api/signatures")
+        .await;
+    assert_eq!(status, 200, "{branches}");
+    assert!(
+        branches
+            .as_array()
+            .expect("a list")
+            .iter()
+            .any(|branch| branch["ref"] == "refs/heads/main" && branch["compliant"] == false),
+        "{branches}"
+    );
 
     // "Unsigned configuration via another branch": pushed to an unprotected branch, then main
     // fast-forwarded to it.
@@ -574,7 +610,11 @@ async fn signatures_are_verified_and_the_rule_gates_configuration() {
     let status = world.config_status().await;
     assert_eq!(status["pending"]["commit"], down.sha.as_str(), "{status}");
     assert_eq!(
-        status["pending"]["waiting_on"]["signature_check"],
+        status["pending"]["waiting_on"], "signature_check",
+        "{status}"
+    );
+    assert_eq!(
+        status["pending"]["check"]["oid"],
         down.sha.as_str(),
         "{status}"
     );
@@ -861,10 +901,10 @@ async fn signatures_are_verified_and_the_rule_gates_configuration() {
                     .await
                     .1
             },
-            |view| view["status"] == "checked",
+            |view| view["oid"] == x.sha.as_str() && view["status"] != "pending",
         )
         .await;
-    assert_eq!(reported["head"], x.sha.as_str(), "{reported}");
+    assert_eq!(reported["oid"], x.sha.as_str(), "{reported}");
     world.publish("alice.test", &w).await;
     world.forge.clock.advance(Duration::from_secs(10 * 60));
     world.verify().await;
@@ -873,7 +913,7 @@ async fn signatures_are_verified_and_the_rule_gates_configuration() {
         .forge
         .get("/-/api/orgs/acme/repos/api/signatures?ref=refs/heads/w")
         .await;
-    assert_eq!(reported["head"], x.sha.as_str(), "{reported}");
+    assert_eq!(reported["oid"], x.sha.as_str(), "{reported}");
 
     // "Record never published" and "Signer recovers a late record": Bob, allowed by the rule
     // now in force, pushes a configuration whose record stays in his queue for seven days; it

@@ -9,8 +9,8 @@ use object_store::ObjectStoreExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tartan_forge::{
-    ConfigStatusQuery, ProofReferenced, RecheckOutcome, RecheckSignature, RefSignatures,
-    SignatureQuery, repo_handle,
+    BranchSignatures, ConfigStatusQuery, ProofReferenced, RecheckOutcome, RecheckSignature,
+    RefSignatures, SignatureQuery, repo_handle,
 };
 
 use crate::ApiError;
@@ -146,32 +146,39 @@ async fn proof(
 #[derive(Debug, Deserialize)]
 struct RefQuery {
     #[serde(rename = "ref")]
-    ref_name: String,
+    ref_name: Option<String>,
 }
 
+/// `GET …/signatures?ref=<ref>` answers one ref (404 when it was never checked); without
+/// `ref`, it lists every branch head (design D15, *Answer shapes the web UI reads*).
 async fn ref_signatures(
     State(state): State<GatewayState>,
     Path((org, repo)): Path<(String, String)>,
     Query(query): Query<RefQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let ref_name = if query.ref_name.starts_with("refs/") {
-        query.ref_name
-    } else {
-        format!("refs/heads/{}", query.ref_name)
-    };
     let info = resolve_repo(&state.client, &org, &repo).await?;
-    let mut view = repo_handle(&state.client, &info.id, info.pool)?
+    let handle = repo_handle(&state.client, &info.id, info.pool)?;
+    let Some(ref_name) = query.ref_name else {
+        let branches = handle.send(BranchSignatures {}).await?;
+        return Ok(Json(Value::Array(
+            branches
+                .into_iter()
+                .map(|view| with_proof_url(&org, &repo, view))
+                .collect(),
+        )));
+    };
+    let ref_name = if ref_name.starts_with("refs/") {
+        ref_name
+    } else {
+        format!("refs/heads/{ref_name}")
+    };
+    let view = handle
         .send(RefSignatures {
             ref_name: ref_name.clone(),
         })
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("no signature check of {ref_name}")))?;
-    if let Some(head) = view.get("head_signature").cloned()
-        && !head.is_null()
-    {
-        view["head_signature"] = with_proof_url(&org, &repo, head);
-    }
-    Ok(Json(view))
+    Ok(Json(with_proof_url(&org, &repo, view)))
 }
 
 async fn config_status(

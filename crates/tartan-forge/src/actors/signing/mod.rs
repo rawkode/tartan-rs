@@ -24,7 +24,7 @@ use anyhow::Result;
 use rivetkit::prelude::*;
 use rivetkit::{BindParam, ColumnValue, SqliteTransaction};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use tartan_config::signing::{Coverage, SigningRule};
 use tartan_identity_api::{RecordKey, RecordSignature, SignerStanding, Standing};
 
@@ -41,8 +41,8 @@ use crate::sql::{
 };
 
 pub use api::{
-    ConfigStatus, ConfigStatusQuery, ProofReferenced, RecheckOutcome, RecheckSignature,
-    RefSignatures, SignatureQuery, SignatureView, VerifySchedules,
+    BranchSignatures, ConfigStatus, ConfigStatusQuery, ProofReferenced, RecheckOutcome,
+    RecheckSignature, RefSignatures, SignatureQuery, SignatureView, VerifySchedules,
 };
 use object::{Failure, Local, Outcome, Status, Stored, Verifier, classify};
 
@@ -105,6 +105,7 @@ pub(crate) const SIGNING_SCHEMA: &str = "
         rule TEXT,
         compliant INTEGER NOT NULL,
         problem TEXT,
+        violations TEXT NOT NULL DEFAULT '[]',
         checked_at INTEGER NOT NULL,
         PRIMARY KEY (seq, ref_name)
     );
@@ -1052,11 +1053,21 @@ impl Repo {
         let cover = coverage(row.rule.as_deref(), &row.ref_name);
         let mut judged = Vec::new();
         let mut problem: Option<String> = None;
+        // Every commit that keeps the update from complying, as the ref answer lists them
+        // (design D15, *Answer shapes*); `problem` is the first, as text.
+        let mut violations: Vec<Value> = Vec::new();
         let mut update_objects: Vec<(String, Option<String>)> = Vec::new();
-        let mut note = |text: String| {
+        let mut note = |oid: &str, reason: String, did: Option<&str>| {
+            let text = format!("{oid} {reason}");
             if problem.is_none() {
                 problem = Some(text);
             }
+            violations.push(json!({
+                "oid": oid,
+                "problem": reason,
+                "did": did,
+                "allowed": did.is_some_and(|did| cover.allows(did)),
+            }));
         };
         for (oid, kind) in &listing.listed {
             match stored.get(oid) {
@@ -1068,24 +1079,29 @@ impl Repo {
                                 (Some(did), Some(rkey)) => standing.get(&(did, rkey)),
                                 _ => None,
                             };
+                            let did = result.did.as_deref();
                             if standing.is_some_and(|s| s.revoked_at.is_some()) {
-                                note(format!("{oid} signature was revoked"));
+                                note(oid, "signature was revoked".to_owned(), did);
                             } else if standing.is_some_and(|s| s.inactive) {
-                                note(format!("{oid} signer's account is not active"));
-                            } else if let Some(did) = &result.did
+                                note(oid, "signer's account is not active".to_owned(), did);
+                            } else if let Some(did) = did
                                 && !cover.allows(did)
                             {
-                                note(format!(
-                                    "{oid} is signed by {did}, who may not sign {}",
-                                    row.ref_name
-                                ));
+                                note(
+                                    oid,
+                                    format!(
+                                        "is signed by {did}, who may not sign {}",
+                                        row.ref_name
+                                    ),
+                                    Some(did),
+                                );
                             }
                         }
                         Status::Unverifiable => {
                             update_objects.push((oid.clone(), None));
-                            note(format!("{oid} is unverifiable"));
+                            note(oid, "is unverifiable".to_owned(), result.did.as_deref());
                         }
-                        other => note(format!("{oid} is {}", other.as_str())),
+                        other => note(oid, format!("is {}", other.as_str()), result.did.as_deref()),
                     }
                     judged.push(Judged {
                         oid: oid.clone(),
@@ -1102,7 +1118,7 @@ impl Repo {
                         CARRIED_DETAIL
                     };
                     update_objects.push((oid.clone(), Some(detail.to_owned())));
-                    note(format!("{oid} was not checked: {detail}"));
+                    note(oid, format!("was not checked: {detail}"), None);
                     judged.push(Judged {
                         oid: oid.clone(),
                         kind: kind.as_str(),
@@ -1115,7 +1131,7 @@ impl Repo {
         }
         if let Some(target) = &listing.tip_not_commit {
             let detail = "the tag does not point to a commit";
-            note(format!("{target} was not checked: {detail}"));
+            note(target, format!("was not checked: {detail}"), None);
             judged.push(Judged {
                 oid: target.clone(),
                 kind: "object",
@@ -1125,15 +1141,16 @@ impl Repo {
             });
         }
         if listing.truncated {
-            note(format!(
-                "{} was not checked in full: too many commits in one push",
-                row.new
-            ));
+            note(
+                &row.new,
+                "was not checked in full: too many commits in one push".to_owned(),
+                None,
+            );
         }
         if listing.no_walk && !update_objects.iter().any(|(oid, _)| *oid == row.new) {
             // The commits the update adds were never listed.
             update_objects.push((row.new.clone(), None));
-            note(format!("{} is unverifiable", row.new));
+            note(&row.new, "is unverifiable".to_owned(), None);
         }
         let compliant = problem.is_none();
         let covered = cover.is_covered();
@@ -1141,6 +1158,7 @@ impl Repo {
         let source = self.source();
         let row_for_tx = row.clone();
         let problem_for_tx = problem.clone();
+        let violations_text = Value::Array(violations.clone()).to_string();
         ctx.sql()
             .transaction(
                 move |tx| async move {
@@ -1150,12 +1168,13 @@ impl Repo {
                     }
                     tx.execute(
                         "INSERT INTO update_signing
-                           (seq, ref_name, old, new, rule, compliant, problem, checked_at)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                           (seq, ref_name, old, new, rule, compliant, problem, violations,
+                            checked_at)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                          ON CONFLICT (seq, ref_name) DO UPDATE SET old = excluded.old,
                            new = excluded.new, rule = excluded.rule,
                            compliant = excluded.compliant, problem = excluded.problem,
-                           checked_at = excluded.checked_at",
+                           violations = excluded.violations, checked_at = excluded.checked_at",
                         Some(vec![
                             param_integer(row.seq),
                             param_text(row.ref_name.as_str()),
@@ -1164,6 +1183,7 @@ impl Repo {
                             param_optional_text(row.rule.clone()),
                             param_integer(i64::from(compliant)),
                             param_optional_text(problem_for_tx.clone()),
+                            param_text(violations_text.as_str()),
                             param_integer(now),
                         ]),
                     )
@@ -1222,6 +1242,7 @@ impl Repo {
                             "host_seq": row.seq,
                             "new": row.new,
                             "problem": problem_for_tx,
+                            "violations": violations,
                         });
                         append(&tx, &source, "ref.signature.violation", data).await?;
                     }
