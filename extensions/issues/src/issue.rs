@@ -104,7 +104,7 @@ pub const URL_MAX_CHARS: usize = 2048;
 /// A table cell shows at most this many characters of a text.
 const CELL_MAX_CHARS: usize = 80;
 
-/// The kinds of property in `tartan.dev/types`. Issues stores and shows each.
+/// The kinds of property in `tartan.rawkode.academy/types`. Issues stores and shows each.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
 	ShortText,
@@ -153,7 +153,7 @@ impl Kind {
 }
 
 /// A property from the repository's configuration (`settings.properties`),
-/// typed with `tartan.dev/types`.
+/// typed with `tartan.rawkode.academy/types`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PropertyDef {
 	pub name: String,

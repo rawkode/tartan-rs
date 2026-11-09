@@ -1,5 +1,5 @@
 //! Kanban boards over a repository's issues, configured in its committed CUE: the
-//! repository's module depends on `tartan.dev/types`, Issues' module and Kanban's module, which
+//! repository's module depends on `tartan.rawkode.academy/types`, Issues' module and Kanban's module, which
 //! the forge serves from its own registry, and its `tartan.cue` installs both extensions through
 //! their `#Extension`s, with boards whose columns, lanes and groups are Issues' properties. Cards
 //! follow Issues' events; moving a card updates the issue through Kanban's permitted call.
@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 /// Issues' entry: the repository's typed properties.
 const ISSUES: &str = r#"
-extensions: "rawkode.issues": issues.#Extension & {settings: properties: {
+extensions: "issues.tartan.rawkode.academy": issues.#Extension & {settings: properties: {
 	status: types.#Select & {
 		options: ["todo", "doing", "done"]
 		labels: {todo: "To do", doing: "In progress", done: "Done"}
@@ -32,10 +32,10 @@ extensions: "rawkode.issues": issues.#Extension & {settings: properties: {
 /// Kanban's entry: a board with lanes by priority and groups by project, a project's board
 /// with some status columns, lanes by a multi-select and groups by a person, and a state board.
 const KANBAN: &str = r#"
-let props = extensions."rawkode.issues".settings.properties
+let props = extensions."issues.tartan.rawkode.academy".settings.properties
 
-extensions: "rawkode.kanban": kanban.#Extension & {
-	#issues: extensions."rawkode.issues"
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+	#issues: extensions."issues.tartan.rawkode.academy"
 	settings: boards: {
 		triage: {name: "Triage", columns: props.status, lanes: props.priority, group: "project"}
 		lsp: {
@@ -57,7 +57,7 @@ fn config(entries: &str) -> Vec<(String, String)> {
         (
             "tartan.cue".to_owned(),
             format!(
-                "package tartan\n\nimport (\n\t\"tartan.dev/types\"\n\t\"github.com/rawkode/tartan-ext/issues\"\n\t\"github.com/rawkode/tartan-ext/kanban\"\n)\n\n// Keeps every import used whichever entries are written.\n_uses: [types.#Property, issues.#Extension, kanban.#Extension]\n{entries}"
+                "package tartan\n\nimport (\n\t\"tartan.rawkode.academy/types\"\n\t\"tartan.rawkode.academy/issues\"\n\t\"tartan.rawkode.academy/kanban\"\n)\n\n// Keeps every import used whichever entries are written.\n_uses: [types.#Property, issues.#Extension, kanban.#Extension]\n{entries}"
             ),
         ),
     ]
@@ -151,7 +151,10 @@ async fn boards_from_a_repository_configuration_importing_the_modules() {
     registered.sort();
     assert_eq!(
         registered,
-        vec!["rawkode.issues@0.6.0", "rawkode.kanban@0.3.0"],
+        vec![
+            "issues.tartan.rawkode.academy@0.6.0",
+            "kanban.tartan.rawkode.academy@0.3.0"
+        ],
         "{report:?}"
     );
 
@@ -160,20 +163,25 @@ async fn boards_from_a_repository_configuration_importing_the_modules() {
         &forge,
         "acme/web",
         &config(
-            "extensions: \"rawkode.kanban\": kanban.#Extension & {settings: boards: open: columns: \"state\"}\n",
+            "extensions: \"kanban.tartan.rawkode.academy\": kanban.#Extension & {settings: boards: open: columns: \"state\"}\n",
         ),
     )
     .await;
-    refusal(&forge, "rawkode.kanban requires rawkode.issues").await;
+    refusal(
+        &forge,
+        "kanban.tartan.rawkode.academy requires issues.tartan.rawkode.academy",
+    )
+    .await;
     assert!(forge.installed("acme/web").await.is_empty());
 
     // Issues alone first: an issue filed before Kanban is installed still reaches its boards.
     push(&forge, "acme/api", &config(ISSUES)).await;
     forge
-        .until_installed("acme/api", &["rawkode.issues@0.6.0"])
+        .until_installed("acme/api", &["issues.tartan.rawkode.academy@0.6.0"])
         .await;
-    let issues_tool =
-        |tool: &str| format!("/-/api/orgs/acme/repos/api/extensions/rawkode.issues/tools/{tool}");
+    let issues_tool = |tool: &str| {
+        format!("/-/api/orgs/acme/repos/api/extensions/issues.tartan.rawkode.academy/tools/{tool}")
+    };
     let created = forge
         .ok(
             &issues_tool("create"),
@@ -193,7 +201,10 @@ async fn boards_from_a_repository_configuration_importing_the_modules() {
     forge
         .until_installed(
             "acme/api",
-            &["rawkode.issues@0.6.0", "rawkode.kanban@0.3.0"],
+            &[
+                "issues.tartan.rawkode.academy@0.6.0",
+                "kanban.tartan.rawkode.academy@0.3.0",
+            ],
         )
         .await;
     for (title, properties) in [
@@ -211,8 +222,9 @@ async fn boards_from_a_repository_configuration_importing_the_modules() {
             .await;
     }
 
-    let kanban =
-        |tool: &str| format!("/-/api/orgs/acme/repos/api/extensions/rawkode.kanban/tools/{tool}");
+    let kanban = |tool: &str| {
+        format!("/-/api/orgs/acme/repos/api/extensions/kanban.tartan.rawkode.academy/tools/{tool}")
+    };
     let listed = forge.ok(&kanban("list_boards"), json!({})).await;
     assert_eq!(
         listed,
@@ -378,7 +390,7 @@ async fn boards_from_a_repository_configuration_importing_the_modules() {
     // against the properties the installed Issues lists: a board over a property Issues does not
     // have is invalid, and the other boards still work.
     let unbound = r#"
-extensions: "rawkode.kanban": kanban.#Extension & {
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
 	#issues: issues.#Extension & {settings: properties: phase: types.#Select & {options: ["a", "b"]}}
 	settings: boards: {
 		phases: {columns: #issues.settings.properties.phase}

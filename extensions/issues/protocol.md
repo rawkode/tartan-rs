@@ -1,4 +1,4 @@
-# Issues (rawkode.issues)
+# Issues (issues.tartan.rawkode.academy)
 
 Each repository has its own numbered issues (`#1`, `#2`, …), open or closed. An issue may belong to a project, named by its root path (`crates/lsp`), and has the typed properties the repository's configuration defines.
 

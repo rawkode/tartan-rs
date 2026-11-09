@@ -1,6 +1,6 @@
 ---
 title: Kanban
-description: rawkode.kanban — boards over a repository's issues, with columns, lanes and groups from Issues properties.
+description: kanban.tartan.rawkode.academy — boards over a repository's issues, with columns, lanes and groups from Issues properties.
 sidebar:
   order: 10
 ---
@@ -16,9 +16,9 @@ The repository depends on the types module and on both extensions' modules:
 module: "example.com/acme-api"
 language: version: "v0.14.1"
 deps: {
-	"tartan.dev/types@v0":                     v: "v0.1.0"
-	"github.com/rawkode/tartan-ext/issues@v0": v: "v0.6.0"
-	"github.com/rawkode/tartan-ext/kanban@v0": v: "v0.3.0"
+	"tartan.rawkode.academy/types@v0":                     v: "v0.1.0"
+	"tartan.rawkode.academy/issues@v0": v: "v0.6.0"
+	"tartan.rawkode.academy/kanban@v0": v: "v0.3.0"
 }
 ```
 
@@ -29,14 +29,14 @@ Its configuration gives Issues the properties the boards use, and binds Issues' 
 package tartan
 
 import (
-	"tartan.dev/types"
-	"github.com/rawkode/tartan-ext/issues"
-	"github.com/rawkode/tartan-ext/kanban"
+	"tartan.rawkode.academy/types"
+	"tartan.rawkode.academy/issues"
+	"tartan.rawkode.academy/kanban"
 )
 
-let props = extensions."rawkode.issues".settings.properties
+let props = extensions."issues.tartan.rawkode.academy".settings.properties
 
-extensions: "rawkode.issues": issues.#Extension & {settings: properties: {
+extensions: "issues.tartan.rawkode.academy": issues.#Extension & {settings: properties: {
 	status:   types.#Select & {options: ["todo", "doing", "review", "done"], labels: todo: "To do", default: "todo"}
 	priority: types.#Select & {options: ["p1", "p2", "p3"], labels: {p1: "Urgent", p2: "Soon", p3: "Later"}}
 	tags:     types.#MultiSelect & {options: ["bug", "docs", "perf"]}
@@ -44,8 +44,8 @@ extensions: "rawkode.issues": issues.#Extension & {settings: properties: {
 	notes:    types.#LongText
 }}
 
-extensions: "rawkode.kanban": kanban.#Extension & {
-	#issues: extensions."rawkode.issues"
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+	#issues: extensions."issues.tartan.rawkode.academy"
 	settings: boards: {
 		// Every issue: a column per status, a lane per priority, grouped by project.
 		triage: {name: "Triage", columns: props.status, lanes: props.priority, group: "project"}
@@ -84,7 +84,7 @@ Kanban's module refuses, at evaluation:
 - a board without columns, an unknown key, or an invalid board id;
 - Kanban without the `#issues` binding, unless every board's columns are `"state"`.
 
-CUE compares values, not where they were written: an inline select identical to one of Issues' select properties, name aside, unifies with it and is that property. For the same reason CUE cannot tell that `#issues` is bound to the repository's own Issues entry, so Kanban also checks every board against the properties the installed Issues lists (its `properties` tool): a board using a property Issues does not have, or one whose definition differs from Issues' property of that name, is listed under `invalid` and cannot be shown or moved on. Kanban's manifest also requires `rawkode.issues`, so a configuration that installs Kanban without Issues is refused.
+CUE compares values, not where they were written: an inline select identical to one of Issues' select properties, name aside, unifies with it and is that property. For the same reason CUE cannot tell that `#issues` is bound to the repository's own Issues entry, so Kanban also checks every board against the properties the installed Issues lists (its `properties` tool): a board using a property Issues does not have, or one whose definition differs from Issues' property of that name, is listed under `invalid` and cannot be shown or moved on. Kanban's manifest also requires `issues.tartan.rawkode.academy`, so a configuration that installs Kanban without Issues is refused.
 
 ## Boards
 
@@ -122,4 +122,4 @@ Column titles come from the property's labels, falling back to the values; lane 
 
 ## Moving cards
 
-`move` (and the `board` slot's `move` action) sets the board's column property, or the issue's state for a `"state"` board, by calling Issues' `update` on the repository, which Kanban's manifest permits with `"calls": {"rawkode.issues": ["properties", "update"]}`. Moving to a value that is not a column is refused, and so is a card that is not on the board. The card is then kept as the issue `update` returns it, title and every property included, and Issues' snapshot of that version replaces it when it arrives.
+`move` (and the `board` slot's `move` action) sets the board's column property, or the issue's state for a `"state"` board, by calling Issues' `update` on the repository, which Kanban's manifest permits with `"calls": {"issues.tartan.rawkode.academy": ["properties", "update"]}`. Moving to a value that is not a column is refused, and so is a card that is not on the board. The card is then kept as the issue `update` returns it, title and every property included, and Issues' snapshot of that version replaces it when it arrives.

@@ -4,7 +4,7 @@
 #   RustFS        127.0.0.1:9100   object store for Git, the registry and extension packages
 #   walgit        127.0.0.1:9200   the Git host
 #   registry      127.0.0.1:9300   a source CUE registry (CNCF distribution) holding the
-#                                  tartan.dev/types, Issues and Kanban modules
+#                                  tartan.rawkode.academy/types, Issues and Kanban modules
 #   Rivet engine  127.0.0.1:6420   started by the forge
 #   gateway       127.0.0.1:8080   the forge's API and its own CUE registry
 #   web           127.0.0.1:4321   the web interface (Astro dev server; the next free port
@@ -204,8 +204,7 @@ modules+=("$(publish "$kanban_dir" "v$kanban_version")")
 	echo "package forge"
 	echo
 	echo "sources: {"
-	echo "	\"tartan.dev\":                    \"$source_registry+insecure\""
-	echo "	\"github.com/rawkode/tartan-ext\": \"$source_registry+insecure\""
+	echo "	\"tartan.rawkode.academy\": \"$source_registry+insecure\""
 	echo "}"
 	echo "modules: ["
 	for module in "${modules[@]}"; do echo "	\"$module\","; done
@@ -226,8 +225,8 @@ api() {
 	curl "${args[@]}" "$gateway$path"
 }
 has_packages() {
-	api GET /-/api/packages | jq -e --arg issues "rawkode.issues@$issues_version" \
-		--arg kanban "rawkode.kanban@$kanban_version" \
+	api GET /-/api/packages | jq -e --arg issues "issues.tartan.rawkode.academy@$issues_version" \
+		--arg kanban "kanban.tartan.rawkode.academy@$kanban_version" \
 		'[.[] | "\(.id)@\(.version)"] as $p | ($p | index($issues)) and ($p | index($kanban))'
 }
 wait_for "the module sync" "$state/logs/tartan.log" has_packages
@@ -260,12 +259,12 @@ seed() {
 	)
 	installed() {
 		api GET /-/api/orgs/acme/repos/api/extensions |
-			jq -e '[.[].extension_id] | sort == ["rawkode.issues", "rawkode.kanban"]'
+			jq -e '[.[].extension_id] | sort == ["issues.tartan.rawkode.academy", "kanban.tartan.rawkode.academy"]'
 	}
 	wait_for "the installations from the pushed configuration" "$state/logs/tartan.log" installed
 
 	step "Filing issues"
-	local tool=/-/api/orgs/acme/repos/api/extensions/rawkode.issues/tools
+	local tool=/-/api/orgs/acme/repos/api/extensions/issues.tartan.rawkode.academy/tools
 	local issue number
 	while IFS= read -r issue; do
 		number="$(api POST "$tool/create" "$(jq -c 'del(.closed)' <<<"$issue")" | jq -r .issue.number)"
@@ -274,7 +273,7 @@ seed() {
 		fi
 	done < <(jq -c '.[]' <<<"$ISSUES")
 	boards_ready() {
-		api POST /-/api/orgs/acme/repos/api/extensions/rawkode.kanban/tools/board '{"board":"triage"}' |
+		api POST /-/api/orgs/acme/repos/api/extensions/kanban.tartan.rawkode.academy/tools/board '{"board":"triage"}' |
 			jq -e '[.lanes[].cells[].groups[].cards[]] | length >= 10'
 	}
 	wait_for "the boards" "$state/logs/tartan.log" boards_ready
@@ -287,24 +286,24 @@ write_configuration() {
 module: "example.com/acme/api"
 language: version: "v0.14.1"
 deps: {
-	"tartan.dev/types@v0": v: "v0.1.0"
-	"github.com/rawkode/tartan-ext/issues@v0": v: "v$issues_version"
-	"github.com/rawkode/tartan-ext/kanban@v0": v: "v$kanban_version"
+	"tartan.rawkode.academy/types@v0": v: "v0.1.0"
+	"tartan.rawkode.academy/issues@v0": v: "v$issues_version"
+	"tartan.rawkode.academy/kanban@v0": v: "v$kanban_version"
 }
 CUE
 	cat >"$dir/tartan.cue" <<'CUE'
 package tartan
 
 import (
-	"tartan.dev/types"
-	"github.com/rawkode/tartan-ext/issues"
-	"github.com/rawkode/tartan-ext/kanban"
+	"tartan.rawkode.academy/types"
+	"tartan.rawkode.academy/issues"
+	"tartan.rawkode.academy/kanban"
 )
 
-let props = extensions."rawkode.issues".settings.properties
+let props = extensions."issues.tartan.rawkode.academy".settings.properties
 
 // Issues, with the properties every issue of this repository may have.
-extensions: "rawkode.issues": issues.#Extension & {settings: properties: {
+extensions: "issues.tartan.rawkode.academy": issues.#Extension & {settings: properties: {
 	status: types.#Select & {
 		label:   "Status"
 		options: ["backlog", "todo", "doing", "review", "done"]
@@ -331,8 +330,8 @@ extensions: "rawkode.issues": issues.#Extension & {settings: properties: {
 
 // Kanban, with boards over those properties. A board's columns must be one of the select
 // properties above: a typo or an inline lookalike fails evaluation.
-extensions: "rawkode.kanban": kanban.#Extension & {
-	#issues: extensions."rawkode.issues"
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+	#issues: extensions."issues.tartan.rawkode.academy"
 	settings: boards: {
 		triage: {
 			name:    "Triage"

@@ -1,24 +1,24 @@
 ---
 title: Property types
-description: The tartan.dev/types CUE module — typed properties that extensions store and repositories configure.
+description: The tartan.rawkode.academy/types CUE module — typed properties that extensions store and repositories configure.
 sidebar:
   order: 8
 ---
 
-`tartan.dev/types` is a CUE module of typed property definitions. Extensions build on it: Issues types its `properties` with it, and Kanban's boards refer to those properties. A repository imports it like any other module, so `cue export` with `CUE_REGISTRY` pointed at the forge checks a configuration exactly as the forge does.
+`tartan.rawkode.academy/types` is a CUE module of typed property definitions. Extensions build on it: Issues types its `properties` with it, and Kanban's boards refer to those properties. A repository imports it like any other module, so `cue export` with `CUE_REGISTRY` pointed at the forge checks a configuration exactly as the forge does.
 
 ```cue
 // cue.mod/module.cue
 module: "example.com/acme-api"
 language: version: "v0.14.1"
-deps: "tartan.dev/types@v0": v: "v0.1.0"
+deps: "tartan.rawkode.academy/types@v0": v: "v0.1.0"
 ```
 
 ```cue
 // tartan.cue
 package tartan
 
-import "tartan.dev/types"
+import "tartan.rawkode.academy/types"
 
 let status = types.#Select & {options: ["todo", "doing", "done"], labels: todo: "To do", default: "todo"}
 ```

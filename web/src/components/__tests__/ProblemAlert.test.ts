@@ -15,14 +15,14 @@ test("shows the gateway's problem, its kind and the request", () => {
 		{ error: "issue 3 is at version 4, not 2", kind: "conflict" },
 		"issue 3 is at version 4, not 2",
 		"POST",
-		"/-/api/orgs/acme/repos/api/extensions/rawkode.issues/tools/update",
+		"/-/api/orgs/acme/repos/api/extensions/issues.tartan.rawkode.academy/tools/update",
 	);
 	const w = mount(ProblemAlert, { props: { error }, global: { plugins: [router] } });
 	expect(w.attributes("role")).toBe("alert");
 	expect(w.text()).toContain("Conflict");
 	expect(w.text()).toContain("issue 3 is at version 4, not 2");
 	expect(w.text()).toContain("conflict");
-	expect(w.text()).toContain("POST /-/api/orgs/acme/repos/api/extensions/rawkode.issues/tools/update");
+	expect(w.text()).toContain("POST /-/api/orgs/acme/repos/api/extensions/issues.tartan.rawkode.academy/tools/update");
 	expect(w.find("pre").text()).toContain('"kind": "conflict"');
 });
 

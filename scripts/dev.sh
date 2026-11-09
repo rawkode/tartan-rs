@@ -2,7 +2,7 @@
 # Runs the forge locally: RustFS on :9100, walgit on :9200, a source CUE registry on :9300, the
 # Rivet engine on :6420 and the Tartan gateway, with its own CUE registry, on :8080.
 #
-# The extension modules (tartan.dev/types, Issues and Kanban) are built and published to the
+# The extension modules (tartan.rawkode.academy/types, Issues and Kanban) are built and published to the
 # source registry, and the forge's deployment configuration (.dev/forge.cue) lists them, so the
 # forge copies them into its registry at startup. A module version already in the source
 # registry is not published again: bump its version, or delete .dev, to pick up changes.
@@ -86,8 +86,7 @@ done
 	echo "package forge"
 	echo
 	echo "sources: {"
-	echo "	\"tartan.dev\":                    \"$source_registry\""
-	echo "	\"github.com/rawkode/tartan-ext\": \"$source_registry\""
+	echo "	\"tartan.rawkode.academy\": \"$source_registry\""
 	echo "}"
 	echo "modules: ["
 	for module in "${modules[@]}"; do echo "	\"$module\","; done

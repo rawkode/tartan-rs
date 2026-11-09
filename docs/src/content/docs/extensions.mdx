@@ -12,7 +12,7 @@ An extension is a WebAssembly component of the `tartan:ext@0.1.0` world (`wit/ta
 One module carries both halves of an extension version: the settings schema a repository's configuration imports, and the package the forge runs. A module version is published to an OCI registry with `cue mod publish`, and a forge makes it available by listing it in its [deployment configuration](/deploying/).
 
 ```
-cue.mod/module.cue      module: "github.com/rawkode/tartan-ext/issues@v0", source: kind: "self"
+cue.mod/module.cue      module: "tartan.rawkode.academy/issues@v0", source: kind: "self"
 issues.cue              package issues, with #Extension
 tartan.json             the manifest
 component.wasm          the component
@@ -24,10 +24,10 @@ migrations/0001_init.sql
 ```cue
 package issues
 
-import "tartan.dev/types"
+import "tartan.rawkode.academy/types"
 
 #Extension: {
-	id:      "rawkode.issues"
+	id:      "issues.tartan.rawkode.academy"
 	version: "0.6.0"
 	settings: properties: [N=string]: types.#Property & {name: N}
 }
@@ -37,7 +37,7 @@ A module can import other extensions' modules, so one extension's settings can r
 
 ## Building and publishing
 
-In this repository an extension crate keeps its module source in `cue/` (`cue.mod/module.cue` and the `#Extension` package). `scripts/build-extension.sh <crate> <out>` builds the component and assembles the module directory: the `cue/` tree, `component.wasm`, `tartan.json` and the manifest's migrations. A crate without `cue/` gets a minimal module, `github.com/rawkode/tartan-ext/<dir>`, whose `#Extension` fixes the id and version and accepts any settings.
+In this repository an extension crate keeps its module source in `cue/` (`cue.mod/module.cue` and the `#Extension` package). `scripts/build-extension.sh <crate> <out>` builds the component and assembles the module directory: the `cue/` tree, `component.wasm`, `tartan.json` and the manifest's migrations. A crate without `cue/` gets a minimal module, `tartan.rawkode.academy/<dir>`, whose `#Extension` fixes the id and version and accepts any settings.
 
 ```sh
 scripts/build-extension.sh extensions/issues out/issues
@@ -50,7 +50,7 @@ The module version is `v` followed by `tartan.json`'s version.
 
 ```json
 {
-  "id": "rawkode.issues",
+  "id": "issues.tartan.rawkode.academy",
   "name": "Issues",
   "version": "0.6.0",
   "api": "tartan:ext@0.1.0",
@@ -63,10 +63,10 @@ An extension that works with another names it in `requires`, and the tools it ca
 
 ```json
 {
-  "id": "rawkode.kanban",
-  "requires": ["rawkode.issues"],
-  "subscribe": [{ "event": "x.rawkode.issues.issue.*" }],
-  "permissions": { "calls": { "rawkode.issues": ["update"] } }
+  "id": "kanban.tartan.rawkode.academy",
+  "requires": ["issues.tartan.rawkode.academy"],
+  "subscribe": [{ "event": "x.issues.tartan.rawkode.academy.issue.*" }],
+  "permissions": { "calls": { "issues.tartan.rawkode.academy": ["update"] } }
 }
 ```
 
@@ -112,7 +112,7 @@ The `calls` import calls another installation's tool, acting for the same princi
 
 ```sh
 curl -X POST -H "Authorization: Bearer $TOKEN" \
-  localhost:8080/-/api/orgs/acme/repos/api/extensions/rawkode.issues/tools/list -d '{}'
+  localhost:8080/-/api/orgs/acme/repos/api/extensions/issues.tartan.rawkode.academy/tools/list -d '{}'
 ```
 
 `GET /-/api/orgs/<org>/repos/<repo>/extensions` lists a repository's installations. Besides `tools/<tool>` there are `render/<slot>` and `actions/<action>`. Extension errors map to statuses: `denied` 403, `not_found` 404, `invalid` 400, `conflict` 409, `unavailable` 503.

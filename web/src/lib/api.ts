@@ -29,9 +29,9 @@ import type {
 } from "./types.ts";
 
 /** The id Issues installs under. */
-export const ISSUES_ID = "rawkode.issues";
+export const ISSUES_ID = "issues.tartan.rawkode.academy";
 /** The id Kanban installs under. */
-export const KANBAN_ID = "rawkode.kanban";
+export const KANBAN_ID = "kanban.tartan.rawkode.academy";
 
 /** A failed request: the HTTP status (0 when the gateway was unreachable) and its problem. */
 export class ApiError extends Error {

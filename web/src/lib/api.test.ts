@@ -65,7 +65,7 @@ describe("requests", () => {
 		const client = createClient({ token: () => "t", fetch });
 		const card = await client.kanban("acme", "api").move("triage", 3, "done");
 		expect(card).toEqual({ number: 3 });
-		expect(calls[0]!.url).toBe("/-/api/orgs/acme/repos/api/extensions/rawkode.kanban/tools/move");
+		expect(calls[0]!.url).toBe("/-/api/orgs/acme/repos/api/extensions/kanban.tartan.rawkode.academy/tools/move");
 		expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ board: "triage", number: 3, column: "done" });
 	});
 
@@ -73,7 +73,7 @@ describe("requests", () => {
 		const { calls, fetch } = stub(200, { issue: { number: 1 } });
 		const client = createClient({ token: () => "t", fetch });
 		await client.issues("acme", "api").create({ title: "x", properties: { status: "todo" } });
-		expect(calls[0]!.url).toBe("/-/api/orgs/acme/repos/api/extensions/rawkode.issues/tools/create");
+		expect(calls[0]!.url).toBe("/-/api/orgs/acme/repos/api/extensions/issues.tartan.rawkode.academy/tools/create");
 		expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ title: "x", properties: { status: "todo" } });
 	});
 

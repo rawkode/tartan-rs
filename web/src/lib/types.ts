@@ -68,9 +68,9 @@ export type ExtensionErrorKind =
 export type CallKind = "tools" | "render" | "actions";
 
 // ---------------------------------------------------------------------------------------------
-// tartan.dev/types and Issues
+// tartan.rawkode.academy/types and Issues
 
-/** Every property kind `tartan.dev/types` defines. */
+/** Every property kind `tartan.rawkode.academy/types` defines. */
 export const PROPERTY_KINDS = [
 	"shorttext",
 	"longtext",

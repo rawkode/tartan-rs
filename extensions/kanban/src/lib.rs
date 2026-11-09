@@ -1,7 +1,7 @@
-//! `rawkode.kanban`: boards over a repository's issues.
+//! `kanban.tartan.rawkode.academy`: boards over a repository's issues.
 //!
 //! Installed on a repository beside Issues (the manifest `requires` it). It keeps a card for
-//! every issue of the repository from the snapshots Issues emits (`x.rawkode.issues.issue.*`),
+//! every issue of the repository from the snapshots Issues emits (`x.issues.tartan.rawkode.academy.issue.*`),
 //! keeping the highest version of each, including issues created before it was installed.
 //!
 //! Boards come from the settings (`boards.<id>`), which Kanban's CUE module checks against the
@@ -27,9 +27,9 @@ use tartan_ext::sql::{self, Row, params};
 use tartan_ext::{Error, Event, Extension, Json, SlotContext, calls, export, ui};
 
 /// The extension whose snapshots the cards follow.
-const ISSUES: &str = "rawkode.issues";
+const ISSUES: &str = "issues.tartan.rawkode.academy";
 /// The event types of those snapshots.
-const SNAPSHOT_PREFIX: &str = "x.rawkode.issues.issue.";
+const SNAPSHOT_PREFIX: &str = "x.issues.tartan.rawkode.academy.issue.";
 
 fn parse(json: &str) -> Result<Value, Error> {
     serde_json::from_str(json).map_err(|e| Error::invalid(format!("not JSON: {e}")))

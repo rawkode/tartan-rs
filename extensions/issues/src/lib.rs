@@ -1,4 +1,4 @@
-//! `rawkode.issues`: per-repository issues for Tartan, written in Rust and
+//! `issues.tartan.rawkode.academy`: per-repository issues for Tartan, written in Rust and
 //! run as a WebAssembly component. An issue may belong to a project: every
 //! tool takes an optional `project`, the project's root path. The extension
 //! cannot see the project graph; the kernel's JSON route resolves a project's
@@ -6,9 +6,9 @@
 //!
 //! - tools (`issues_<name>` over MCP): `list`, `get`, `properties`, `create`,
 //!   `update`, `close`, `reopen`, also exported to other extensions as
-//!   `rawkode.issues/issues@1`;
+//!   `issues.tartan.rawkode.academy/issues@1`;
 //! - typed properties from the repository's configuration
-//!   (`settings.properties`, typed with `tartan.dev/types` through Issues' CUE
+//!   (`settings.properties`, typed with `tartan.rawkode.academy/types` through Issues' CUE
 //!   module): stored per issue, checked by kind when written, and never
 //!   rewritten when the configuration changes;
 //! - the `repo.tab` Issues page: counts, the newest issues and a form that

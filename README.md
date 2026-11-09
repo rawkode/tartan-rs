@@ -75,8 +75,8 @@ Not yet: gates (walgit has no pre-receive hook to call them from), `notify` and 
 
 | Extension | Installs on | Does |
 | --- | --- | --- |
-| `extensions/issues` (`rawkode.issues`) | a repository | numbered issues with typed properties from `tartan.dev/types`; emits `x.rawkode.issues.issue.created` and `.updated` snapshots |
-| `extensions/kanban` (`rawkode.kanban`) | a repository | boards for the repository or a project, with columns, lanes and groups from Issues' properties; cards follow Issues' snapshots, and moving one calls Issues' `update`; requires Issues |
+| `extensions/issues` (`issues.tartan.rawkode.academy`) | a repository | numbered issues with typed properties from `tartan.rawkode.academy/types`; emits `x.issues.tartan.rawkode.academy.issue.created` and `.updated` snapshots |
+| `extensions/kanban` (`kanban.tartan.rawkode.academy`) | a repository | boards for the repository or a project, with columns, lanes and groups from Issues' properties; cards follow Issues' snapshots, and moving one calls Issues' `update`; requires Issues |
 | `extensions/fixture` (`tartan.fixture`) | a repository | test extension for event delivery |
 
 ### Goal 3: the web frontend

@@ -10,7 +10,7 @@ use crate::EXTENSION_API;
 /// [`Manifest::raw`] for the forge.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
-    /// The extension's id, such as `rawkode.issues`.
+    /// The extension's id, such as `issues.tartan.rawkode.academy`.
     pub id: String,
     /// The display name.
     pub name: String,
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn parses_the_fields_the_host_reads() {
         let manifest = Manifest::parse(
-            br#"{"schema":1,"id":"rawkode.issues","name":"Issues","version":"0.4.0",
+            br#"{"schema":1,"id":"issues.tartan.rawkode.academy","name":"Issues","version":"0.4.0",
                 "api":"tartan:ext@0.1.0","runtime":"wasm",
                 "storage":{"scope":"repo","migrations":["migrations/0001_init.sql"]},
                 "subscribe":[{"event":"ref.*"}]}"#,
@@ -259,17 +259,18 @@ mod tests {
     fn requires_names_other_extensions_once() {
         let manifest = |requires: &str| {
             format!(
-                r#"{{"id":"rawkode.kanban","name":"K","version":"1.0.0","api":"tartan:ext@0.1.0",
+                r#"{{"id":"kanban.tartan.rawkode.academy","name":"K","version":"1.0.0","api":"tartan:ext@0.1.0",
                 "storage":{{"scope":"repo"}},"requires":{requires}}}"#
             )
         };
-        let parsed = Manifest::parse(manifest(r#"["rawkode.issues"]"#).as_bytes()).expect("valid");
-        assert_eq!(parsed.requires, vec!["rawkode.issues"]);
+        let parsed = Manifest::parse(manifest(r#"["issues.tartan.rawkode.academy"]"#).as_bytes())
+            .expect("valid");
+        assert_eq!(parsed.requires, vec!["issues.tartan.rawkode.academy"]);
         for invalid in [
-            r#"["rawkode.kanban"]"#,
-            r#"["rawkode.issues","rawkode.issues"]"#,
+            r#"["kanban.tartan.rawkode.academy"]"#,
+            r#"["issues.tartan.rawkode.academy","issues.tartan.rawkode.academy"]"#,
             r#"["Not An Id"]"#,
-            r#""rawkode.issues""#,
+            r#""issues.tartan.rawkode.academy""#,
         ] {
             assert!(
                 Manifest::parse(manifest(invalid).as_bytes()).is_err(),

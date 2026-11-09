@@ -24,7 +24,7 @@ For each synced module holding a `tartan.json`, the forge SHALL check that the m
 
 #### Scenario: Register
 - **WHEN** the Issues module v0.6.0 is synced
-- **THEN** `rawkode.issues@0.6.0` is available and the forge's log gains `package.published`
+- **THEN** `issues.tartan.rawkode.academy@0.6.0` is available and the forge's log gains `package.published`
 
 #### Scenario: Not a component
 - **WHEN** a module's `component.wasm` is not WebAssembly
@@ -35,4 +35,4 @@ A manifest MAY list the extensions it requires (`requires`). Reconciliation SHAL
 
 #### Scenario: Kanban without Issues
 - **WHEN** a repository's configuration installs Kanban but not Issues
-- **THEN** the configuration is refused, naming `rawkode.issues`
+- **THEN** the configuration is refused, naming `issues.tartan.rawkode.academy`

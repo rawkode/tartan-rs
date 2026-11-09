@@ -1,4 +1,4 @@
-//! The Issues extension (`rawkode.issues`) runs on this host unchanged.
+//! The Issues extension (`issues.tartan.rawkode.academy`) runs on this host unchanged.
 //!
 //! Needs `TARTAN_ISSUES_PACKAGE`, a package directory from `scripts/build-extension.sh`.
 
@@ -102,7 +102,7 @@ fn env(sql: &Arc<MemorySql>, limits: CallLimits) -> CallEnvironment {
         sql: sql.clone(),
         config: "{}".to_owned(),
         limits,
-        label: "rawkode.issues@test".to_owned(),
+        label: "issues.tartan.rawkode.academy@test".to_owned(),
         caller: None,
     }
 }
@@ -117,7 +117,7 @@ fn package() -> ExtensionPackage {
 #[ignore = "needs TARTAN_ISSUES_PACKAGE; run scripts/e2e.sh"]
 async fn issues_creates_lists_and_renders() {
     let package = package();
-    assert_eq!(package.manifest.id, "rawkode.issues");
+    assert_eq!(package.manifest.id, "issues.tartan.rawkode.academy");
     let runtime = ExtensionRuntime::new().expect("runtime");
     let component = runtime.compile(&package.component).expect("compile");
     let sql = MemorySql::new();

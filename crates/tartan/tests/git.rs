@@ -33,11 +33,11 @@ const DEADLINE: Duration = Duration::from_secs(60);
 const ISSUES_CONFIG: &str = r#"package tartan
 
 import (
-	"tartan.dev/types"
-	"github.com/rawkode/tartan-ext/issues"
+	"tartan.rawkode.academy/types"
+	"tartan.rawkode.academy/issues"
 )
 
-extensions: "rawkode.issues": issues.#Extension & {settings: properties: {
+extensions: "issues.tartan.rawkode.academy": issues.#Extension & {settings: properties: {
 	status:   types.#Select & {options: ["todo", "done"], default: "todo"}
 	estimate: types.#Number & {min: 0}
 }}
@@ -433,7 +433,10 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
     registered.sort();
     assert_eq!(
         registered,
-        vec!["rawkode.issues@0.6.0", "rawkode.kanban@0.3.0"],
+        vec![
+            "issues.tartan.rawkode.academy@0.6.0",
+            "kanban.tartan.rawkode.academy@0.3.0"
+        ],
         "{report:?}"
     );
     std::fs::create_dir_all(work.join("cue.mod")).expect("mkdir");
@@ -453,7 +456,7 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
             .json()
             .await
             .expect("json");
-        if listed.to_string().contains("rawkode.issues") {
+        if listed.to_string().contains("issues.tartan.rawkode.academy") {
             break;
         }
         assert!(
@@ -465,7 +468,7 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
     let created = api(
         &http,
         &base,
-        "/-/api/orgs/acme/repos/api/extensions/rawkode.issues/tools/create",
+        "/-/api/orgs/acme/repos/api/extensions/issues.tartan.rawkode.academy/tools/create",
         json!({"title": "Installed by Git", "properties": {"estimate": 2}}),
     )
     .await;

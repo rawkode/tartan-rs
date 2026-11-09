@@ -25,7 +25,7 @@ An installation SHALL exist only because a repository's committed configuration 
 
 #### Scenario: Listing
 - **WHEN** a repository's configuration installs Issues
-- **THEN** `GET …/extensions` lists `rawkode.issues` with its version
+- **THEN** `GET …/extensions` lists `issues.tartan.rawkode.academy` with its version
 
 ### Requirement: Uninstalling disables and keeps data
 An installation its configuration no longer names SHALL be disabled: its subscriptions are removed, calls to it answer 404, and its data is kept. Naming it again SHALL enable the same installation with its data.

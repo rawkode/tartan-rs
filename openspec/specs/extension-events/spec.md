@@ -13,7 +13,7 @@ An installation SHALL receive the events matching its manifest's `subscribe` pat
 - **THEN** an installation on `acme/api` does not receive it
 
 #### Scenario: Another extension on the repository
-- **WHEN** Issues on `acme/api` emits `x.rawkode.issues.issue.created`
+- **WHEN** Issues on `acme/api` emits `x.issues.tartan.rawkode.academy.issue.created`
 - **THEN** Kanban on `acme/api`, subscribed to it, receives it
 
 ### Requirement: Each event reaches on-event once

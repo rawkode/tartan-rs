@@ -1,7 +1,7 @@
 /**
  * Working with Issues' typed properties: titles, display, validation and the conversions
  * between what an editor shows and what Issues stores. Validation mirrors
- * `tartan.dev/types` so a form can explain a mistake before the extension refuses it; the
+ * `tartan.rawkode.academy/types` so a form can explain a mistake before the extension refuses it; the
  * extension stays the authority.
  */
 

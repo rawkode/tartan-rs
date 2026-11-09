@@ -1,4 +1,4 @@
--- rawkode.issues (repo scope: one database per repository). `number` is the
+-- issues.tartan.rawkode.academy (repo scope: one database per repository). `number` is the
 -- issue's number in its repository, assigned as MAX(number) + 1; issues are
 -- never deleted, so numbers are never reused. The author is the actor the
 -- host gave the call (`kind`: user, agent, ext or system; `on_behalf_of`: the

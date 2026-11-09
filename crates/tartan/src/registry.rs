@@ -693,7 +693,7 @@ mod tests {
 
     #[test]
     fn validates_names_tags_and_digests() {
-        assert!(valid_name("github.com/rawkode/tartan-ext/issues"));
+        assert!(valid_name("tartan.rawkode.academy/issues"));
         assert!(valid_name("tartan.test/rawkode/fixture_org"));
         assert!(!valid_name("github.com//x"));
         assert!(!valid_name("../x"));

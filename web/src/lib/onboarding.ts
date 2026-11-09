@@ -18,9 +18,9 @@ export const moduleCue = (org: string, repo: string): string =>
 	`module: "tartan.example/${org}/${repo}"
 language: version: "v0.14.1"
 deps: {
-	"tartan.dev/types@v0": v:                     "${MODULE_VERSIONS.types}"
-	"github.com/rawkode/tartan-ext/issues@v0": v: "${MODULE_VERSIONS.issues}"
-	"github.com/rawkode/tartan-ext/kanban@v0": v: "${MODULE_VERSIONS.kanban}"
+	"tartan.rawkode.academy/types@v0": v:                     "${MODULE_VERSIONS.types}"
+	"tartan.rawkode.academy/issues@v0": v: "${MODULE_VERSIONS.issues}"
+	"tartan.rawkode.academy/kanban@v0": v: "${MODULE_VERSIONS.kanban}"
 }
 `;
 
@@ -29,14 +29,14 @@ export const tartanCue = (): string =>
 	`package tartan
 
 import (
-	"tartan.dev/types"
-	"github.com/rawkode/tartan-ext/issues"
-	"github.com/rawkode/tartan-ext/kanban"
+	"tartan.rawkode.academy/types"
+	"tartan.rawkode.academy/issues"
+	"tartan.rawkode.academy/kanban"
 )
 
-let props = extensions."rawkode.issues".settings.properties
+let props = extensions."issues.tartan.rawkode.academy".settings.properties
 
-extensions: "rawkode.issues": issues.#Extension & {
+extensions: "issues.tartan.rawkode.academy": issues.#Extension & {
 	settings: properties: {
 		status: types.#Select & {
 			label: "Status"
@@ -63,8 +63,8 @@ extensions: "rawkode.issues": issues.#Extension & {
 	}
 }
 
-extensions: "rawkode.kanban": kanban.#Extension & {
-	#issues: extensions."rawkode.issues"
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+	#issues: extensions."issues.tartan.rawkode.academy"
 	settings: boards: triage: {
 		name:    "Triage"
 		columns: props.status

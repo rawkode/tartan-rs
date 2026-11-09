@@ -5,7 +5,7 @@
 #
 #   scripts/build-extension.sh <crate-dir> <out-dir>
 #
-# A crate without a cue/ directory gets a minimal module, github.com/rawkode/tartan-ext/<dir>,
+# A crate without a cue/ directory gets a minimal module, tartan.rawkode.academy/<dir>,
 # whose #Extension fixes the manifest's id and version and accepts any settings.
 #
 # Needs cargo with the wasm32-unknown-unknown target, jq, and wasm-tools on PATH (or
@@ -41,7 +41,7 @@ else
 	package="${dir//-/_}"
 	mkdir -p "$out/cue.mod"
 	cat >"$out/cue.mod/module.cue" <<MODULE
-module: "github.com/rawkode/tartan-ext/$dir@v${version%%.*}"
+module: "tartan.rawkode.academy/$dir@v${version%%.*}"
 language: version: "v0.14.1"
 source: kind: "self"
 MODULE

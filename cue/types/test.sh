@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks the tartan.dev/types module: every case in testdata/valid must export,
+# Checks the tartan.rawkode.academy/types module: every case in testdata/valid must export,
 # and every case in testdata/invalid must fail to. Then it checks the value
 # vectors Issues shares (extensions/issues/testdata/property-values.json): a
 # value Issues accepts for a property must be a valid `default` of it in CUE,
@@ -40,7 +40,7 @@ if [ -f "$vectors" ]; then
 	mkdir "$work/vector"
 	# check_vector <expectation> <property JSON> <value JSON>
 	check_vector() {
-		printf 'package vector\n\nimport "tartan.dev/types"\n\np: types.#Property & %s & {default: %s}\n' "$2" "$3" >"$work/vector/v.cue"
+		printf 'package vector\n\nimport "tartan.rawkode.academy/types"\n\np: types.#Property & %s & {default: %s}\n' "$2" "$3" >"$work/vector/v.cue"
 		if (cd "$work" && "$cue" export ./vector/v.cue >/dev/null 2>&1); then
 			result=valid
 		else

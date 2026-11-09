@@ -1,15 +1,15 @@
 # config-types Specification
 
 ## Purpose
-The `tartan.dev/types` CUE module: the typed property definitions that extension modules and repositories import.
+The `tartan.rawkode.academy/types` CUE module: the typed property definitions that extension modules and repositories import.
 
 ## Requirements
 
 ### Requirement: The types module is a real CUE module
-`tartan.dev/types` SHALL be a CUE module published to an OCI registry, so a repository depending on it evaluates natively with `cue eval`.
+`tartan.rawkode.academy/types` SHALL be a CUE module published to an OCI registry, so a repository depending on it evaluates natively with `cue eval`.
 
 #### Scenario: Importing the types
-- **WHEN** a repository's `cue.mod/module.cue` depends on `tartan.dev/types@v0` and its package `tartan` uses `types.#Select`
+- **WHEN** a repository's `cue.mod/module.cue` depends on `tartan.rawkode.academy/types@v0` and its package `tartan` uses `types.#Select`
 - **THEN** `cue export` with the registry configured evaluates, and so does the forge
 
 ### Requirement: Property types

@@ -9,9 +9,9 @@
 //! ```cue
 //! package tartan
 //!
-//! import "github.com/rawkode/tartan-ext/issues"
+//! import "tartan.rawkode.academy/issues"
 //!
-//! extensions: "rawkode.issues": issues.#Extension & {
+//! extensions: "issues.tartan.rawkode.academy": issues.#Extension & {
 //!     settings: properties: status: {kind: "select", options: ["todo", "done"]}
 //! }
 //! ```
@@ -328,19 +328,19 @@ mod tests {
 
 let options = ["todo", "doing", "done"]
 
-#Issues: {id: "rawkode.issues", version: "0.5.0", settings: {...}}
+#Issues: {id: "issues.tartan.rawkode.academy", version: "0.5.0", settings: {...}}
 
-extensions: "rawkode.issues": #Issues & {
+extensions: "issues.tartan.rawkode.academy": #Issues & {
 	settings: fields: status: {type: "select", "options": options, default: options[0]}
 }
-extensions: "rawkode.kanban": version: "0.2.0"
+extensions: "kanban.tartan.rawkode.academy": version: "0.2.0"
 "#))
         .await
         .expect("valid");
-        let issues = &config.extensions["rawkode.issues"];
+        let issues = &config.extensions["issues.tartan.rawkode.academy"];
         assert_eq!(issues.version, "0.5.0");
         assert_eq!(issues.settings["fields"]["status"]["default"], "todo");
-        let kanban = &config.extensions["rawkode.kanban"];
+        let kanban = &config.extensions["kanban.tartan.rawkode.academy"];
         assert_eq!(kanban.version, "0.2.0");
         assert_eq!(kanban.settings, json!({}));
     }
@@ -350,18 +350,24 @@ extensions: "rawkode.kanban": version: "0.2.0"
         let config = evaluate(files(&[
             (
                 "issues.cue",
-                "package tartan\nextensions: \"rawkode.issues\": version: \"0.5.0\"\n",
+                "package tartan\nextensions: \"issues.tartan.rawkode.academy\": version: \"0.5.0\"\n",
             ),
             (
                 "kanban.cue",
-                "package tartan\nextensions: \"rawkode.kanban\": version: \"0.2.0\"\n",
+                "package tartan\nextensions: \"kanban.tartan.rawkode.academy\": version: \"0.2.0\"\n",
             ),
             ("env.cue", "package cuenv\nenv: FOO: \"bar\"\n"),
         ]))
         .await
         .expect("valid");
         let ids: Vec<&str> = config.extensions.keys().map(String::as_str).collect();
-        assert_eq!(ids, vec!["rawkode.issues", "rawkode.kanban"]);
+        assert_eq!(
+            ids,
+            vec![
+                "issues.tartan.rawkode.academy",
+                "kanban.tartan.rawkode.academy"
+            ]
+        );
     }
 
     #[tokio::test]
@@ -369,7 +375,7 @@ extensions: "rawkode.kanban": version: "0.2.0"
         let config = evaluate(files(&[
             (
                 "tartan.cue",
-                "package tartan\n\nimport defs \"example.com/acme/config/fields\"\n\nextensions: \"rawkode.issues\": {version: \"0.5.0\", settings: fields: defs.all}\n",
+                "package tartan\n\nimport defs \"example.com/acme/config/fields\"\n\nextensions: \"issues.tartan.rawkode.academy\": {version: \"0.5.0\", settings: fields: defs.all}\n",
             ),
             (
                 "config/fields/fields.cue",
@@ -379,7 +385,7 @@ extensions: "rawkode.kanban": version: "0.2.0"
         .await
         .expect("valid");
         assert_eq!(
-            config.extensions["rawkode.issues"].settings["fields"]["owner"]["type"],
+            config.extensions["issues.tartan.rawkode.academy"].settings["fields"]["owner"]["type"],
             "text"
         );
     }
@@ -389,14 +395,14 @@ extensions: "rawkode.kanban": version: "0.2.0"
         let config = evaluate(files(&[
             (
                 "tartan.cue",
-                "@extern(embed)\n\npackage tartan\n\nextensions: \"rawkode.issues\": {version: \"0.6.0\", settings: properties: _ @embed(file=\"config/properties.json\")}\n",
+                "@extern(embed)\n\npackage tartan\n\nextensions: \"issues.tartan.rawkode.academy\": {version: \"0.6.0\", settings: properties: _ @embed(file=\"config/properties.json\")}\n",
             ),
             ("config/properties.json", r#"{"due": {"kind": "date"}}"#),
         ]))
         .await
         .expect("valid");
         assert_eq!(
-            config.extensions["rawkode.issues"].settings["properties"]["due"]["kind"],
+            config.extensions["issues.tartan.rawkode.academy"].settings["properties"]["due"]["kind"],
             "date"
         );
     }
@@ -416,15 +422,15 @@ extensions: "rawkode.kanban": version: "0.2.0"
     #[tokio::test]
     async fn refuses_what_does_not_fit() {
         let bad = [
-            "package tartan\nextensions: \"rawkode.issues\": version: \"latest\"\n",
-            "package tartan\nextensions: \"rawkode.issues\": version: \"v1.0.0\"\n",
-            "package tartan\nextensions: \"rawkode.issues\": settings: {}\n",
-            "package tartan\nextensions: \"rawkode.issues\": {version: \"1.0.0\", colour: \"red\"}\n",
-            "package tartan\nextensions: \"rawkode.issues\": {version: \"1.0.0\", settings: [1]}\n",
-            "package tartan\nextensions: \"rawkode.issues\": {id: \"rawkode.kanban\", version: \"1.0.0\"}\n",
+            "package tartan\nextensions: \"issues.tartan.rawkode.academy\": version: \"latest\"\n",
+            "package tartan\nextensions: \"issues.tartan.rawkode.academy\": version: \"v1.0.0\"\n",
+            "package tartan\nextensions: \"issues.tartan.rawkode.academy\": settings: {}\n",
+            "package tartan\nextensions: \"issues.tartan.rawkode.academy\": {version: \"1.0.0\", colour: \"red\"}\n",
+            "package tartan\nextensions: \"issues.tartan.rawkode.academy\": {version: \"1.0.0\", settings: [1]}\n",
+            "package tartan\nextensions: \"issues.tartan.rawkode.academy\": {id: \"kanban.tartan.rawkode.academy\", version: \"1.0.0\"}\n",
             "package tartan\nextensions: \"Bad Id\": version: \"1.0.0\"\n",
-            "package tartan\nextensions: \"rawkode.issues\": version: \"1.0.0\" & \"2.0.0\"\n",
-            "package tartan\nextensions: \"rawkode.issues\": version: string\n",
+            "package tartan\nextensions: \"issues.tartan.rawkode.academy\": version: \"1.0.0\" & \"2.0.0\"\n",
+            "package tartan\nextensions: \"issues.tartan.rawkode.academy\": version: string\n",
             "package tartan\nextensions: [1]\n",
             "package tartan\nthis is not cue\n",
         ];
@@ -438,7 +444,7 @@ extensions: "rawkode.kanban": version: "0.2.0"
     async fn refuses_values_that_are_not_concrete_as_cue_export_does() {
         let entry = |settings: &str| {
             format!(
-                "package tartan\nextensions: \"rawkode.kanban\": {{version: \"0.3.0\", settings: {settings}}}\n"
+                "package tartan\nextensions: \"kanban.tartan.rawkode.academy\": {{version: \"0.3.0\", settings: {settings}}}\n"
             )
         };
         for (settings, path) in [
@@ -459,7 +465,7 @@ extensions: "rawkode.kanban": version: "0.2.0"
                 .to_string();
             assert!(
                 error.contains(&format!(
-                    "extensions.\"rawkode.kanban\".{path} is not concrete"
+                    "extensions.\"kanban.tartan.rawkode.academy\".{path} is not concrete"
                 )),
                 "{settings}: {error}"
             );
@@ -475,7 +481,7 @@ extensions: "rawkode.kanban": version: "0.2.0"
             .await
             .expect("valid");
         assert_eq!(
-            config.extensions["rawkode.kanban"].settings,
+            config.extensions["kanban.tartan.rawkode.academy"].settings,
             json!({"x": 3, "y": []})
         );
     }
@@ -484,7 +490,7 @@ extensions: "rawkode.kanban": version: "0.2.0"
     async fn adds_no_files_to_the_evaluation() {
         // A module that declares no dependencies cannot import one: nothing is added to it.
         let unresolved = one(
-            "package tartan\n\nimport \"tartan.test/nowhere/issues\"\n\nextensions: \"rawkode.issues\": issues.#Extension\n",
+            "package tartan\n\nimport \"tartan.test/nowhere/issues\"\n\nextensions: \"issues.tartan.rawkode.academy\": issues.#Extension\n",
         );
         assert!(evaluate(unresolved).await.is_err());
         // A root file named like an injected schema file is evaluated as written.
@@ -492,16 +498,20 @@ extensions: "rawkode.kanban": version: "0.2.0"
             ("tartan.cue", "package tartan\n"),
             (
                 "zz_tartan_schema.cue",
-                "package tartan\nextensions: \"rawkode.issues\": version: \"1.0.0\"\n",
+                "package tartan\nextensions: \"issues.tartan.rawkode.academy\": version: \"1.0.0\"\n",
             ),
         ]))
         .await
         .expect("valid");
-        assert_eq!(config.extensions["rawkode.issues"].version, "1.0.0");
+        assert_eq!(
+            config.extensions["issues.tartan.rawkode.academy"].version,
+            "1.0.0"
+        );
         // Without a module the package is refused: the forge supplies no module of its own.
         let outside = ConfigFiles::from_iter([(
             "tartan.cue".to_owned(),
-            "package tartan\nextensions: \"rawkode.issues\": version: \"1.0.0\"\n".to_owned(),
+            "package tartan\nextensions: \"issues.tartan.rawkode.academy\": version: \"1.0.0\"\n"
+                .to_owned(),
         )]);
         let error = evaluate(outside).await.expect_err("no module").to_string();
         assert!(error.contains("cue.mod/module.cue"), "{error}");
@@ -522,11 +532,14 @@ extensions: "rawkode.kanban": version: "0.2.0"
     #[test]
     fn checks_the_exported_shape() {
         let config = check(json!({
-            "extensions": {"rawkode.issues": {"id": "rawkode.issues", "version": "0.6.0"}},
+            "extensions": {"issues.tartan.rawkode.academy": {"id": "issues.tartan.rawkode.academy", "version": "0.6.0"}},
             "helpers": {"anything": true},
         }))
         .expect("valid");
-        assert_eq!(config.extensions["rawkode.issues"].settings, json!({}));
+        assert_eq!(
+            config.extensions["issues.tartan.rawkode.academy"].settings,
+            json!({})
+        );
         assert!(check(json!([])).is_err());
         assert!(check(json!({"extensions": {"a": {"version": null}}})).is_err());
         assert!(check(json!({"helpers": [1, null]})).is_err());

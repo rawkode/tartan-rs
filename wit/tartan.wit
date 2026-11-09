@@ -152,7 +152,7 @@ interface effects {
 
 // Calls a tool of another extension installed in the same org, as the principal the current
 // call acts for. The manifest names what it may call: `permissions.calls` maps an extension id
-// to its tools, such as {"rawkode.issues": ["update"]}. `repo` is the repository whose
+// to its tools, such as {"issues.tartan.rawkode.academy": ["update"]}. `repo` is the repository whose
 // installation to call (its id); an installation on a repository may only call into that
 // repository. Refused with `denied` otherwise, and in read-only calls.
 interface calls {

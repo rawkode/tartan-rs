@@ -4,10 +4,10 @@
 //! ```cue
 //! package forge
 //!
-//! sources: "github.com/rawkode": "ghcr.io/rawkode/cue"
+//! sources: "tartan.rawkode.academy": "ghcr.io/rawkode/cue"
 //! modules: [
-//!     "tartan.dev/types@v0.1.0",
-//!     "github.com/rawkode/tartan-ext/issues@v0.6.0",
+//!     "tartan.rawkode.academy/types@v0.1.0",
+//!     "tartan.rawkode.academy/issues@v0.6.0",
 //! ]
 //! ```
 //!
@@ -45,10 +45,10 @@ pub struct Deployment {
     pub sources: BTreeMap<String, Source>,
 }
 
-/// One version of a CUE module, such as `github.com/rawkode/tartan-ext/issues@v0.6.0`.
+/// One version of a CUE module, such as `tartan.rawkode.academy/issues@v0.6.0`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ModuleVersion {
-    /// The module path, without a major version suffix: `github.com/rawkode/tartan-ext/issues`.
+    /// The module path, without a major version suffix: `tartan.rawkode.academy/issues`.
     pub path: String,
     /// The version, with its leading `v`: `v0.6.0`.
     pub version: String,
@@ -328,16 +328,16 @@ mod tests {
             "forge.cue",
             r#"package forge
 
-let ext = "github.com/rawkode/tartan-ext"
+let issues = "tartan.rawkode.academy/issues"
 
 sources: {
-	"github.com/rawkode": "ghcr.io/rawkode/cue"
-	"tartan.dev":         "localhost:5000"
-	(ext):               "registry.example.com:8443/mirror+insecure"
+	"github.com/rawkode":     "ghcr.io/rawkode/cue"
+	"tartan.rawkode.academy": "localhost:5000"
+	(issues):                 "registry.example.com:8443/mirror+insecure"
 }
 modules: [
-	"tartan.dev/types@v0.1.0",
-	"\(ext)/issues@v0.6.0",
+	"tartan.rawkode.academy/types@v0.1.0",
+	"\(issues)@v0.6.0",
 	"github.com/rawkode/other@v1.2.3-rc.1",
 ]
 "#,
@@ -351,13 +351,13 @@ modules: [
                 .map(ToString::to_string)
                 .collect::<Vec<_>>(),
             vec![
-                "tartan.dev/types@v0.1.0",
-                "github.com/rawkode/tartan-ext/issues@v0.6.0",
+                "tartan.rawkode.academy/types@v0.1.0",
+                "tartan.rawkode.academy/issues@v0.6.0",
                 "github.com/rawkode/other@v1.2.3-rc.1",
             ]
         );
         let issues = deployment
-            .source_for("github.com/rawkode/tartan-ext/issues")
+            .source_for("tartan.rawkode.academy/issues")
             .expect("a source");
         assert_eq!(
             issues,
@@ -368,8 +368,8 @@ modules: [
             }
         );
         assert_eq!(
-            issues.repository("github.com/rawkode/tartan-ext/issues"),
-            "mirror/github.com/rawkode/tartan-ext/issues"
+            issues.repository("tartan.rawkode.academy/issues"),
+            "mirror/tartan.rawkode.academy/issues"
         );
         let other = deployment
             .source_for("github.com/rawkode/other")
@@ -378,7 +378,9 @@ modules: [
             (other.host.as_str(), other.prefix.as_str(), other.insecure),
             ("ghcr.io", "rawkode/cue", false)
         );
-        let types = deployment.source_for("tartan.dev/types").expect("a source");
+        let types = deployment
+            .source_for("tartan.rawkode.academy/types")
+            .expect("a source");
         assert!(types.insecure, "localhost defaults to plain HTTP");
         assert_eq!(deployment.modules[1].major(), "v0");
 

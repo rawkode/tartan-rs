@@ -3,7 +3,7 @@ name = "issues"
 version = "0.6.0"
 edition = "2021"
 license = "MIT"
-description = "rawkode.issues: per-repository issues for Tartan, in Rust as a WebAssembly component"
+description = "issues.tartan.rawkode.academy: per-repository issues for Tartan, in Rust as a WebAssembly component"
 publish = false
 
 [lib]

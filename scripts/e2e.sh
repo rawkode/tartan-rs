@@ -87,7 +87,7 @@ TARTAN_FIXTURE_PACKAGE="$("$root/scripts/build-extension.sh" "$root/extensions/f
 export TARTAN_FIXTURE_PACKAGE
 
 # The first-party modules, published to the source registry as a deployment's would be:
-# tartan.dev/types, then Issues and Kanban with their packages inside. Tests that configure
+# tartan.rawkode.academy/types, then Issues and Kanban with their packages inside. Tests that configure
 # repositories with them list them in their forge's deployment (TARTAN_EXTENSION_MODULES).
 publish_module() {
 	local dir="$1" version="$2" path

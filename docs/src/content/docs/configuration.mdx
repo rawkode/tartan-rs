@@ -12,19 +12,19 @@ Extensions are installed and configured only by the CUE package `tartan` committ
 module: "example.com/acme-api"
 language: version: "v0.14.1"
 deps: {
-	"tartan.dev/types@v0":                     v: "v0.1.0"
-	"github.com/rawkode/tartan-ext/issues@v0": v: "v0.6.0"
+	"tartan.rawkode.academy/types@v0":                     v: "v0.1.0"
+	"tartan.rawkode.academy/issues@v0": v: "v0.6.0"
 }
 
 // tartan.cue
 package tartan
 
 import (
-	"tartan.dev/types"
-	"github.com/rawkode/tartan-ext/issues"
+	"tartan.rawkode.academy/types"
+	"tartan.rawkode.academy/issues"
 )
 
-extensions: "rawkode.issues": issues.#Extension & {settings: properties: {
+extensions: "issues.tartan.rawkode.academy": issues.#Extension & {settings: properties: {
 	status:   types.#Select & {options: ["todo", "doing", "done"], default: "todo"}
 	priority: types.#Select & {options: ["p1", "p2", "p3"]}
 }}
@@ -50,7 +50,7 @@ An entry does not have to come from an extension's module; plain CUE works too, 
 ```cue
 package tartan
 
-extensions: "rawkode.issues": {version: "0.6.0", settings: properties: {}}
+extensions: "issues.tartan.rawkode.academy": {version: "0.6.0", settings: properties: {}}
 ```
 
 ## A package, not a file
@@ -63,7 +63,7 @@ With `cue.mod/module.cue`, the repository is a CUE module: its dependencies reso
 // config/props/props.cue
 package props
 
-import "tartan.dev/types"
+import "tartan.rawkode.academy/types"
 
 all: status: types.#Select & {options: ["todo", "done"], default: "todo"}
 
@@ -72,10 +72,10 @@ package tartan
 
 import (
 	"example.com/acme-api/config/props"
-	"github.com/rawkode/tartan-ext/issues"
+	"tartan.rawkode.academy/issues"
 )
 
-extensions: "rawkode.issues": issues.#Extension & {settings: properties: props.all}
+extensions: "issues.tartan.rawkode.academy": issues.#Extension & {settings: properties: props.all}
 ```
 
 The repository must be a CUE module: a root `package tartan` without `cue.mod/module.cue` is refused. Run `cue mod init example.com/acme-api` once to add one. The forge supplies no module of its own, because its evaluator only evaluates inside a module.
@@ -87,9 +87,9 @@ Files embedded with `@embed` are read from the repository too, so JSON or YAML k
 
 package tartan
 
-import "github.com/rawkode/tartan-ext/issues"
+import "tartan.rawkode.academy/issues"
 
-extensions: "rawkode.issues": issues.#Extension & {
+extensions: "issues.tartan.rawkode.academy": issues.#Extension & {
 	settings: properties: _ @embed(file="config/properties.json")
 }
 ```

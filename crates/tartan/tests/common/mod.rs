@@ -5,7 +5,7 @@
 //! Extension packages reach the forge as they do in a deployment: each is published as a CUE
 //! module (`cue mod publish`, with the `cue` in `CUE_BIN`) to the source registry at
 //! `TARTAN_MODULE_SOURCE` (a test-only CNCF distribution that `scripts/e2e.sh` starts), then the
-//! forge syncs the modules published so far. The first-party modules (`tartan.dev/types`,
+//! forge syncs the modules published so far. The first-party modules (`tartan.rawkode.academy/types`,
 //! Issues and Kanban) are built and published once by `scripts/e2e.sh`, which lists them in
 //! `TARTAN_EXTENSION_MODULES`; tests add them to the sync. The gateway listens on the address in
 //! `CUE_REGISTRY` when it is set, so the CUE evaluator in the test process resolves imports
@@ -221,7 +221,7 @@ impl ModuleSource {
         let source = format!("{}+insecure", Self::address());
         Deployment {
             modules: self.published.lock().expect("never poisoned").clone(),
-            sources: [MODULE_PREFIX, "tartan.dev", "github.com/rawkode/tartan-ext"]
+            sources: [MODULE_PREFIX, "tartan.rawkode.academy"]
                 .into_iter()
                 .map(|prefix| (prefix.to_owned(), source.parse().expect("a source")))
                 .collect(),
@@ -229,7 +229,7 @@ impl ModuleSource {
     }
 }
 
-/// The first-party modules (`tartan.dev/types`, Issues' and Kanban's) that `scripts/e2e.sh`
+/// The first-party modules (`tartan.rawkode.academy/types`, Issues' and Kanban's) that `scripts/e2e.sh`
 /// built and published to the source registry, from `TARTAN_EXTENSION_MODULES`: a
 /// space-separated list of `path@vX.Y.Z`.
 pub fn extension_modules() -> Vec<ModuleVersion> {

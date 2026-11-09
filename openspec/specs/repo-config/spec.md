@@ -42,7 +42,7 @@ Loading a configuration SHALL read at most 500 files, 64 directories and 4 MiB, 
 After evaluation, the forge SHALL check the exported value: `extensions` maps an extension id to an entry with a semver `version` and object `settings`. Any other key in an entry, an invalid id, a missing or invalid version, a conflict or a syntax error SHALL make the configuration invalid.
 
 #### Scenario: Install
-- **WHEN** the root package `tartan` sets `extensions: "rawkode.issues": issues.#Extension & {settings: …}`
+- **WHEN** the root package `tartan` sets `extensions: "issues.tartan.rawkode.academy": issues.#Extension & {settings: …}`
 - **THEN** the configuration installs Issues at the module's version with those settings
 
 #### Scenario: Invalid entry

@@ -14,14 +14,11 @@ A forge is one process: the gateway, its share of the actors, and the forge's CU
 ```cue
 package forge
 
-sources: {
-	"tartan.dev":         "ghcr.io/rawkode/cue"
-	"github.com/rawkode": "ghcr.io/rawkode/cue"
-}
+sources: "tartan.rawkode.academy": "ghcr.io/rawkode/cue"
 modules: [
-	"tartan.dev/types@v0.1.0",
-	"github.com/rawkode/tartan-ext/issues@v0.6.0",
-	"github.com/rawkode/tartan-ext/kanban@v0.3.0",
+	"tartan.rawkode.academy/types@v0.1.0",
+	"tartan.rawkode.academy/issues@v0.6.0",
+	"tartan.rawkode.academy/kanban@v0.3.0",
 ]
 ```
 
@@ -66,4 +63,4 @@ Removing a module from `modules` makes it unavailable at the next start: the reg
 
 ## Upgrading an extension
 
-Publish the new version of its module to a source, add it to `modules`, and restart the forge. Repositories move to it by changing the version their `cue.mod/module.cue` depends on (`cue mod get github.com/rawkode/tartan-ext/issues@v0.7.0`) and pushing to `main`.
+Publish the new version of its module to a source, add it to `modules`, and restart the forge. Repositories move to it by changing the version their `cue.mod/module.cue` depends on (`cue mod get tartan.rawkode.academy/issues@v0.7.0`) and pushing to `main`.

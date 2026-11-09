@@ -9,13 +9,13 @@ import { cueRegistry } from "./settings.ts";
 test("the module names the repository and pins the extension modules", () => {
 	const text = moduleCue("acme", "api");
 	expect(text).toContain('module: "tartan.example/acme/api"');
-	expect(text).toContain('"github.com/rawkode/tartan-ext/issues@v0": v: "v0.6.0"');
-	expect(text).toContain('"github.com/rawkode/tartan-ext/kanban@v0": v: "v0.3.0"');
+	expect(text).toContain('"tartan.rawkode.academy/issues@v0": v: "v0.6.0"');
+	expect(text).toContain('"tartan.rawkode.academy/kanban@v0": v: "v0.3.0"');
 });
 
 test("the configuration binds Kanban to the repository's Issues entry", () => {
 	const text = tartanCue();
-	expect(text).toContain('#issues: extensions."rawkode.issues"');
+	expect(text).toContain('#issues: extensions."issues.tartan.rawkode.academy"');
 	expect(text).toContain("columns: props.status");
 });
 
@@ -43,8 +43,8 @@ test.runIf(process.env.CUE_BIN && process.env.CUE_REGISTRY)("the example evaluat
 		const out = JSON.parse(
 			execFileSync(process.env.CUE_BIN!, ["export", ".", "-e", "extensions"], { cwd: dir }).toString(),
 		) as Record<string, { id: string; settings: { boards?: Record<string, { columns: { name: string } }> } }>;
-		expect(out["rawkode.issues"]!.id).toBe("rawkode.issues");
-		expect(out["rawkode.kanban"]!.settings.boards!.triage!.columns.name).toBe("status");
+		expect(out["issues.tartan.rawkode.academy"]!.id).toBe("issues.tartan.rawkode.academy");
+		expect(out["kanban.tartan.rawkode.academy"]!.settings.boards!.triage!.columns.name).toBe("status");
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

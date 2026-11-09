@@ -34,7 +34,7 @@ Press Ctrl-C to stop every process it started. The credentials are for developme
 | Tartan gateway | `127.0.0.1:8080` | the API, and the forge's own CUE registry |
 | Web interface | `127.0.0.1:4321`, or the next free port | the Astro dev server, forwarding `/-/` and `/v2/` to the gateway |
 
-The script builds Issues and Kanban as modules with `scripts/build-extension.sh` and publishes them, with `tartan.dev/types`, to the source registry. The forge's [deployment configuration](/deploying/#the-deployment-configuration) lists the three modules, so at startup the forge copies them into its own registry and registers the extension packages inside them. The forge runs with `CUE_REGISTRY=127.0.0.1:8080+insecure`: every configuration's imports resolve through the forge itself.
+The script builds Issues and Kanban as modules with `scripts/build-extension.sh` and publishes them, with `tartan.rawkode.academy/types`, to the source registry. The forge's [deployment configuration](/deploying/#the-deployment-configuration) lists the three modules, so at startup the forge copies them into its own registry and registers the extension packages inside them. The forge runs with `CUE_REGISTRY=127.0.0.1:8080+insecure`: every configuration's imports resolve through the forge itself.
 
 ## What it seeds
 

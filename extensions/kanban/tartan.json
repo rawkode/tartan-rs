@@ -1,13 +1,13 @@
 {
 	"schema": 1,
-	"id": "rawkode.kanban",
+	"id": "kanban.tartan.rawkode.academy",
 	"name": "Kanban",
 	"description": "Boards over a repository's issues, defined in its configuration: columns from an Issues select property or the issue's state, with optional lanes and groups. Cards follow Issues' events; moving one updates the issue.",
 	"version": "0.3.0",
 	"api": "tartan:ext@0.1.0",
 	"runtime": "wasm",
 	"requires": [
-		"rawkode.issues"
+		"issues.tartan.rawkode.academy"
 	],
 	"storage": {
 		"scope": "repo",
@@ -19,12 +19,12 @@
 	},
 	"subscribe": [
 		{
-			"event": "x.rawkode.issues.issue.*"
+			"event": "x.issues.tartan.rawkode.academy.issue.*"
 		}
 	],
 	"permissions": {
 		"calls": {
-			"rawkode.issues": [
+			"issues.tartan.rawkode.academy": [
 				"properties",
 				"update"
 			]

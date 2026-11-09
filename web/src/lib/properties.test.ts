@@ -21,7 +21,7 @@ const select: PropertyDef = {
 	default: "todo",
 };
 
-describe("validation mirrors tartan.dev/types", () => {
+describe("validation mirrors tartan.rawkode.academy/types", () => {
 	test.each<[PropertyDef, unknown, boolean]>([
 		[{ name: "a", kind: "shorttext" }, "fine", true],
 		[{ name: "a", kind: "shorttext" }, "two\nlines", false],

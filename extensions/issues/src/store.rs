@@ -82,7 +82,7 @@ pub fn create(new: &NewIssue, project: Option<&str>, author: &Author) -> Result<
 	Ok(created)
 }
 
-/// Emits `x.rawkode.issues.<kind>` with the issue as it now is. Every write emits one, so a
+/// Emits `x.issues.tartan.rawkode.academy.<kind>` with the issue as it now is. Every write emits one, so a
 /// consumer can keep a copy of each issue by keeping the snapshot with the highest `version`;
 /// the body is left out.
 fn emit_snapshot(kind: &str, issue: &Issue) -> Result<(), Error> {

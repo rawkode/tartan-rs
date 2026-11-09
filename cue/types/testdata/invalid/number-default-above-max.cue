@@ -1,5 +1,5 @@
 package test
 
-import "tartan.dev/types"
+import "tartan.rawkode.academy/types"
 
 p: types.#Number & {max: 10, default: 11}

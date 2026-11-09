@@ -24,12 +24,12 @@ WALGIT_BIN=/path/to/walgit REGISTRY_BIN=/path/to/registry scripts/dev.sh
 
 This starts RustFS on port 9100, walgit on 9200, a source CUE registry on 9300, the Rivet engine on 6420 and the gateway on 8080, with development credentials only. The admin token is `dev-admin-token`.
 
-Before the forge starts, the script builds the `tartan.dev/types`, Issues and Kanban modules, publishes each to the source registry unless that version is already there, and writes `.dev/forge.cue`, the [deployment configuration](/deploying/) listing them. The forge copies them into its own registry at startup and runs with `CUE_REGISTRY=127.0.0.1:8080+insecure`. Point your own `cue` at the same registry to write a repository's configuration:
+Before the forge starts, the script builds the `tartan.rawkode.academy/types`, Issues and Kanban modules, publishes each to the source registry unless that version is already there, and writes `.dev/forge.cue`, the [deployment configuration](/deploying/) listing them. The forge copies them into its own registry at startup and runs with `CUE_REGISTRY=127.0.0.1:8080+insecure`. Point your own `cue` at the same registry to write a repository's configuration:
 
 ```sh
 export CUE_REGISTRY=127.0.0.1:8080+insecure
 cue mod init example.com/acme-api
-cue mod get github.com/rawkode/tartan-ext/issues@v0.6.0
+cue mod get tartan.rawkode.academy/issues@v0.6.0
 ```
 
 A module version is published once, so a change to an extension needs a new version in its `tartan.json` (or a fresh `.dev`) before the forge sees it.
@@ -42,7 +42,7 @@ To try the forge with seeded issues and boards in the web interface, run the [de
 WALGIT_BIN=/path/to/walgit REGISTRY_BIN=/path/to/registry scripts/e2e.sh
 ```
 
-It builds and lints the docs, checks formatting and lints, then runs every test: unit tests, the extensions' own checks and tests, and end-to-end tests against the real Rivet engine, walgit and RustFS. For the end-to-end tests it starts a fresh source registry and fixes the address the forge under test serves its registry on (`CUE_REGISTRY`). It builds Issues and Kanban as modules and publishes them, with `tartan.dev/types`, to the source registry, then runs the modules' own CUE checks (`cue/types/test.sh` and `extensions/kanban/cue/test.sh`). The tests sync those modules, and test extension modules they publish with `cue mod publish`, into the forge under test, as a deployment does at startup; the Kanban and Git tests push repository configurations that import the modules the forge serves.
+It builds and lints the docs, checks formatting and lints, then runs every test: unit tests, the extensions' own checks and tests, and end-to-end tests against the real Rivet engine, walgit and RustFS. For the end-to-end tests it starts a fresh source registry and fixes the address the forge under test serves its registry on (`CUE_REGISTRY`). It builds Issues and Kanban as modules and publishes them, with `tartan.rawkode.academy/types`, to the source registry, then runs the modules' own CUE checks (`cue/types/test.sh` and `extensions/kanban/cue/test.sh`). The tests sync those modules, and test extension modules they publish with `cue mod publish`, into the forge under test, as a deployment does at startup; the Kanban and Git tests push repository configurations that import the modules the forge serves.
 
 ## Configuration
 

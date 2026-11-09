@@ -64,7 +64,7 @@ const SCHEMA: &str = "
 pub struct InstallationSpec {
     /// The installation's id, which is also the actor's key.
     pub installation_id: String,
-    /// The extension's id, such as `rawkode.issues`.
+    /// The extension's id, such as `issues.tartan.rawkode.academy`.
     pub extension_id: String,
     /// The package version.
     pub version: String,

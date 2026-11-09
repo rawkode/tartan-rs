@@ -1,6 +1,6 @@
 //! The `calls` import: another extension's tools, as the principal the current call acts for.
 //! The manifest must name each one in `permissions.calls`, such as
-//! `{"rawkode.issues": ["update"]}`; the host refuses the rest with `denied`, and refuses every
+//! `{"issues.tartan.rawkode.academy": ["update"]}`; the host refuses the rest with `denied`, and refuses every
 //! call during `render` and `provide-context`.
 
 use crate::bindings::tartan::ext::calls as raw;

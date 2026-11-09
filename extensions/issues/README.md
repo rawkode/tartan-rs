@@ -1,4 +1,4 @@
-# rawkode.issues
+# issues.tartan.rawkode.academy
 
 Per-repository issues for Tartan, written in Rust and compiled to a WebAssembly component (`tartan:ext@0.1.0`). Each
 repository's installation has its own SQLite database (`storage.scope: "repo"`) and its own issue numbers (`#1`, `#2`,
@@ -7,19 +7,19 @@ defines.
 
 ## The module
 
-Issues is one CUE module, `github.com/rawkode/tartan-ext/issues`: its settings schema (`cue/`) and its package
+Issues is one CUE module, `tartan.rawkode.academy/issues`: its settings schema (`cue/`) and its package
 (`tartan.json`, `component.wasm`, `migrations/`). `#Extension` fixes the id and the version, and types the settings
-with [`tartan.dev/types`](../../cue/types):
+with [`tartan.rawkode.academy/types`](../../cue/types):
 
 ```cue
 package tartan
 
 import (
-	"tartan.dev/types"
-	"github.com/rawkode/tartan-ext/issues"
+	"tartan.rawkode.academy/types"
+	"tartan.rawkode.academy/issues"
 )
 
-extensions: "rawkode.issues": issues.#Extension & {settings: properties: {
+extensions: "issues.tartan.rawkode.academy": issues.#Extension & {settings: properties: {
 	status: types.#Select & {options: ["todo", "doing", "done"], labels: todo: "To do", default: "todo"}
 	notes:  types.#LongText
 	budget: types.#Money & {currency: "GBP"}
@@ -63,7 +63,7 @@ module and the extension agree.
 | tool `close`        | Developer | closes an issue; `changed: false` when it already was closed                     |
 | tool `reopen`       | Developer | reopens an issue; `changed: false` when it already was open                      |
 
-Every write emits `x.rawkode.issues.issue.created` or `.updated` with the issue's number, title, project, state,
+Every write emits `x.issues.tartan.rawkode.academy.issue.created` or `.updated` with the issue's number, title, project, state,
 stored `properties`, version and update time (not its body), so another extension keeps a copy by keeping the highest
 version.
 

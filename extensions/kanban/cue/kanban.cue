@@ -1,13 +1,13 @@
-// Package kanban is the settings schema of Kanban (`rawkode.kanban`).
+// Package kanban is the settings schema of Kanban (`kanban.tartan.rawkode.academy`).
 //
 // Kanban shows a repository's issues on boards. Its boards refer to the
 // properties of the repository's Issues installation, which the repository
 // binds as #issues:
 //
-//	let props = extensions."rawkode.issues".settings.properties
+//	let props = extensions."issues.tartan.rawkode.academy".settings.properties
 //
-//	extensions: "rawkode.kanban": kanban.#Extension & {
-//		#issues: extensions."rawkode.issues"
+//	extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+//		#issues: extensions."issues.tartan.rawkode.academy"
 //		settings: boards: triage: {columns: props.status, lanes: props.priority}
 //	}
 //
@@ -25,12 +25,12 @@ import (
 	"list"
 	"strings"
 
-	"github.com/rawkode/tartan-ext/issues"
+	"tartan.rawkode.academy/issues"
 )
 
 // An installation of Kanban on a repository.
 #Extension: {
-	id:      "rawkode.kanban"
+	id:      "kanban.tartan.rawkode.academy"
 	version: "0.3.0"
 
 	// The repository's Issues installation, whose properties boards use.

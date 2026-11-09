@@ -9,7 +9,7 @@ Applies the configuration committed in each repository (its root package `tartan
 When a repository's `refs/heads/main` moves to a commit, the forge SHALL load the repository's configuration package (see `repo-config`) at that commit and apply it to the repository: each entry with a `version` installs that version of a `repo`-scoped package with its settings as configuration. When several pushes arrive, the latest commit's configuration SHALL win.
 
 #### Scenario: Installing by push
-- **WHEN** a push to `acme/api`'s `main` adds `extensions: "rawkode.issues": issues.#Extension & {settings: properties: …}` to the root package `tartan`, with Issues' module at `v0.6.0`
+- **WHEN** a push to `acme/api`'s `main` adds `extensions: "issues.tartan.rawkode.academy": issues.#Extension & {settings: properties: …}` to the root package `tartan`, with Issues' module at `v0.6.0`
 - **THEN** Issues 0.6.0 is installed on `acme/api` with those properties, and the repository's log gains `extension.installed` and `config.applied`
 
 #### Scenario: Pushing another branch
@@ -20,7 +20,7 @@ When a repository's `refs/heads/main` moves to a commit, the forge SHALL load th
 Before changing anything, the forge SHALL check every entry: its version's package is in a module the deployment lists, and the extensions its manifest `requires` are installed by the same configuration. Invalid CUE or any failed check SHALL refuse the configuration, record `config.refused` with the problems and the commit, and leave every installation as it was.
 
 #### Scenario: Unpublished version
-- **WHEN** a pushed configuration names `rawkode.issues` version `9.9.9`, which no listed module holds
+- **WHEN** a pushed configuration names `issues.tartan.rawkode.academy` version `9.9.9`, which no listed module holds
 - **THEN** `config.refused` is recorded and the installed Issues is unchanged
 
 #### Scenario: Invalid CUE

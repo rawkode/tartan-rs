@@ -1,7 +1,7 @@
 # kanban-extension Specification
 
 ## Purpose
-`rawkode.kanban`: boards over a repository's issues, or one project's, with columns, lanes and groups from Issues' properties; moving a card updates the issue.
+`kanban.tartan.rawkode.academy`: boards over a repository's issues, or one project's, with columns, lanes and groups from Issues' properties; moving a card updates the issue.
 
 ## Requirements
 
@@ -39,7 +39,7 @@ Boards SHALL be defined in Kanban's settings (`boards.<id>`): a board shows the 
 - **THEN** the repository's configuration is refused
 
 ### Requirement: Kanban requires Issues
-Kanban's module SHALL import Issues' module and take the repository's Issues entry as `#issues`; Kanban's manifest SHALL require `rawkode.issues`, and installing Kanban without Issues SHALL refuse the configuration.
+Kanban's module SHALL import Issues' module and take the repository's Issues entry as `#issues`; Kanban's manifest SHALL require `issues.tartan.rawkode.academy`, and installing Kanban without Issues SHALL refuse the configuration.
 
 #### Scenario: No Issues
 - **WHEN** a repository installs Kanban without Issues

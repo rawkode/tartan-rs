@@ -223,7 +223,7 @@ const issuesTool = (repo: SandboxRepo, name: string, input: Input): unknown => {
 			return { issue: snapshot(issue), changed };
 		}
 		default:
-			throw notFound(`tool ${name} of extension rawkode.issues`);
+			throw notFound(`tool ${name} of extension issues.tartan.rawkode.academy`);
 	}
 };
 
@@ -355,7 +355,7 @@ const kanbanTool = (repo: SandboxRepo, name: string, input: Input): unknown => {
 			return { card: toCard(issue) };
 		}
 		default:
-			throw notFound(`tool ${name} of extension rawkode.kanban`);
+			throw notFound(`tool ${name} of extension kanban.tartan.rawkode.academy`);
 	}
 };
 
@@ -450,8 +450,8 @@ export const createSandboxFetch = (options: SandboxOptions = {}): typeof fetch =
 		if (call !== "tools" || name === undefined) {
 			throw new Refusal(404, `${call ?? ""} of extension ${extension} not found`);
 		}
-		if (extension === "rawkode.issues") return json(200, issuesTool(repoEntry, name, body));
-		if (extension === "rawkode.kanban") return json(200, kanbanTool(repoEntry, name, body));
+		if (extension === "issues.tartan.rawkode.academy") return json(200, issuesTool(repoEntry, name, body));
+		if (extension === "kanban.tartan.rawkode.academy") return json(200, kanbanTool(repoEntry, name, body));
 		throw notFound(`tool ${name} of extension ${extension}`);
 	};
 
@@ -588,13 +588,13 @@ export const sampleState = (): SandboxState => {
 		extensions: [
 			{
 				installation_id: "inst-issues",
-				extension_id: "rawkode.issues",
+				extension_id: "issues.tartan.rawkode.academy",
 				version: "0.6.0",
 				digest: "sha256:5b1f0c7e4a9d3e8f2a6c1b7d9e0f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f",
 			},
 			{
 				installation_id: "inst-kanban",
-				extension_id: "rawkode.kanban",
+				extension_id: "kanban.tartan.rawkode.academy",
 				version: "0.3.0",
 				digest: "sha256:9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e4d3c2b1a0f9e8d",
 			},

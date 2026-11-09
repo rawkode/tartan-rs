@@ -1,6 +1,6 @@
 ---
 title: Issues
-description: rawkode.issues — numbered issues per repository with typed properties.
+description: issues.tartan.rawkode.academy — numbered issues per repository with typed properties.
 sidebar:
   order: 9
 ---
@@ -9,15 +9,15 @@ Issues installs on a repository, from the repository's configuration. Each repos
 
 ## Installing
 
-Issues is the CUE module `github.com/rawkode/tartan-ext/issues`. Its `#Extension` fixes the extension's id and version and types its settings with [`tartan.dev/types`](/property-types/), so the module version a repository depends on is the Issues version it installs:
+Issues is the CUE module `tartan.rawkode.academy/issues`. Its `#Extension` fixes the extension's id and version and types its settings with [`tartan.rawkode.academy/types`](/property-types/), so the module version a repository depends on is the Issues version it installs:
 
 ```cue
 // cue.mod/module.cue
 module: "example.com/acme-api"
 language: version: "v0.14.1"
 deps: {
-	"tartan.dev/types@v0":                     v: "v0.1.0"
-	"github.com/rawkode/tartan-ext/issues@v0": v: "v0.6.0"
+	"tartan.rawkode.academy/types@v0":                     v: "v0.1.0"
+	"tartan.rawkode.academy/issues@v0": v: "v0.6.0"
 }
 ```
 
@@ -26,11 +26,11 @@ deps: {
 package tartan
 
 import (
-	"tartan.dev/types"
-	"github.com/rawkode/tartan-ext/issues"
+	"tartan.rawkode.academy/types"
+	"tartan.rawkode.academy/issues"
 )
 
-extensions: "rawkode.issues": issues.#Extension & {settings: properties: {
+extensions: "issues.tartan.rawkode.academy": issues.#Extension & {settings: properties: {
 	status:   types.#Select & {options: ["todo", "doing", "done"], labels: todo: "To do", default: "todo"}
 	priority: types.#Select & {options: ["p1", "p2", "p3"]}
 	tags:     types.#MultiSelect & {options: ["bug", "docs"]}
@@ -80,4 +80,4 @@ The repository's Issues tab (slot `issues`) shows the counts, the newest issues 
 
 ## Events
 
-Every write emits `x.rawkode.issues.issue.created` or `.updated` with the issue's number, title, project, state, stored `properties`, version and update time, but not its body. Other extensions keep a copy by keeping the highest version.
+Every write emits `x.issues.tartan.rawkode.academy.issue.created` or `.updated` with the issue's number, title, project, state, stored `properties`, version and update time, but not its body. Other extensions keep a copy by keeping the highest version.

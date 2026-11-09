@@ -1,6 +1,6 @@
 package test
 
-import "tartan.dev/types"
+import "tartan.rawkode.academy/types"
 
 p: types.#Property & {kind: "money", currency: "GBP"}
 q: types.#Property & {kind: "select", options: ["a"], name: "stage"}

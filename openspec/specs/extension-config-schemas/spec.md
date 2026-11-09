@@ -9,7 +9,7 @@ An extension is one CUE module carrying its settings schema and its package, and
 An extension version SHALL be one CUE module holding its settings schema and its package (`tartan.json`, `component.wasm`, migrations). The schema SHALL define `#Extension`, which fixes the extension's `version` to the module's version and types its `settings`.
 
 #### Scenario: Version from the module
-- **WHEN** a repository sets `extensions: "rawkode.issues": issues.#Extension & {settings: …}` with `github.com/rawkode/tartan-ext/issues@v0` at `v0.6.0`
+- **WHEN** a repository sets `extensions: "issues.tartan.rawkode.academy": issues.#Extension & {settings: …}` with `tartan.rawkode.academy/issues@v0` at `v0.6.0`
 - **THEN** the configuration installs Issues 0.6.0
 
 ### Requirement: Configuration evaluates natively

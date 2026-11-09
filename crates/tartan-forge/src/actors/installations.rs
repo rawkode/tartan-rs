@@ -478,18 +478,29 @@ mod tests {
 
     #[test]
     fn requirements_must_be_installed_by_the_same_configuration() {
-        let kanban = package("rawkode.kanban", json!(["rawkode.issues"]));
+        let kanban = package(
+            "kanban.tartan.rawkode.academy",
+            json!(["issues.tartan.rawkode.academy"]),
+        );
         assert!(
-            missing_requirements(&kanban, &wanted(&["rawkode.kanban", "rawkode.issues"]))
-                .is_empty()
+            missing_requirements(
+                &kanban,
+                &wanted(&[
+                    "kanban.tartan.rawkode.academy",
+                    "issues.tartan.rawkode.academy"
+                ])
+            )
+            .is_empty()
         );
         assert_eq!(
-            missing_requirements(&kanban, &wanted(&["rawkode.kanban"])),
+            missing_requirements(&kanban, &wanted(&["kanban.tartan.rawkode.academy"])),
             vec![
-                "rawkode.kanban requires rawkode.issues, which the configuration does not install"
+                "kanban.tartan.rawkode.academy requires issues.tartan.rawkode.academy, which the configuration does not install"
             ]
         );
-        let alone = package("rawkode.issues", Value::Null);
-        assert!(missing_requirements(&alone, &wanted(&["rawkode.issues"])).is_empty());
+        let alone = package("issues.tartan.rawkode.academy", Value::Null);
+        assert!(
+            missing_requirements(&alone, &wanted(&["issues.tartan.rawkode.academy"])).is_empty()
+        );
     }
 }

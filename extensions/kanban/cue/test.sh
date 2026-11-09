@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Checks Kanban's CUE module natively: a repository configuration that imports
-# tartan.dev/types, Issues' module and Kanban's module from a registry evaluates
+# tartan.rawkode.academy/types, Issues' module and Kanban's module from a registry evaluates
 # with `cue export`, and boards that do not fit Issues' properties fail.
 #
 #   extensions/kanban/cue/test.sh <registry> [--publish]
@@ -8,7 +8,7 @@
 # <registry> is a registry address in CUE_REGISTRY syntax without `+insecure`,
 # such as localhost:5000; it is used over plain HTTP. With --publish the script
 # first publishes the three modules from this repository's CUE sources
-# (tartan.dev/types v0.1.0, Issues v0.6.0, Kanban v0.3.0) with `cue mod
+# (tartan.rawkode.academy/types v0.1.0, Issues v0.6.0, Kanban v0.3.0) with `cue mod
 # publish`: use it only with a throwaway registry, since a published version
 # never changes and these modules hold no component. Without it the modules
 # must already be in the registry, as scripts/build-extension.sh publishes them.
@@ -57,18 +57,18 @@ cat >"$consumer/cue.mod/module.cue" <<'EOF'
 module: "example.com/acme-api"
 language: version: "v0.14.1"
 deps: {
-	"tartan.dev/types@v0": v: "v0.1.0"
-	"github.com/rawkode/tartan-ext/issues@v0": v: "v0.6.0"
-	"github.com/rawkode/tartan-ext/kanban@v0": v: "v0.3.0"
+	"tartan.rawkode.academy/types@v0": v: "v0.1.0"
+	"tartan.rawkode.academy/issues@v0": v: "v0.6.0"
+	"tartan.rawkode.academy/kanban@v0": v: "v0.3.0"
 }
 EOF
 
 # The repository's Issues properties, shared by every case.
 issues_entry='
-let props = extensions."rawkode.issues".settings.properties
+let props = extensions."issues.tartan.rawkode.academy".settings.properties
 _props: props
 
-extensions: "rawkode.issues": issues.#Extension & {settings: properties: {
+extensions: "issues.tartan.rawkode.academy": issues.#Extension & {settings: properties: {
 	status:   types.#Select & {options: ["todo", "doing", "done"], labels: todo: "To do", default: "todo"}
 	priority: types.#Select & {options: ["p1", "p2", "p3"]}
 	tags:     types.#MultiSelect & {options: ["bug", "docs"]}
@@ -85,9 +85,9 @@ write_config() {
 package tartan
 
 import (
-	"tartan.dev/types"
-	"github.com/rawkode/tartan-ext/issues"
-	"github.com/rawkode/tartan-ext/kanban"
+	"tartan.rawkode.academy/types"
+	"tartan.rawkode.academy/issues"
+	"tartan.rawkode.academy/kanban"
 )
 
 // Keeps every import and the props alias used whichever case is written.
@@ -113,8 +113,8 @@ expect() {
 # The configuration from the design: it evaluates, and the exported value is
 # what the forge applies.
 write_config '
-extensions: "rawkode.kanban": kanban.#Extension & {
-	#issues: extensions."rawkode.issues"
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+	#issues: extensions."issues.tartan.rawkode.academy"
 	settings: boards: {
 		triage: {name: "Triage", columns: props.status, lanes: props.priority, group: "project"}
 		lsp: {project: "crates/lsp", columns: {property: props.status, values: ["done", "todo"]}, lanes: props.tags, group: props.owner}
@@ -129,19 +129,19 @@ if ! exported="$(export_config 2>&1)"; then
 	exit 1
 fi
 q() { jq -c "$1" <<<"$exported"; }
-expect "issues version" "$(q '.extensions."rawkode.issues".version')" '"0.6.0"'
-expect "issues id" "$(q '.extensions."rawkode.issues".id')" '"rawkode.issues"'
-expect "property name" "$(q '.extensions."rawkode.issues".settings.properties.status.name')" '"status"'
-expect "kanban keys" "$(q '.extensions."rawkode.kanban" | keys')" '["id","settings","version"]'
-expect "kanban version" "$(q '.extensions."rawkode.kanban".version')" '"0.3.0"'
-expect "triage columns" "$(q '.extensions."rawkode.kanban".settings.boards.triage.columns | [.name, .kind, .options, .labels]')" '["status","select",["todo","doing","done"],{"todo":"To do"}]'
-expect "triage lanes" "$(q '.extensions."rawkode.kanban".settings.boards.triage.lanes.name')" '"priority"'
-expect "triage group" "$(q '.extensions."rawkode.kanban".settings.boards.triage.group')" '"project"'
-expect "lsp columns" "$(q '.extensions."rawkode.kanban".settings.boards.lsp.columns | [.property.name, .values]')" '["status",["done","todo"]]'
-expect "lsp lanes" "$(q '.extensions."rawkode.kanban".settings.boards.lsp.lanes.kind')" '"multiselect"'
-expect "lsp group" "$(q '.extensions."rawkode.kanban".settings.boards.lsp.group.kind')" '"person"'
-expect "open name" "$(q '.extensions."rawkode.kanban".settings.boards.open.name')" '"open"'
-expect "open columns" "$(q '.extensions."rawkode.kanban".settings.boards.open.columns')" '"state"'
+expect "issues version" "$(q '.extensions."issues.tartan.rawkode.academy".version')" '"0.6.0"'
+expect "issues id" "$(q '.extensions."issues.tartan.rawkode.academy".id')" '"issues.tartan.rawkode.academy"'
+expect "property name" "$(q '.extensions."issues.tartan.rawkode.academy".settings.properties.status.name')" '"status"'
+expect "kanban keys" "$(q '.extensions."kanban.tartan.rawkode.academy" | keys')" '["id","settings","version"]'
+expect "kanban version" "$(q '.extensions."kanban.tartan.rawkode.academy".version')" '"0.3.0"'
+expect "triage columns" "$(q '.extensions."kanban.tartan.rawkode.academy".settings.boards.triage.columns | [.name, .kind, .options, .labels]')" '["status","select",["todo","doing","done"],{"todo":"To do"}]'
+expect "triage lanes" "$(q '.extensions."kanban.tartan.rawkode.academy".settings.boards.triage.lanes.name')" '"priority"'
+expect "triage group" "$(q '.extensions."kanban.tartan.rawkode.academy".settings.boards.triage.group')" '"project"'
+expect "lsp columns" "$(q '.extensions."kanban.tartan.rawkode.academy".settings.boards.lsp.columns | [.property.name, .values]')" '["status",["done","todo"]]'
+expect "lsp lanes" "$(q '.extensions."kanban.tartan.rawkode.academy".settings.boards.lsp.lanes.kind')" '"multiselect"'
+expect "lsp group" "$(q '.extensions."kanban.tartan.rawkode.academy".settings.boards.lsp.group.kind')" '"person"'
+expect "open name" "$(q '.extensions."kanban.tartan.rawkode.academy".settings.boards.open.name')" '"open"'
+expect "open columns" "$(q '.extensions."kanban.tartan.rawkode.academy".settings.boards.open.columns')" '"state"'
 
 # refuse <case> <where> <kanban entry>: the configuration must fail evaluation,
 # with an error at the path <where>.
@@ -160,71 +160,71 @@ refuse() {
 }
 
 refuse "a board without the Issues binding" 'boards.triage.columns' '
-extensions: "rawkode.kanban": kanban.#Extension & {
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
 	settings: boards: triage: columns: props.status
 }'
 refuse "an inline select lookalike as columns" 'boards.triage.columns' '
-extensions: "rawkode.kanban": kanban.#Extension & {
-	#issues: extensions."rawkode.issues"
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+	#issues: extensions."issues.tartan.rawkode.academy"
 	settings: boards: triage: columns: types.#Select & {options: ["todo", "doing", "review", "done"]}
 }'
 refuse "a short text property as columns" 'boards.triage.columns' '
-extensions: "rawkode.kanban": kanban.#Extension & {
-	#issues: extensions."rawkode.issues"
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+	#issues: extensions."issues.tartan.rawkode.academy"
 	settings: boards: triage: columns: props.summary
 }'
 refuse "a multi-select property as columns" 'boards.triage.columns' '
-extensions: "rawkode.kanban": kanban.#Extension & {
-	#issues: extensions."rawkode.issues"
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+	#issues: extensions."issues.tartan.rawkode.academy"
 	settings: boards: triage: columns: props.tags
 }'
 refuse "a subset value that is not an option" 'boards.triage.columns' '
-extensions: "rawkode.kanban": kanban.#Extension & {
-	#issues: extensions."rawkode.issues"
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+	#issues: extensions."issues.tartan.rawkode.academy"
 	settings: boards: triage: columns: {property: props.status, values: ["todo", "blocked"]}
 }'
 refuse "a subset whose first value is not an option" 'boards.triage.columns' '
-extensions: "rawkode.kanban": kanban.#Extension & {
-	#issues: extensions."rawkode.issues"
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+	#issues: extensions."issues.tartan.rawkode.academy"
 	settings: boards: triage: columns: {property: props.status, values: ["blocked", "todo"]}
 }'
 refuse "a subset value that is not a string" 'boards.triage.columns' '
-extensions: "rawkode.kanban": kanban.#Extension & {
-	#issues: extensions."rawkode.issues"
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+	#issues: extensions."issues.tartan.rawkode.academy"
 	settings: boards: triage: columns: {property: props.status, values: [1]}
 }'
 refuse "an empty subset" 'boards.triage.columns' '
-extensions: "rawkode.kanban": kanban.#Extension & {
-	#issues: extensions."rawkode.issues"
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+	#issues: extensions."issues.tartan.rawkode.academy"
 	settings: boards: triage: columns: {property: props.status, values: []}
 }'
 refuse "lanes by a short text property" 'boards.triage.lanes' '
-extensions: "rawkode.kanban": kanban.#Extension & {
-	#issues: extensions."rawkode.issues"
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+	#issues: extensions."issues.tartan.rawkode.academy"
 	settings: boards: triage: {columns: props.status, lanes: props.summary}
 }'
 refuse "a group by money" 'boards.triage.group' '
-extensions: "rawkode.kanban": kanban.#Extension & {
-	#issues: extensions."rawkode.issues"
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+	#issues: extensions."issues.tartan.rawkode.academy"
 	settings: boards: triage: {columns: props.status, group: props.budget}
 }'
 refuse "a board without columns" 'boards.triage.columns' '
-extensions: "rawkode.kanban": kanban.#Extension & {
-	#issues: extensions."rawkode.issues"
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+	#issues: extensions."issues.tartan.rawkode.academy"
 	settings: boards: triage: name: "Triage"
 }'
 refuse "an invalid board id" 'boards.Triage' '
-extensions: "rawkode.kanban": kanban.#Extension & {
-	#issues: extensions."rawkode.issues"
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+	#issues: extensions."issues.tartan.rawkode.academy"
 	settings: boards: Triage: columns: "state"
 }'
 refuse "an unknown board key" 'boards.triage.field' '
-extensions: "rawkode.kanban": kanban.#Extension & {
-	#issues: extensions."rawkode.issues"
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+	#issues: extensions."issues.tartan.rawkode.academy"
 	settings: boards: triage: {columns: "state", field: "status"}
 }'
-refuse "another version of Kanban" '"rawkode.kanban".version' '
-extensions: "rawkode.kanban": kanban.#Extension & {
+refuse "another version of Kanban" '"kanban.tartan.rawkode.academy".version' '
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
 	version: "0.2.0"
 	settings: boards: triage: columns: "state"
 }'
@@ -234,12 +234,12 @@ extensions: "rawkode.kanban": kanban.#Extension & {
 # board against the properties the installed Issues lists, which catches an
 # #issues bound to anything but the repository's Issues entry.)
 write_config '
-extensions: "rawkode.kanban": kanban.#Extension & {
-	#issues: extensions."rawkode.issues"
+extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
+	#issues: extensions."issues.tartan.rawkode.academy"
 	settings: boards: triage: columns: types.#Select & {options: ["todo", "doing", "done"], labels: todo: "To do", default: "todo"}
 }'
 if exported="$(export_config 2>&1)"; then
-	expect "an identical inline select" "$(q '.extensions."rawkode.kanban".settings.boards.triage.columns.name')" '"status"'
+	expect "an identical inline select" "$(q '.extensions."kanban.tartan.rawkode.academy".settings.boards.triage.columns.name')" '"status"'
 else
 	echo "FAIL: an inline select identical to Issues' status does not evaluate"
 	echo "$exported" | sed 's/^/    /'
@@ -248,15 +248,15 @@ fi
 
 # Issues settings that do not fit Issues' module.
 issues_entry='
-extensions: "rawkode.issues": issues.#Extension & {settings: properties: status: {kind: "colour"}}
+extensions: "issues.tartan.rawkode.academy": issues.#Extension & {settings: properties: status: {kind: "colour"}}
 '
 refuse "an Issues property of an unknown kind" 'properties.status' ''
 issues_entry='
-extensions: "rawkode.issues": issues.#Extension & {settings: properties: Status: types.#Boolean}
+extensions: "issues.tartan.rawkode.academy": issues.#Extension & {settings: properties: Status: types.#Boolean}
 '
 refuse "an Issues property with an invalid name" 'properties.Status' ''
 issues_entry='
-extensions: "rawkode.issues": issues.#Extension & {settings: properties: status: types.#Select & {options: ["a"], name: "other"}}
+extensions: "issues.tartan.rawkode.academy": issues.#Extension & {settings: properties: status: types.#Select & {options: ["a"], name: "other"}}
 '
 refuse "an Issues property naming another" 'properties.status.name' ''
 

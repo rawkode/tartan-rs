@@ -1,8 +1,8 @@
-// Package issues is the settings schema of Issues (`rawkode.issues`).
+// Package issues is the settings schema of Issues (`issues.tartan.rawkode.academy`).
 //
 // A repository installs Issues by unifying its entry with #Extension:
 //
-//	extensions: "rawkode.issues": issues.#Extension & {settings: properties: {
+//	extensions: "issues.tartan.rawkode.academy": issues.#Extension & {settings: properties: {
 //		status: types.#Select & {options: ["todo", "doing", "done"]}
 //	}}
 //
@@ -10,11 +10,11 @@
 // the module version a repository depends on is the version it installs.
 package issues
 
-import "tartan.dev/types"
+import "tartan.rawkode.academy/types"
 
 // An installation of Issues on a repository.
 #Extension: {
-	id:       "rawkode.issues"
+	id:       "issues.tartan.rawkode.academy"
 	version:  "0.6.0"
 	settings: #Settings
 }
