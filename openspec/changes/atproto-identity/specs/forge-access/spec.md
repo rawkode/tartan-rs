@@ -21,7 +21,7 @@ A principal SHALL be an owner when its DID, or the DID it acts on behalf of, is 
 - **THEN** `GET /-/api/me` answers their DID, handle and `owner: true`
 
 ### Requirement: What callers may do
-Anonymous callers SHALL get 401 from `/-/api` except `GET /-/api/me`. Readers (non-owners the configuration's `readers` admits) SHALL only read: `GET` routes, extension `render` calls, and calls of the tools an extension's manifest declares `access: "read"`, which the forge SHALL run read-only (no writes, enforced by the database engine rather than by the statement's text, no effects, and calls to other installations only of their read tools, also read-only). Other signed-in non-owners SHALL get 403 except `GET /-/api/me`, which reports `rights: []`, their own sessions at `/-/api/sessions`, and the `self` routes. Writes (extension `tool` and `act` calls) SHALL need an owner. Creating orgs, repositories, placements and subscribers SHALL need `admin` rights.
+Anonymous callers SHALL get 401 from `/-/api` except `GET /-/api/me`. Readers (non-owners the configuration's `readers` admits) SHALL only read: `GET` routes, extension `render` calls, and calls of the tools an extension's manifest declares `access: "read"`, which the forge SHALL run read-only (no writes, no effects, and calls to other installations only of their read tools, also read-only).
 
 #### Scenario: Person who is not an owner
 - **WHEN** a signed-in reader who is not an owner calls an Issues tool that creates an issue
@@ -155,3 +155,24 @@ The forge SHALL NOT accept a shared admin token, and SHALL refuse to start when 
 #### Scenario: Old environment
 - **WHEN** the forge starts with `TARTAN_ADMIN_TOKEN=dev-admin-token`
 - **THEN** it exits with an error telling the operator to list owners in the deployment configuration
+
+### Requirement: Read-only calls cannot write
+The database engine SHALL enforce that a read-only extension call writes nothing, whatever the statement's text.
+
+#### Scenario: A write behind a WITH clause
+- **WHEN** a tool declared `access: "read"`, called for a reader, runs `WITH a AS (SELECT 1) DELETE FROM t`
+- **THEN** the statement fails and the installation's data is unchanged
+
+### Requirement: Other signed-in people
+Signed-in non-owners whom `readers` does not admit SHALL get 403 except `GET /-/api/me`, which reports `rights: []`, their own sessions at `/-/api/sessions`, and the `self` routes.
+
+#### Scenario: Private forge
+- **WHEN** a signed-in non-owner of a forge with `readers: "owners"` calls `GET /-/api/orgs`
+- **THEN** the forge answers 403, and `GET /-/api/me` answers `rights: []`
+
+### Requirement: Changes need an owner
+Writes (extension `tool` and `act` calls) SHALL need an owner. Creating orgs, repositories, placements and subscribers SHALL need `admin` rights.
+
+#### Scenario: Reader creates an org
+- **WHEN** a reader who is not an owner calls `POST /-/api/orgs`
+- **THEN** the forge answers 403 and creates nothing

@@ -233,7 +233,11 @@ After a successful write, `tt` SHALL drain the queue within the remaining time. 
 - **THEN** the message suggests `tt sign --login --client localhost`, and that login succeeds where the authorization server allows the localhost client
 
 ### Requirement: Hosted development client
-A `tt` built with the `dev-identity` feature SHALL accept `--client-metadata-url <https URL>` (or `TT_CLIENT_METADATA_URL`) on `tt sign --login`, `tt login` and `tt sign revoke`, using a public native client whose `client_id` is that URL. Before the PAR it SHALL load the document there and, when it cannot or the document is not `tt`'s (its `client_id`, both loopback redirect URIs, the declared scope, `token_endpoint_auth_method` `none` and DPoP-bound tokens), fail and print the exact JSON to host. A release build SHALL refuse the option. Plain `http` SHALL be accepted only under `TARTAN_DEV_IDENTITY`. The authorization server must still grant the granular `repo:` scope: `tt` SHALL NOT fall back to broader access.
+A `tt` built with the `dev-identity` feature SHALL accept `--client-metadata-url <https URL>` (or `TT_CLIENT_METADATA_URL`) on `tt sign --login`, `tt login` and `tt sign revoke`, using a public native client whose `client_id` is that URL, and SHALL still ask only for the granular `repo:` scope. A release build SHALL refuse the option. Plain `http` SHALL be accepted only under `TARTAN_DEV_IDENTITY`.
+
+#### Scenario: Document checked before the PAR
+- **WHEN** the document at that URL cannot be loaded, or is not `tt`'s (its `client_id`, both loopback redirect URIs, the declared scope, no client authentication, DPoP-bound tokens)
+- **THEN** `tt` fails before any authorization request and prints the exact JSON to host
 
 #### Scenario: Authorization server refuses the localhost client
 - **WHEN** a person whose authorization server refuses the `http://localhost` client runs `tt sign --login --client-metadata-url https://example.com/tt.json` before hosting anything there

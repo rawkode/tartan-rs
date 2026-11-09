@@ -210,7 +210,7 @@ After checking a ref update the forge SHALL record `ref.signatures.checked {ref,
 - **THEN** one `ref.signatures.checked` lists both with their statuses
 
 ### Requirement: Transient failures are retried
-When the git host, a DID document or a record cannot be fetched, a record is missing, or a proof does not verify after a fresh identity, the forge SHALL retry with a growing delay for up to one hour (seven days on a covered ref waiting only on allowed signers' records, PDSes, DID hosts or the PLC directory), keep the last reason (no secrets), and keep checking other updates. A git host failure SHALL get its own hour from the first of its consecutive failures, without ending an update that is waiting on its signers sooner. A failure of the forge's own storage or services during an attempt SHALL count as a failed attempt of that update, backed off like any other. Retries SHALL use one durable schedule per repository, and checks SHALL never run concurrently.
+When the git host, a DID document or a record cannot be fetched, a record is missing, or a proof does not verify after a fresh identity, the forge SHALL retry with a growing delay for up to one hour (seven days on a covered ref waiting only on allowed signers' records, PDSes, DID hosts or the PLC directory), keep the last reason (no secrets), and keep checking other updates. Retries SHALL use one durable schedule per repository, and checks SHALL never run concurrently.
 
 #### Scenario: PDS down briefly
 - **WHEN** the signer's PDS is unreachable for five minutes after a push
@@ -219,18 +219,6 @@ When the git host, a DID document or a record cannot be fetched, a record is mis
 #### Scenario: PDS down for a day
 - **WHEN** the signer's PDS is unreachable for a day after a push to a covered ref
 - **THEN** the commit stays `pending` meanwhile and is `verified` within an hour of the PDS coming back
-
-#### Scenario: Signer's DID host down
-- **WHEN** a covered ref's signer's DID document cannot be fetched (its `did:web` host or the PLC directory is down) for two hours after a push
-- **THEN** the commit stays `pending` meanwhile and is `verified` once the host is back
-
-#### Scenario: Git host blip while waiting on a signer
-- **WHEN** an update on a covered ref has waited more than an hour for its allowed signer's record and one attempt then fails because the git host fails
-- **THEN** the update stays `pending`, and is `verified` once the record is published
-
-#### Scenario: Object store down during a check
-- **WHEN** storing a proof bundle fails during an attempt
-- **THEN** the attempt counts as failed, its next attempt is scheduled after the backoff rather than at once, and the commit is `verified` once the store is back
 
 #### Scenario: Retry while the forge is idle
 - **WHEN** an attempt fails and no other request reaches the repository until its next attempt is due
@@ -243,6 +231,21 @@ When the git host, a DID document or a record cannot be fetched, a record is mis
 #### Scenario: Overlapping wakes
 - **WHEN** two signature-check wakes of one repository overlap
 - **THEN** each ref update records `ref.signatures.checked` once
+
+### Requirement: Failures have their own windows
+A git host failure SHALL get its own hour from the first of its consecutive failures, without ending an update waiting on its signers sooner. A failure of the forge's own storage or services during an attempt SHALL count as a failed attempt of that update, backed off like any other.
+
+#### Scenario: Signer's DID host down
+- **WHEN** a covered ref's signer's DID document cannot be fetched (its `did:web` host or the PLC directory is down) for two hours after a push
+- **THEN** the commit stays `pending` meanwhile and is `verified` once the host is back
+
+#### Scenario: Git host blip while waiting on a signer
+- **WHEN** an update on a covered ref has waited more than an hour for its allowed signer's record and one attempt then fails because the git host fails
+- **THEN** the update stays `pending`, and is `verified` once the record is published
+
+#### Scenario: Object store down during a check
+- **WHEN** storing a proof bundle fails during an attempt
+- **THEN** the attempt counts as failed, its next attempt is scheduled after the backoff rather than at once, and the commit is `verified` once the store is back
 
 ### Requirement: Verification work is bounded
 One attempt SHALL end within 90 seconds, cancelling fetches in flight; unfinished objects SHALL carry to the next attempt without counting as failures. A run SHALL resolve each DID once, fail fast on a host that already failed, and work the head `main` update first. An update SHALL fetch for at most 64 signer DIDs; objects beyond are `not_checked` for that update, unstored, and an owner can re-check them.
@@ -275,15 +278,11 @@ A check that gives up (after an hour, after seven days when waiting on signers, 
 - **THEN** the tip is recorded `unverifiable`, the update is judged non-compliant, and an owner's re-check queues the update again and checks every commit it adds
 
 ### Requirement: Signatures are readable
-`GET /-/api/orgs/<org>/repos/<repo>/commits/<sha>/signature` SHALL answer the stored result with its annotations and a proof URL, and `GET /-/api/orgs/<org>/repos/<repo>/signatures?ref=<ref>` the result and compliance of the ref's latest update; without `ref` it SHALL answer the same for every branch head, leaving out deleted branches. A stored commit result SHALL carry the commit's claimed `author` and `committer` as `{name, email}`. While the commit's check, or the ref's latest update, is queued, they SHALL answer `{status: "pending", attempts, next_at, last_error, did}`. A commit an update left unchecked (deferred) SHALL answer the stored-result shape with `status: "not_checked"`, its `detail` and no annotations.
+`GET /-/api/orgs/<org>/repos/<repo>/commits/<sha>/signature` SHALL answer the stored result with its annotations and a proof URL, and `GET /-/api/orgs/<org>/repos/<repo>/signatures?ref=<ref>` the result and compliance of the ref's latest update; without `ref` it SHALL answer the same for every branch head,. While the commit's check, or the ref's latest update, is queued, they SHALL answer `{status: "pending", attempts, next_at, last_error, did}`.
 
 #### Scenario: Older update finishes last
 - **WHEN** `main` moves to W and then to X, and W's check finishes after X's
 - **THEN** the ref's result and the repository page report X's result, and W's result is kept only for W's update
-
-#### Scenario: Deleted branch
-- **WHEN** a branch whose update was judged non-compliant is deleted
-- **THEN** it is no longer listed without `ref`, and `signatures?ref=` for it answers 404
 
 #### Scenario: Unchecked commit
 - **WHEN** a client asks for a commit the forge has neither checked nor queued
@@ -292,6 +291,17 @@ A check that gives up (after an hour, after seven days when waiting on signers, 
 #### Scenario: Check pending
 - **WHEN** a client asks for a just-pushed head whose signature record is not published yet
 - **THEN** the API answers `pending` with the attempts so far and the last error, and the repository page shows that it is retrying
+
+### Requirement: Signature answers carry their details
+The branch listing SHALL leave out deleted branches. A stored commit result SHALL carry the commit's claimed `author` and `committer` as `{name, email}`. A commit an update left unchecked (deferred) SHALL answer the stored-result shape with `status: "not_checked"`, its `detail` and no annotations.
+
+#### Scenario: Deleted branch
+- **WHEN** a branch whose update was judged non-compliant is deleted
+- **THEN** it is no longer listed without `ref`, and `signatures?ref=` for it answers 404
+
+#### Scenario: Claimed author
+- **WHEN** a client asks for a verified commit's signature
+- **THEN** the answer names the commit's claimed author and committer apart from the verified signer
 
 ### Requirement: The signing rule is enforced after the push
 When the rule in force before a push covers an updated ref, every object the update lists, including the commit `new` resolves to, SHALL be judged on its stored result against this ref's `signers`. A `verified` result, reused or new, SHALL count only while its record is not revoked on the forge and its DID is not inactive. Any other object, or a truncated walk, SHALL record `ref.signature.violation` and mark the ref non-compliant until a later update is compliant.
