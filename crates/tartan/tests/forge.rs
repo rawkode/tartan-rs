@@ -13,7 +13,10 @@ use rivetkit::{EngineSpawnMode, Registry, ServeConfig};
 use serde_json::{Value, json};
 use sha2::Sha256;
 use tartan::{GatewayState, RegistryStore, router};
-use tartan_forge::{Extensions, GitHost, Services, install_services, register_actors};
+use tartan_atproto::Mode;
+use tartan_atproto::fetch::{FetchClient, FetchConfig};
+use tartan_atproto::resolver::{ResolverConfig, VerifyingResolver};
+use tartan_forge::{Extensions, GitHost, Services, SystemClock, install_services, register_actors};
 use tokio_util::sync::CancellationToken;
 
 const ADMIN_TOKEN: &str = "test-admin-token";
@@ -160,6 +163,13 @@ fn ref_event(repo: &str, seq: &str, name: &str, old: &str, new: &str) -> Value {
     })
 }
 
+/// An identity resolver with production rules; these scenarios reach no identity network.
+fn offline_resolver() -> VerifyingResolver {
+    let fetch = FetchClient::new(FetchConfig::new(Mode::Production)).expect("a fetch client");
+    let config = ResolverConfig::production().expect("the system DNS configuration");
+    VerifyingResolver::new(fetch, config)
+}
+
 /// One engine and one gateway for every scenario, which run in order.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn forge_end_to_end() {
@@ -178,6 +188,10 @@ async fn forge_end_to_end() {
         extensions: extensions.clone(),
         forge_id: format!("test-{nanos}"),
         git_host: git_host.clone(),
+        clock: Arc::new(SystemClock),
+        owners: Vec::new(),
+        readers: tartan_config::deployment::Readers::default(),
+        resolver: offline_resolver(),
     })
     .expect("installed once");
     // The deployment lists no modules until a test syncs some.

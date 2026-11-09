@@ -28,9 +28,14 @@ use object_store::prefix::PrefixStore;
 use rivetkit::client::{Client, ClientConfig};
 use rivetkit::{Registry, ServeConfig};
 use tartan::{GatewayState, RegistryStore, SyncTargets, router, sync_modules};
+use tartan_atproto::Mode;
+use tartan_atproto::fetch::{FetchClient, FetchConfig};
+use tartan_atproto::resolver::{ResolverConfig, VerifyingResolver};
 use tartan_config::deployment::{self, Deployment};
 use tartan_extensions::ExtensionRuntime;
-use tartan_forge::{Extensions, Services, WalgitClient, install_services, register_actors};
+use tartan_forge::{
+    Extensions, Services, SystemClock, WalgitClient, install_services, register_actors,
+};
 use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
@@ -97,6 +102,14 @@ async fn main() -> Result<()> {
         forge_id: env_or("TARTAN_FORGE_ID", "forge"),
         git_host: Arc::new(git_host),
         extensions: extensions.clone(),
+        clock: Arc::new(SystemClock),
+        owners: deployment
+            .owners
+            .iter()
+            .map(|owner| owner.as_str().to_owned())
+            .collect(),
+        readers: deployment.readers.clone(),
+        resolver: identity_resolver()?,
     })?;
 
     let serve_config = ServeConfig::from_env()?;
@@ -164,6 +177,23 @@ async fn main() -> Result<()> {
     gateway.await.context("gateway")?;
     actors.await.context("actor host task")??;
     Ok(())
+}
+
+/// The identity resolver: `plc.directory` and DNS, or, in a `dev-identity` build run with
+/// `TARTAN_DEV_IDENTITY=1`, the development PLC directory and handle resolver.
+fn identity_resolver() -> Result<VerifyingResolver> {
+    #[cfg(feature = "dev-identity")]
+    if std::env::var("TARTAN_DEV_IDENTITY").as_deref() == Ok("1") {
+        let config = ResolverConfig::development(
+            &required("TARTAN_PLC_URL")?,
+            &required("TARTAN_DEV_HANDLE_RESOLVER")?,
+        );
+        let fetch = FetchClient::new(FetchConfig::new(Mode::Development))?;
+        return Ok(VerifyingResolver::new(fetch, config));
+    }
+    let fetch = FetchClient::new(FetchConfig::new(Mode::Production))?;
+    let config = ResolverConfig::production().context("the system DNS configuration")?;
+    Ok(VerifyingResolver::new(fetch, config))
 }
 
 fn required(name: &str) -> Result<String> {

@@ -16,7 +16,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -29,14 +29,55 @@ use rivetkit::test::TestHandle;
 use serde_json::{Value, json};
 use sha2::Sha256;
 use tartan::{GatewayState, RegistryStore, SyncReport, SyncTargets, router, sync_modules};
+use tartan_atproto::Mode;
+use tartan_atproto::fetch::{FetchClient, FetchConfig};
+use tartan_atproto::resolver::{ResolverConfig, VerifyingResolver};
 use tartan_config::DirEntry;
 use tartan_config::deployment::{Deployment, ModuleVersion};
 use tartan_extensions::{COMPONENT_FILE, ExtensionPackage, ExtensionRuntime};
-use tartan_forge::{Extensions, GitHost, Services, install_services, register_actors};
+use tartan_forge::{Clock, Extensions, GitHost, Services, install_services, register_actors};
 
 pub const ADMIN_TOKEN: &str = "test-admin-token";
 pub const WEBHOOK_SECRET: &[u8] = b"test-webhook-secret";
 pub const DEADLINE: Duration = Duration::from_secs(60);
+
+/// The forge's clock in tests (design D12, *Time in tests*): wall-clock time plus an offset the
+/// test advances. Only this harness has it; the `tartan` binary always runs on real time.
+#[derive(Debug, Default)]
+pub struct TestClock {
+    offset_ms: AtomicI64,
+}
+
+impl TestClock {
+    /// Moves the forge's time forward by `by`.
+    pub fn advance(&self, by: Duration) {
+        let by =
+            i64::try_from(by.as_millis()).expect("a test advances by less than 292 million years");
+        self.offset_ms.fetch_add(by, Ordering::SeqCst);
+    }
+}
+
+impl Clock for TestClock {
+    fn now_ms(&self) -> i64 {
+        let wall = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after 1970")
+            .as_millis();
+        i64::try_from(wall).expect("fits") + self.offset_ms()
+    }
+
+    fn offset_ms(&self) -> i64 {
+        self.offset_ms.load(Ordering::SeqCst)
+    }
+}
+
+/// An identity resolver with production rules (public HTTPS, `plc.directory`), for tests that
+/// reach no identity network.
+pub fn offline_resolver() -> VerifyingResolver {
+    let fetch = FetchClient::new(FetchConfig::new(Mode::Production)).expect("a fetch client");
+    let config = ResolverConfig::production().expect("the system DNS configuration");
+    VerifyingResolver::new(fetch, config)
+}
 
 /// A Git host that keeps each pushed commit's files.
 #[derive(Default)]
@@ -327,6 +368,7 @@ pub struct Forge {
     pub registry: RegistryStore,
     pub extensions: Arc<Extensions>,
     pub modules: ModuleSource,
+    pub clock: Arc<TestClock>,
     client: Client,
     actors: Option<TestHandle>,
     seq: AtomicU64,
@@ -354,10 +396,15 @@ impl Forge {
             ExtensionRuntime::new().expect("runtime"),
             store,
         ));
+        let clock = Arc::new(TestClock::default());
         install_services(Services {
             forge_id: format!("{name}-{nanos}"),
             git_host: git.clone(),
             extensions: extensions.clone(),
+            clock: clock.clone(),
+            owners: Vec::new(),
+            readers: tartan_config::deployment::Readers::default(),
+            resolver: offline_resolver(),
         })
         .expect("installed once");
         let mut actor_registry = Registry::new();
@@ -384,6 +431,7 @@ impl Forge {
             registry,
             extensions,
             modules: ModuleSource::default(),
+            clock,
             client,
             actors: Some(actors),
             seq: AtomicU64::new(1),

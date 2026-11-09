@@ -239,6 +239,10 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
             &format!("http://127.0.0.1:{walgit_port}"),
             Some(GIT_HOST_TOKEN.to_owned()),
         )),
+        clock: Arc::new(common::TestClock::default()),
+        owners: Vec::new(),
+        readers: tartan_config::deployment::Readers::default(),
+        resolver: common::offline_resolver(),
     })
     .expect("installed once");
     // The deployment lists no modules until a test syncs some.

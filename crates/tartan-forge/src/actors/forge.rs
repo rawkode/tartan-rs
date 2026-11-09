@@ -552,6 +552,18 @@ impl Handler<RegisterSubscriber> for Forge {
             )
             .await?;
         self.flush_later(&ctx).await;
+        // The identity actor's events are forge-wide, so a new subscriber gets their history
+        // now rather than with the next identity event.
+        let client = ctx.client()?;
+        ctx.wait_until(async move {
+            let flushed = match crate::identity_handle(&client) {
+                Ok(identity) => identity.send(Flush {}).await,
+                Err(error) => Err(error),
+            };
+            if let Err(error) = flushed {
+                tracing::warn!(%error, "could not flush identity events to a new subscriber");
+            }
+        });
         Ok(())
     }
 }

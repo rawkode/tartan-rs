@@ -41,6 +41,9 @@ zip.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+# The identity tests serve did:web documents from loopback hosts, which only the development
+# identity rules accept.
+tartan-atproto = { workspace = true, features = ["dev-identity"] }
 hmac.workspace = true
 reqwest.workspace = true
 tempfile = "3"

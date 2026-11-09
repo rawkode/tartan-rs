@@ -6934,6 +6934,7 @@ version = "0.1.0"
 dependencies = [
  "rivetkit",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -15,5 +15,8 @@ rivetkit = ["dep:rivetkit"]
 rivetkit = { workspace = true, optional = true }
 serde.workspace = true
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true

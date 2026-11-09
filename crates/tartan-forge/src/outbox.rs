@@ -241,3 +241,24 @@ pub(crate) enum SubscriberSource {
     /// This list; the forge actor passes its own.
     Known(Vec<Recipient>),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Outbox;
+
+    #[test]
+    fn forge_wide_sources_never_reach_an_installation() {
+        // The identity actor never belongs to a repository, so no installation on any
+        // repository receives its events.
+        let identity = Outbox::new("identity".to_owned());
+        assert!(!identity.reaches("installation-1", "repo-1"));
+    }
+
+    #[test]
+    fn a_repository_reaches_its_own_installations_only() {
+        let repo = Outbox::new("repo:repo-1".to_owned());
+        repo.set_repo("repo-1".to_owned());
+        assert!(repo.reaches("installation-1", "repo-1"));
+        assert!(!repo.reaches("installation-2", "repo-2"));
+    }
+}

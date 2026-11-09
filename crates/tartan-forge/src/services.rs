@@ -3,7 +3,11 @@ use std::sync::{Arc, OnceLock};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 
+use tartan_atproto::resolver::VerifyingResolver;
+use tartan_config::deployment::Readers;
+
 use crate::Extensions;
+use crate::clock::Clock;
 
 /// The service that hosts Git repositories: storage, the wire protocol and ref events.
 #[async_trait]
@@ -44,6 +48,27 @@ pub struct Services {
     pub git_host: Arc<dyn GitHost>,
     /// Extension packages and their runtime.
     pub extensions: Arc<Extensions>,
+    /// The forge's clock: [`SystemClock`](crate::SystemClock) in the `tartan` binary.
+    pub clock: Arc<dyn Clock>,
+    /// The deployment configuration's `owners`, as DIDs. Every runner process reads the same
+    /// `TARTAN_CONFIG`, so actors in any pool see the same list.
+    pub owners: Vec<String>,
+    /// The deployment configuration's `readers`.
+    pub readers: Readers,
+    /// The identity resolver, over the fetch-safe client (design D9).
+    pub resolver: VerifyingResolver,
+}
+
+impl Services {
+    /// Whether `did` is one of the forge's owners.
+    pub fn is_owner(&self, did: &str) -> bool {
+        self.owners.iter().any(|owner| owner == did)
+    }
+
+    /// Whether `did` may read: an owner, or a DID the `readers` setting admits.
+    pub fn can_read(&self, did: &str) -> bool {
+        self.is_owner(did) || self.readers.admits(did)
+    }
 }
 
 // Actors are built by the Rivet runtime, which gives them no constructor arguments, so the
