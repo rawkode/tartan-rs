@@ -31,7 +31,7 @@ import (
 // An installation of Kanban on a repository.
 #Extension: {
 	id:      "kanban.tartan.rawkode.academy"
-	version: "0.3.0"
+	version: "0.4.0"
 
 	// The repository's Issues installation, whose properties boards use.
 	#issues: issues.#Extension

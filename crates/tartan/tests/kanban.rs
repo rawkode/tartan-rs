@@ -152,8 +152,8 @@ async fn boards_from_a_repository_configuration_importing_the_modules() {
     assert_eq!(
         registered,
         vec![
-            "issues.tartan.rawkode.academy@0.6.0",
-            "kanban.tartan.rawkode.academy@0.3.0"
+            "issues.tartan.rawkode.academy@0.7.0",
+            "kanban.tartan.rawkode.academy@0.4.0"
         ],
         "{report:?}"
     );
@@ -177,7 +177,7 @@ async fn boards_from_a_repository_configuration_importing_the_modules() {
     // Issues alone first: an issue filed before Kanban is installed still reaches its boards.
     push(&forge, "acme/api", &config(ISSUES)).await;
     forge
-        .until_installed("acme/api", &["issues.tartan.rawkode.academy@0.6.0"])
+        .until_installed("acme/api", &["issues.tartan.rawkode.academy@0.7.0"])
         .await;
     let issues_tool = |tool: &str| {
         format!("/-/api/orgs/acme/repos/api/extensions/issues.tartan.rawkode.academy/tools/{tool}")
@@ -188,7 +188,7 @@ async fn boards_from_a_repository_configuration_importing_the_modules() {
             json!({
                 "title": "LSP crash",
                 "project": "crates/lsp",
-                "properties": {"priority": "p1", "labels": ["bug"], "owner": "alice"}
+                "properties": {"priority": "p1", "labels": ["bug"], "owner": forge.identity.owner}
             }),
         )
         .await;
@@ -216,8 +216,8 @@ async fn boards_from_a_repository_configuration_importing_the_modules() {
         .until_installed(
             "acme/api",
             &[
-                "issues.tartan.rawkode.academy@0.6.0",
-                "kanban.tartan.rawkode.academy@0.3.0",
+                "issues.tartan.rawkode.academy@0.7.0",
+                "kanban.tartan.rawkode.academy@0.4.0",
             ],
         )
         .await;
@@ -306,7 +306,14 @@ async fn boards_from_a_repository_configuration_importing_the_modules() {
         lsp["board"]["columns"],
         json!([{"value": "todo", "title": "To do"}, {"value": "done", "title": "Done"}])
     );
-    assert_eq!(layout(&lsp), vec!["bug / todo / alice: #1"]);
+    // A person group is keyed by the DID and names it, so the web UI labels it by handle.
+    let alice = &forge.identity.owner;
+    assert_eq!(layout(&lsp), vec![format!("bug / todo / {alice}: #1")]);
+    assert_eq!(
+        lsp["lanes"][0]["cells"][0]["groups"][0]["person"],
+        json!(alice),
+        "{lsp}"
+    );
 
     // A state board with lanes by project.
     let open = board_until("open", &|view| card_count(view) == 3).await;

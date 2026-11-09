@@ -15,7 +15,7 @@ import "tartan.rawkode.academy/types"
 // An installation of Issues on a repository.
 #Extension: {
 	id:       "issues.tartan.rawkode.academy"
-	version:  "0.6.0"
+	version:  "0.7.0"
 	settings: #Settings
 }
 

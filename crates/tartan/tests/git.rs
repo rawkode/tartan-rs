@@ -448,8 +448,8 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
     assert_eq!(
         registered,
         vec![
-            "issues.tartan.rawkode.academy@0.6.0",
-            "kanban.tartan.rawkode.academy@0.3.0"
+            "issues.tartan.rawkode.academy@0.7.0",
+            "kanban.tartan.rawkode.academy@0.4.0"
         ],
         "{report:?}"
     );

@@ -3,6 +3,7 @@
 //! target.
 
 use serde_json::{json, Map, Value};
+use tartan_ext::did::is_did;
 use tartan_ext::serde_json;
 use tartan_ext::ui::{self, Tone};
 use tartan_ext::{Actor, ActorKind, Error};
@@ -97,8 +98,6 @@ pub const SHORT_TEXT_MAX_CHARS: usize = 200;
 pub const LONG_TEXT_MAX_CHARS: usize = 20_000;
 /// The largest amount of money, in minor units: what a JSON number keeps exact.
 pub const MONEY_MAX: i64 = 9_007_199_254_740_991;
-/// A principal id's limit, in characters (`types.#PersonValue`).
-pub const PERSON_MAX_CHARS: usize = 128;
 /// A URL's limit, in characters (`types.#URLValue`).
 pub const URL_MAX_CHARS: usize = 2048;
 /// A table cell shows at most this many characters of a text.
@@ -273,15 +272,6 @@ fn is_date(text: &str) -> bool {
 	(1..=days).contains(&day)
 }
 
-/// Whether `text` is a principal id: 1 to 128 letters, digits and `._:@-`,
-/// starting with a letter or digit (`types.#PersonValue`).
-fn is_person(text: &str) -> bool {
-	let mut chars = text.chars();
-	chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
-		&& text.chars().count() <= PERSON_MAX_CHARS
-		&& chars.all(|c| c.is_ascii_alphanumeric() || "._:@-".contains(c))
-}
-
 /// Whether `text` is an absolute `http` or `https` URL of at most 2048
 /// characters, without whitespace, and with a host (`types.#URLValue`).
 fn is_url(text: &str) -> bool {
@@ -337,7 +327,7 @@ fn fits(def: &PropertyDef, value: &Value) -> bool {
 			.is_some_and(|n| (-MONEY_MAX..=MONEY_MAX).contains(&n)),
 		Kind::Date => value.as_str().is_some_and(is_date),
 		Kind::Boolean => value.is_boolean(),
-		Kind::Person => value.as_str().is_some_and(is_person),
+		Kind::Person => value.as_str().is_some_and(is_did),
 		Kind::Url => value.as_str().is_some_and(is_url),
 	}
 }
@@ -716,10 +706,24 @@ pub fn date(ms: u64) -> String {
 	format!("{year:04}-{month:02}-{day:02}")
 }
 
-fn author_text(a: &Author) -> String {
-	match &a.on_behalf_of {
-		Some(user) => format!("{} (for {user})", a.id),
-		None => a.id.clone(),
+/// A person by DID as a `person` node, which the web UI shows as `@handle`. A
+/// value stored before person values were DIDs (such as `admin`) is kept and
+/// shown as plain text.
+fn person_node(id: &str) -> ui::Node {
+	if is_did(id) {
+		ui::person(id)
+	} else {
+		ui::mono(id)
+	}
+}
+
+/// The author: the person, or an agent as the person it acts for, marked
+/// `(agent)`.
+fn author_node(a: &Author) -> ui::Node {
+	match (a.kind.as_str(), &a.on_behalf_of) {
+		("agent", Some(user)) => ui::row(vec![person_node(user), ui::text("(agent)")]),
+		(_, Some(user)) => ui::row(vec![ui::mono(&a.id), ui::text("for"), person_node(user)]),
+		_ => person_node(&a.id),
 	}
 }
 
@@ -819,12 +823,13 @@ pub fn property_text(def: &PropertyDef, value: Option<&Value>) -> String {
 	}
 }
 
-/// A property's value as a node: a person as an id, an `https` URL as a link,
+/// A property's value as a node: a person as a `person` node (or a legacy id
+/// as text), an `https` URL as a link,
 /// long text as Markdown when `full`, or else as an excerpt.
 fn property_node(def: &PropertyDef, value: Option<&Value>, full: bool) -> ui::Node {
 	let text = value.and_then(Value::as_str);
 	match (def.kind, text) {
-		(Some(Kind::Person), Some(id)) => ui::mono(id),
+		(Some(Kind::Person), Some(id)) => person_node(id),
 		(Some(Kind::Url), Some(url)) if url.starts_with("https://") => {
 			ui::link(excerpt(url, CELL_MAX_CHARS), url)
 		}
@@ -877,7 +882,7 @@ pub fn tab_doc(issues: &[Issue], open: i64, closed: i64, defs: &[PropertyDef]) -
 					row.extend([
 						i.project.as_deref().map_or(json!("—"), ui::mono),
 						state_badge(i.state),
-						ui::mono(author_text(&i.author)),
+						author_node(&i.author),
 						json!(date(i.updated_at)),
 					]);
 					row
@@ -899,7 +904,7 @@ pub fn issue_doc(i: &Issue, defs: &[PropertyDef]) -> Value {
 	let shown = shown_properties(&i.properties, defs);
 	let mut facts = vec![
 		("State".to_string(), state_badge(i.state)),
-		("Author".to_string(), ui::mono(author_text(&i.author))),
+		("Author".to_string(), author_node(&i.author)),
 		("Opened".to_string(), json!(date(i.created_at))),
 		("Updated".to_string(), json!(date(i.updated_at))),
 	];
@@ -1033,13 +1038,70 @@ mod tests {
 	fn the_author_is_the_calls_actor() {
 		let agent = Actor {
 			kind: ActorKind::Agent,
-			id: "agt_1".into(),
-			on_behalf_of: Some("usr_dev".into()),
+			id: "token:01J".into(),
+			on_behalf_of: Some("did:plc:ewvi7nxzyoun6zhxrhs64oiz".into()),
 		};
 		let a = author_of(Some(&agent)).unwrap();
 		assert_eq!(a.kind, "agent");
-		assert_eq!(a.on_behalf_of.as_deref(), Some("usr_dev"));
+		assert_eq!(
+			a.on_behalf_of.as_deref(),
+			Some("did:plc:ewvi7nxzyoun6zhxrhs64oiz")
+		);
 		assert!(matches!(author_of(None), Err(Error::Denied(_))));
+	}
+
+	#[test]
+	fn people_are_shown_by_did_and_legacy_ids_as_text() {
+		let alice = "did:plc:ewvi7nxzyoun6zhxrhs64oiz";
+		assert_eq!(person_node(alice), json!({ "t": "person", "did": alice }));
+		assert_eq!(
+			person_node("admin"),
+			json!({ "t": "text", "text": "admin", "mono": true })
+		);
+		let by_person = Author {
+			kind: "user".into(),
+			id: alice.into(),
+			on_behalf_of: None,
+		};
+		assert_eq!(author_node(&by_person), json!({ "t": "person", "did": alice }));
+		let by_agent = Author {
+			kind: "agent".into(),
+			id: "token:01J".into(),
+			on_behalf_of: Some(alice.into()),
+		};
+		assert_eq!(
+			author_node(&by_agent),
+			json!({ "t": "row", "children": [
+				{ "t": "person", "did": alice },
+				{ "t": "text", "text": "(agent)" },
+			] })
+		);
+		let defs = property_defs(&json!({ "properties": { "assignee": { "kind": "person" } } }));
+		assert_eq!(
+			property_node(&defs[0], Some(&json!(alice)), false),
+			json!({ "t": "person", "did": alice })
+		);
+		assert_eq!(
+			property_node(&defs[0], Some(&json!("usr_dev")), false)["t"],
+			"text"
+		);
+	}
+
+	#[test]
+	fn person_values_are_dids() {
+		let defs = property_defs(&json!({ "properties": { "assignee": { "kind": "person" } } }));
+		let did = json!({ "assignee": "did:web:rawkode.dev" });
+		assert_eq!(
+			checked_properties(&did, &defs).unwrap()["assignee"],
+			"did:web:rawkode.dev"
+		);
+		for refused in [json!("admin"), json!("alice.bsky.social"), json!("@alice.test")] {
+			let given = json!({ "assignee": refused });
+			assert!(
+				matches!(checked_properties(&given, &defs), Err(Error::Invalid(_))),
+				"{refused}"
+			);
+		}
 	}
 
 	#[test]
@@ -1336,7 +1398,7 @@ mod tests {
 				"flag": false,
 				"link": " https://example.com ",
 				"notes": "line one\nline two",
-				"owner": "usr_dev",
+				"owner": " did:plc:ewvi7nxzyoun6zhxrhs64oiz ",
 				"size": "1.5",
 				"tags": ["b"],
 			}),
@@ -1348,7 +1410,7 @@ mod tests {
 			properties,
 			&json!({
 				"budget": 1250, "due": "2026-11-06", "flag": false, "link": "https://example.com",
-				"notes": "line one\nline two", "owner": "usr_dev", "size": 1.5, "tags": ["b"],
+				"notes": "line one\nline two", "owner": "did:plc:ewvi7nxzyoun6zhxrhs64oiz", "size": 1.5, "tags": ["b"],
 			})
 		);
 		assert!(checked_properties(properties, &defs).is_ok());
@@ -1372,7 +1434,7 @@ mod tests {
 		i.properties = json!({
 			"notes": "- a\n- b",
 			"link": "https://example.com/x",
-			"owner": "usr_dev",
+			"owner": "did:plc:ewvi7nxzyoun6zhxrhs64oiz",
 		})
 		.as_object()
 		.unwrap()
@@ -1389,7 +1451,10 @@ mod tests {
 		let facts = children[1]["items"].as_array().unwrap();
 		let fact = |k: &str| facts.iter().find(|f| f["k"] == k).unwrap()["v"].clone();
 		assert_eq!(fact("link")["t"], "link");
-		assert_eq!(fact("Owner")["mono"], true);
+		assert_eq!(
+			fact("Owner"),
+			json!({ "t": "person", "did": "did:plc:ewvi7nxzyoun6zhxrhs64oiz" })
+		);
 		assert!(facts.iter().all(|f| f["k"] != "Notes"));
 	}
 

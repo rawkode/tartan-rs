@@ -3,7 +3,7 @@
 	"id": "issues.tartan.rawkode.academy",
 	"name": "Issues",
 	"description": "Per-repository issues with typed properties (tartan.rawkode.academy/types), optionally filed against a project; every write emits the issue as x.issues.tartan.rawkode.academy.issue.created or .updated, so other extensions can build on them",
-	"version": "0.6.0",
+	"version": "0.7.0",
 	"api": "tartan:ext@0.1.0",
 	"runtime": "wasm",
 	"storage": {

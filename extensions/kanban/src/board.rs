@@ -10,6 +10,7 @@
 //! hand-written configuration from producing a broken view.
 
 use tartan_ext::Error;
+use tartan_ext::did::is_did;
 use tartan_ext::serde_json::{Map, Value, json};
 
 /// The title of the lane or group of cards without a value.
@@ -172,6 +173,12 @@ impl By {
                     Self::Property(p) => p.title(&value),
                     Self::Project => value.clone(),
                 },
+                person: match self {
+                    Self::Property(p) if p.kind == "person" && is_did(&value) => {
+                        Some(value.clone())
+                    }
+                    _ => None,
+                },
                 value: Some(value),
             })
             .collect();
@@ -179,17 +186,33 @@ impl By {
             buckets.push(Bucket {
                 value: None,
                 title: NONE_TITLE.to_owned(),
+                person: None,
             });
         }
         buckets
     }
 }
 
-/// A lane or a group: a value and its title; None holds cards without a value.
+/// A lane or a group: a value and its title; None holds cards without a value. A person
+/// property's lane or group is keyed by the DID, and `person` names it so the UI labels it by
+/// handle; a value stored before persons were DIDs has no `person` and shows as its text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Bucket {
     value: Option<String>,
     title: String,
+    person: Option<String>,
+}
+
+impl Bucket {
+    /// The lane or group as the `board` tool answers it.
+    fn to_json(&self, extra: (&str, Value)) -> Value {
+        let mut value = json!({ "value": self.value, "title": self.title });
+        if let Some(did) = &self.person {
+            value["person"] = json!(did);
+        }
+        value[extra.0] = extra.1;
+        value
+    }
 }
 
 /// One column: the value it holds, and its title.
@@ -330,6 +353,7 @@ impl Board {
             vec![Bucket {
                 value: None,
                 title: String::new(),
+                person: None,
             }]
         };
         let lanes = match &self.lanes {
@@ -359,20 +383,20 @@ impl Board {
                             None => single(),
                         };
                         let groups: Vec<Value> = groups
-							.iter()
-							.map(|group| {
-								let cards: Vec<Value> = cell
-									.iter()
-									.filter(|card| in_bucket(&self.group, group, card))
-									.map(|card| card_json(card))
-									.collect();
-								json!({ "value": group.value, "title": group.title, "cards": cards })
-							})
-							.collect();
+                            .iter()
+                            .map(|group| {
+                                let cards: Vec<Value> = cell
+                                    .iter()
+                                    .filter(|card| in_bucket(&self.group, group, card))
+                                    .map(|card| card_json(card))
+                                    .collect();
+                                group.to_json(("cards", json!(cards)))
+                            })
+                            .collect();
                         json!({ "column": column.value, "groups": groups })
                     })
                     .collect();
-                json!({ "value": lane.value, "title": lane.title, "cells": cells })
+                lane.to_json(("cells", json!(cells)))
             })
             .collect();
         json!({ "board": self.to_json(), "lanes": lanes, "unplaced": unplaced })
@@ -772,19 +796,41 @@ mod tests {
     }
 
     #[test]
-    fn groups_by_person_are_sorted_ids() {
+    fn groups_by_person_are_sorted_dids() {
         let owner = json!({"kind": "person", "name": "owner"});
         let view = board(json!({"columns": "state", "lanes": "project", "group": owner})).view(&[
-            card(1, None, json!({"owner": "usr_zoe"})),
-            card(2, None, json!({"owner": "usr_ada"})),
+            card(1, None, json!({"owner": BOB})),
+            card(2, None, json!({"owner": ALICE})),
         ]);
         let lanes = view["lanes"].as_array().expect("lanes");
         assert_eq!(lanes.len(), 1);
         assert_eq!(lanes[0]["title"], "None");
+        assert!(lanes[0].get("person").is_none());
         let groups = &lanes[0]["cells"][0]["groups"];
-        assert_eq!(groups[0]["value"], "usr_ada");
-        assert_eq!(groups[1]["value"], "usr_zoe");
+        assert_eq!(groups[0]["value"], ALICE);
+        assert_eq!(groups[0]["person"], ALICE);
+        assert_eq!(groups[1]["value"], BOB);
     }
+
+    #[test]
+    fn lanes_by_person_are_keyed_by_did_and_legacy_values_are_text() {
+        let assignee = json!({"kind": "person", "name": "assignee"});
+        let view = board(json!({"columns": "state", "lanes": assignee})).view(&[
+            card(1, None, json!({"assignee": ALICE})),
+            card(2, None, json!({"assignee": "admin"})),
+            card(3, None, json!({})),
+        ]);
+        let lanes = view["lanes"].as_array().expect("lanes");
+        let keys: Vec<&Value> = lanes.iter().map(|l| &l["value"]).collect();
+        assert_eq!(keys, vec![&json!("admin"), &json!(ALICE), &Value::Null]);
+        assert!(lanes[0].get("person").is_none());
+        assert_eq!(lanes[1]["person"], ALICE);
+        assert_eq!(lanes[1]["cells"][0]["groups"][0]["cards"][0]["number"], 1);
+        assert_eq!(lanes[2]["title"], "None");
+    }
+
+    const ALICE: &str = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";
+    const BOB: &str = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb";
 
     #[test]
     fn a_project_board_shows_only_its_project() {
