@@ -6856,9 +6856,13 @@ dependencies = [
  "base64 0.22.1",
  "cid",
  "clap",
+ "futures-util",
  "getrandom 0.3.4",
- "hex",
+ "http",
+ "hyper",
+ "hyper-util",
  "jacquard-common",
+ "jacquard-oauth",
  "jacquard-repo",
  "jose-jwa",
  "jose-jwk",
@@ -6875,6 +6879,7 @@ dependencies = [
  "tokio-tungstenite 0.30.0",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

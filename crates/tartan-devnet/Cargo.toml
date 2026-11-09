@@ -20,8 +20,14 @@ axum.workspace = true
 base64.workspace = true
 cid.workspace = true
 clap.workspace = true
+# Jetstream's WebSocket is driven with tokio-tungstenite over a hyper upgrade rather
+# than through axum's `ws` feature, which would add a fourth tokio-tungstenite major.
+futures-util = "=0.3.34"
 getrandom.workspace = true
-hex.workspace = true
+# The listeners serve their connections themselves, so a handler can close its
+# connection without answering (an offline service, or a write whose answer is lost).
+hyper = "=1.12.0"
+hyper-util = { version = "=0.1.21", features = ["server-auto", "service", "tokio"] }
 jacquard-common.workspace = true
 jacquard-repo.workspace = true
 jose-jwa.workspace = true
@@ -39,6 +45,11 @@ tokio.workspace = true
 tokio-tungstenite.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+url = "=2.5.8"
+
+[dev-dependencies]
+http = "=1.5.0"
+jacquard-oauth.workspace = true
 
 [lints]
 workspace = true
