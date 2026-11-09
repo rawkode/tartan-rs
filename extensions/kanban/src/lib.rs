@@ -8,15 +8,20 @@
 //! repository's Issues properties: columns are a select property's options (all, or a subset in
 //! a chosen order) or the issue's state; optional lanes (rows) and groups (headed groups inside
 //! each cell) are a select, multi-select or person property, or the issue's project. A board may
-//! show only one project's issues. Moving a card calls Issues' `update`, which the manifest's
-//! `permissions.calls` allows, and keeps the version it returns.
+//! show only one project's issues. Each board's properties are also checked against the ones the
+//! installed Issues lists (its `properties` tool): a board bound to anything else is invalid.
+//! Moving a card calls Issues' `update`; the manifest's `permissions.calls` allows both calls.
+//! The card is then kept as the issue `update` returns it, unless a newer snapshot is already
+//! kept; the snapshot of that version replaces it when it arrives.
 //!
 //! Tools: `list_boards`, `board` and `move`. The `board` slot renders a board (`props.board`),
 //! and its `move` action moves a card.
 
 pub mod board;
 
-use board::{Board, Card, boards_from_settings, card_json, moved, update_args};
+use board::{
+    Board, Card, boards_from_settings, card_from_issue, card_json, issues_mismatch, update_args,
+};
 use tartan_ext::serde_json::{self, Map, Value, json};
 use tartan_ext::sql::{self, Row, params};
 use tartan_ext::{Error, Event, Extension, Json, SlotContext, calls, export, ui};
@@ -77,18 +82,34 @@ fn card(number: u32) -> Result<Option<Card>, Error> {
     .transpose()
 }
 
-/// Keeps `card` unless a newer version is already kept. `repo_path` is the `org/repo` path the
-/// snapshot came from, kept for reading the table by hand.
-fn upsert(card: &Card, repo_path: &str) -> Result<(), Error> {
+/// Which kept card a new one replaces.
+#[derive(Clone, Copy)]
+enum Replace {
+    /// An older version, or the same one: an issue's snapshot is the authority on its version.
+    UpToSameVersion,
+    /// Only an older version: a card built from a tool's result never replaces the snapshot
+    /// of its version.
+    OlderOnly,
+}
+
+/// Keeps `card` unless the kept card is newer, as `replace` says. `repo_path` is the `org/repo`
+/// path of the repository, kept for reading the table by hand.
+fn upsert(card: &Card, repo_path: &str, replace: Replace) -> Result<(), Error> {
     let properties = Value::Object(card.properties.clone()).to_string();
+    let newer = match replace {
+        Replace::UpToSameVersion => "excluded.version >= cards.version",
+        Replace::OlderOnly => "excluded.version > cards.version",
+    };
     sql::execute(
-        "INSERT INTO cards (repo_id, repo_path, number, title, state, project, properties, version)
+        &format!(
+            "INSERT INTO cards (repo_id, repo_path, number, title, state, project, properties, version)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (repo_id, number) DO UPDATE SET
 		   repo_path = excluded.repo_path, title = excluded.title, state = excluded.state,
 		   project = excluded.project, properties = excluded.properties,
 		   version = excluded.version
-		 WHERE excluded.version > cards.version",
+		 WHERE {newer}"
+        ),
         &params![
             card.repo_id.as_str(),
             repo_path,
@@ -103,29 +124,50 @@ fn upsert(card: &Card, repo_path: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// The boards in the installation's settings, and the definitions that are not boards.
-fn boards() -> (Vec<Board>, Vec<(String, String)>) {
-    boards_from_settings(&tartan_ext::host::config())
+/// Boards, and the ids of definitions that are not boards with why.
+type Boards = (Vec<Board>, Vec<(String, String)>);
+
+/// The boards in the installation's settings on repository `repo`, and the definitions that are
+/// not boards, with why. A board using a property that is not one of the installed Issues'
+/// properties is not a board.
+fn boards(repo: Option<&str>) -> Result<Boards, Error> {
+    let (boards, mut invalid) = boards_from_settings(&tartan_ext::host::config());
+    if !boards.iter().any(Board::uses_properties) {
+        return Ok((boards, invalid));
+    }
+    let repo = repo.ok_or_else(|| Error::invalid("the call names no repository"))?;
+    let listed = calls::call(ISSUES, Some(repo), "properties", &json!({}))?;
+    let properties = listed["properties"].as_array().cloned().unwrap_or_default();
+    let mut valid = Vec::with_capacity(boards.len());
+    for board in boards {
+        match issues_mismatch(&board, &properties) {
+            Some(problem) => invalid.push((board.id.clone(), problem)),
+            None => valid.push(board),
+        }
+    }
+    invalid.sort();
+    Ok((valid, invalid))
 }
 
-fn find_board(id: &str) -> Result<Board, Error> {
-    boards()
-        .0
+fn board_arg(args: &Value, repo: Option<&str>) -> Result<Board, Error> {
+    let id = args["board"]
+        .as_str()
+        .ok_or_else(|| Error::invalid("board is required"))?;
+    let (boards, invalid) = boards(repo)?;
+    if let Some((_, problem)) = invalid.iter().find(|(invalid, _)| invalid == id) {
+        return Err(Error::invalid(format!(
+            "board {id} is not valid: {problem}"
+        )));
+    }
+    boards
         .into_iter()
         .find(|board| board.id == id)
         .ok_or_else(|| Error::not_found(format!("board {id}")))
 }
 
-fn board_arg(args: &Value) -> Result<Board, Error> {
-    let id = args["board"]
-        .as_str()
-        .ok_or_else(|| Error::invalid("board is required"))?;
-    find_board(id)
-}
-
-/// Moves a card: updates the issue through Issues, then the card from the version it returns.
-fn move_card(args: &Value) -> Result<Value, Error> {
-    let board = board_arg(args)?;
+/// Moves a card: updates the issue through Issues, then keeps the card as the issue it returns.
+fn move_card(args: &Value, repo: Option<&str>) -> Result<Value, Error> {
+    let board = board_arg(args, repo)?;
     let number = args["number"]
         .as_u64()
         .and_then(|n| u32::try_from(n).ok())
@@ -148,20 +190,15 @@ fn move_card(args: &Value) -> Result<Value, Error> {
         "update",
         &update_args(&board, number, column),
     )?;
-    let mut card = moved(&board, &current, column);
-    if let Some(version) = updated["issue"]["version"]
-        .as_u64()
-        .and_then(|v| u32::try_from(v).ok())
-    {
-        card.version = version;
-    }
+    let card = card_from_issue(&current.repo_id, &updated["issue"])
+        .ok_or_else(|| Error::internal("Issues' update returned no issue"))?;
     let repo_path = sql::first(
         "SELECT repo_path FROM cards WHERE number = ?",
         &params![number],
     )?
     .and_then(|row| row.text("repo_path").map(str::to_owned))
     .unwrap_or_default();
-    upsert(&card, &repo_path)?;
+    upsert(&card, &repo_path, Replace::OlderOnly)?;
     Ok(json!({ "card": card_json(&card) }))
 }
 
@@ -246,35 +283,25 @@ impl Extension for Kanban {
             return Ok(());
         }
         let envelope = parse(&event.data)?;
-        let issue = &envelope["data"];
-        let (Some(repo_id), Some(number), Some(version)) = (
-            envelope["repo_id"].as_str(),
-            issue["number"].as_u64().and_then(|n| u32::try_from(n).ok()),
-            issue["version"]
-                .as_u64()
-                .and_then(|n| u32::try_from(n).ok()),
-        ) else {
-            return Err(Error::invalid(
-                "an issue snapshot without repo_id, number or version",
-            ));
-        };
-        let card = Card {
-            repo_id: repo_id.to_owned(),
-            number,
-            title: issue["title"].as_str().unwrap_or_default().to_owned(),
-            state: issue["state"].as_str().unwrap_or("open").to_owned(),
-            project: issue["project"].as_str().map(str::to_owned),
-            properties: issue["properties"].as_object().cloned().unwrap_or_default(),
-            version,
-        };
-        upsert(&card, envelope["path"].as_str().unwrap_or(repo_id))
+        let card = envelope["repo_id"]
+            .as_str()
+            .and_then(|repo_id| card_from_issue(repo_id, &envelope["data"]))
+            .ok_or_else(|| {
+                Error::invalid("an issue snapshot without repo_id, number or version")
+            })?;
+        let repo_path = envelope["path"]
+            .as_str()
+            .unwrap_or(&card.repo_id)
+            .to_owned();
+        upsert(&card, &repo_path, Replace::UpToSameVersion)
     }
 
-    fn call_tool(name: String, args: Json, _ctx: SlotContext) -> Result<Json, Error> {
+    fn call_tool(name: String, args: Json, ctx: SlotContext) -> Result<Json, Error> {
         let args = parse(&args)?;
+        let repo = ctx.repo.as_deref();
         let result = match name.as_str() {
             "list_boards" => {
-                let (boards, invalid) = boards();
+                let (boards, invalid) = boards(repo)?;
                 json!({
                     "boards": boards.iter().map(Board::summary).collect::<Vec<_>>(),
                     "invalid": invalid
@@ -283,26 +310,26 @@ impl Extension for Kanban {
                         .collect::<Vec<_>>(),
                 })
             }
-            "board" => board_arg(&args)?.view(&cards()?),
-            "move" => move_card(&args)?,
+            "board" => board_arg(&args, repo)?.view(&cards()?),
+            "move" => move_card(&args, repo)?,
             _ => return Err(Error::not_found(format!("tool {name}"))),
         };
         Ok(result.to_string())
     }
 
-    fn render(slot: String, _ctx: SlotContext, props: Json) -> Result<Json, Error> {
+    fn render(slot: String, ctx: SlotContext, props: Json) -> Result<Json, Error> {
         if slot != "board" {
             return Err(Error::not_found(format!("slot {slot}")));
         }
-        let board = board_arg(&parse(&props)?)?;
+        let board = board_arg(&parse(&props)?, ctx.repo.as_deref())?;
         Ok(board_doc(&board)?.to_string())
     }
 
-    fn on_action(action: String, payload: Json, _ctx: SlotContext) -> Result<Json, Error> {
+    fn on_action(action: String, payload: Json, ctx: SlotContext) -> Result<Json, Error> {
         if action != "move" {
             return Err(Error::not_found(format!("action {action}")));
         }
-        move_card(&parse(&payload)?)?;
+        move_card(&parse(&payload)?, ctx.repo.as_deref())?;
         Ok(ui::result::refresh(&["board"]).to_string())
     }
 }

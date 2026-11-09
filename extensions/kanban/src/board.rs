@@ -1,10 +1,13 @@
 //! Boards and cards, independent of storage.
 //!
 //! A board comes from Kanban's settings as `cue export` gives them. Kanban's CUE
-//! module has already checked each board against the repository's Issues
-//! properties, so a property reference arrives as the property itself (its
-//! `name`, `kind`, `options`, `labels` and `default`). The checks here only
-//! keep a hand-written configuration from producing a broken view.
+//! module has already checked each board against the Issues properties the
+//! repository binds as `#issues`, so a property reference arrives as the
+//! property itself (its `name`, `kind`, `options`, `labels` and `default`).
+//! CUE compares values, not references, so it cannot tell that `#issues` is the
+//! repository's Issues entry: [`issues_mismatch`] checks each board against the
+//! properties the installed Issues reports. The other checks here keep a
+//! hand-written configuration from producing a broken view.
 
 use tartan_ext::Error;
 use tartan_ext::serde_json::{Map, Value, json};
@@ -57,7 +60,14 @@ impl Property {
             .to_owned()
     }
 
-    /// The card's value of this property, or the property's default when the issue never set it.
+    /// Whether `other`, a property as Issues' `properties` tool lists it, is this one: the same
+    /// name, kind, options, labels and default.
+    fn same_as(&self, other: &Value) -> bool {
+        Self::from_value(other).is_ok_and(|other| other == *self)
+    }
+
+    /// The card's value of this property, or the property's default when the issue never set it,
+    /// as Issues shows it.
     fn value<'a>(&'a self, card: &'a Card) -> Option<&'a Value> {
         card.properties
             .get(&self.name)
@@ -249,7 +259,28 @@ impl Board {
             .is_none_or(|p| card.project.as_ref() == Some(p))
     }
 
-    /// The column value of `card`: its value, the property's default, or else the first column.
+    /// Whether the board uses an Issues property (rather than only state and project).
+    pub fn uses_properties(&self) -> bool {
+        !self.properties().is_empty()
+    }
+
+    /// The properties the board uses, with what each is for.
+    fn properties(&self) -> Vec<(&'static str, &Property)> {
+        let mut used = Vec::new();
+        if let ColumnsBy::Property(p) = &self.columns_by {
+            used.push(("columns", p));
+        }
+        for (what, by) in [("lanes", &self.lanes), ("group", &self.group)] {
+            if let Some(By::Property(p)) = by {
+                used.push((what, p));
+            }
+        }
+        used
+    }
+
+    /// The column value of `card`: its value, else the property's default (Issues shows an
+    /// issue that never set the property with the default), else the first column. A value or
+    /// default that is no column's leaves the card unplaced.
     pub fn column_of(&self, card: &Card) -> Option<String> {
         let value = match &self.columns_by {
             ColumnsBy::State => Some(card.state.clone()),
@@ -348,6 +379,48 @@ impl Board {
     }
 }
 
+/// Why `board` does not fit the repository's Issues properties (`properties`, as Issues'
+/// `properties` tool lists them), if it does not: each property it uses must be one of them,
+/// with the same definition.
+pub fn issues_mismatch(board: &Board, properties: &[Value]) -> Option<String> {
+    board.properties().into_iter().find_map(|(what, property)| {
+        match properties
+            .iter()
+            .find(|p| p["name"] == property.name.as_str())
+        {
+            None => Some(format!(
+                "{what}: Issues on this repository has no property {}",
+                property.name
+            )),
+            Some(issues) if !property.same_as(issues) => Some(format!(
+                "{what}: {} is not the repository's Issues property {}: its definition differs",
+                property.name, property.name
+            )),
+            Some(_) => None,
+        }
+    })
+}
+
+/// A card from an issue as Issues gives it (a snapshot event's, or a tool's result), on the
+/// repository `repo_id`.
+pub fn card_from_issue(repo_id: &str, issue: &Value) -> Option<Card> {
+    let number = issue["number"]
+        .as_u64()
+        .and_then(|n| u32::try_from(n).ok())?;
+    let version = issue["version"]
+        .as_u64()
+        .and_then(|n| u32::try_from(n).ok())?;
+    Some(Card {
+        repo_id: repo_id.to_owned(),
+        number,
+        title: issue["title"].as_str().unwrap_or_default().to_owned(),
+        state: issue["state"].as_str().unwrap_or("open").to_owned(),
+        project: issue["project"].as_str().map(str::to_owned),
+        properties: issue["properties"].as_object().cloned().unwrap_or_default(),
+        version,
+    })
+}
+
 /// The arguments of Issues' `update` that move a card to the column `value`.
 pub fn update_args(board: &Board, number: u32, value: &str) -> Value {
     match &board.columns_by {
@@ -356,18 +429,6 @@ pub fn update_args(board: &Board, number: u32, value: &str) -> Value {
             json!({ "number": number, "properties": { p.name.as_str(): value } })
         }
     }
-}
-
-/// The card after a move to the column `value`.
-pub fn moved(board: &Board, card: &Card, value: &str) -> Card {
-    let mut card = card.clone();
-    match &board.columns_by {
-        ColumnsBy::State => card.state = value.to_owned(),
-        ColumnsBy::Property(p) => {
-            card.properties.insert(p.name.clone(), json!(value));
-        }
-    }
-    card
 }
 
 /// The boards in Kanban's settings (`boards`), in id order, and the definitions that are not
@@ -630,11 +691,19 @@ mod tests {
     fn a_default_places_a_card_without_a_value() {
         let mut defaulted = status();
         defaulted["default"] = json!("doing");
-        let view = board(json!({"columns": defaulted})).view(&[card(1, None, json!({}))]);
+        let view = board(json!({"columns": defaulted.clone()})).view(&[card(1, None, json!({}))]);
         assert_eq!(
             numbers(&view["lanes"][0]["cells"][1]["groups"][0]["cards"]),
             vec![1]
         );
+        // The default is the issue's value, as Issues shows it: on a board without its column
+        // the card is unplaced, as one with that value set would be.
+        let subset = board(json!({"columns": {"property": defaulted, "values": ["todo", "done"]}}));
+        let view = subset.view(&[
+            card(1, None, json!({})),
+            card(2, None, json!({"status": "doing"})),
+        ]);
+        assert_eq!(numbers(&view["unplaced"]), vec![1, 2]);
     }
 
     #[test]
@@ -732,16 +801,54 @@ mod tests {
             update_args(&by_status, 3, "done"),
             json!({"number": 3, "properties": {"status": "done"}})
         );
-        let moved_card = moved(&by_status, &card(3, None, json!({})), "done");
-        assert_eq!(moved_card.properties["status"], "done");
         let by_state = board(json!({"columns": "state"}));
         assert_eq!(
             update_args(&by_state, 3, "closed"),
             json!({"number": 3, "state": "closed"})
         );
+    }
+
+    #[test]
+    fn cards_come_from_issues() {
+        let issue = json!({
+            "number": 7, "title": "Retitled", "state": "closed", "project": "crates/lsp",
+            "properties": {"status": "done"}, "version": 3, "author": {"kind": "user"},
+        });
+        let card = card_from_issue("repo-1", &issue).expect("a card");
         assert_eq!(
-            moved(&by_state, &card(3, None, json!({})), "closed").state,
-            "closed"
+            (
+                card.number,
+                card.title.as_str(),
+                card.state.as_str(),
+                card.version
+            ),
+            (7, "Retitled", "closed", 3)
+        );
+        assert_eq!(card.project.as_deref(), Some("crates/lsp"));
+        assert_eq!(card.properties["status"], "done");
+        assert!(card_from_issue("repo-1", &json!({"number": 7})).is_none());
+    }
+
+    #[test]
+    fn boards_must_use_the_installed_issues_properties() {
+        let triage = board(json!({"columns": status(), "lanes": priority(), "group": "project"}));
+        let installed = [status(), priority(), tags()];
+        assert_eq!(issues_mismatch(&triage, &installed), None);
+        // Bound to another Issues entry: a property the installation does not have.
+        let phase = json!({"kind": "select", "name": "phase", "options": ["a", "b"]});
+        let fake = board(json!({"columns": phase}));
+        assert_eq!(
+            issues_mismatch(&fake, &installed).as_deref(),
+            Some("columns: Issues on this repository has no property phase")
+        );
+        // The same name with another definition.
+        let mut other = priority();
+        other["options"] = json!(["p1", "p2"]);
+        let lanes = issues_mismatch(&triage, &[status(), other]).expect("a mismatch");
+        assert!(lanes.starts_with("lanes: priority is not"), "{lanes}");
+        assert_eq!(
+            issues_mismatch(&board(json!({"columns": "state"})), &[]),
+            None
         );
     }
 }

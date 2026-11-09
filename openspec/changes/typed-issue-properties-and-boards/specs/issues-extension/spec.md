@@ -21,3 +21,10 @@ Issues SHALL store and show values of every type in `tartan.dev/types`: short an
 #### Scenario: Long text
 - **WHEN** an issue's `notes` (`#LongText`) is set to Markdown
 - **THEN** `get` returns it unchanged and the issue page renders it as Markdown
+
+### Requirement: An unset property is absent
+`null`, an empty string and an empty list SHALL mean no value: `update` SHALL clear the property, and `create` SHALL leave it unset, so an unset property is never stored.
+
+#### Scenario: Created with an empty value
+- **WHEN** an issue is created with `properties: {priority: null, notes: ""}`
+- **THEN** neither property is stored, and a read shows only their defaults

@@ -12,8 +12,13 @@
 //	}
 //
 // A board's columns must be one of those select properties, so a typo, an
-// inline select whose options differ, or a property of another kind fails
-// evaluation instead of showing an empty board.
+// inline select whose definition differs, or a property of another kind fails
+// evaluation instead of showing an empty board. CUE compares values, not
+// references: a select written out exactly as one of Issues' properties is
+// that property, and #issues can be bound to something other than the
+// repository's Issues entry. Kanban therefore also checks each board against
+// the properties the installed Issues lists, and shows a board that does not
+// match them as invalid.
 package kanban
 
 import (
@@ -81,5 +86,5 @@ import (
 // Some options of a select property, in the order the columns show them.
 #Subset: {
 	property: {options: [...string], ...}
-	values: [_, ...or(property.options)] & list.UniqueItems()
+	values: [...or(property.options)] & list.MinItems(1) & list.UniqueItems()
 }

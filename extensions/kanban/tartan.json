@@ -25,6 +25,7 @@
 	"permissions": {
 		"calls": {
 			"rawkode.issues": [
+				"properties",
 				"update"
 			]
 		}

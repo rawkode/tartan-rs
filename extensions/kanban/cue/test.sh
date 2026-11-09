@@ -183,6 +183,16 @@ extensions: "rawkode.kanban": kanban.#Extension & {
 	#issues: extensions."rawkode.issues"
 	settings: boards: triage: columns: {property: props.status, values: ["todo", "blocked"]}
 }'
+refuse "a subset whose first value is not an option" 'boards.triage.columns' '
+extensions: "rawkode.kanban": kanban.#Extension & {
+	#issues: extensions."rawkode.issues"
+	settings: boards: triage: columns: {property: props.status, values: ["blocked", "todo"]}
+}'
+refuse "a subset value that is not a string" 'boards.triage.columns' '
+extensions: "rawkode.kanban": kanban.#Extension & {
+	#issues: extensions."rawkode.issues"
+	settings: boards: triage: columns: {property: props.status, values: [1]}
+}'
 refuse "an empty subset" 'boards.triage.columns' '
 extensions: "rawkode.kanban": kanban.#Extension & {
 	#issues: extensions."rawkode.issues"
@@ -218,6 +228,23 @@ extensions: "rawkode.kanban": kanban.#Extension & {
 	version: "0.2.0"
 	settings: boards: triage: columns: "state"
 }'
+
+# CUE compares values, not references: a select written out exactly as Issues'
+# status is that property, completed with its name. (Kanban also checks every
+# board against the properties the installed Issues lists, which catches an
+# #issues bound to anything but the repository's Issues entry.)
+write_config '
+extensions: "rawkode.kanban": kanban.#Extension & {
+	#issues: extensions."rawkode.issues"
+	settings: boards: triage: columns: types.#Select & {options: ["todo", "doing", "done"], labels: todo: "To do", default: "todo"}
+}'
+if exported="$(export_config 2>&1)"; then
+	expect "an identical inline select" "$(q '.extensions."rawkode.kanban".settings.boards.triage.columns.name')" '"status"'
+else
+	echo "FAIL: an inline select identical to Issues' status does not evaluate"
+	echo "$exported" | sed 's/^/    /'
+	failed=1
+fi
 
 # Issues settings that do not fit Issues' module.
 issues_entry='

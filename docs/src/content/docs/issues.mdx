@@ -59,7 +59,7 @@ Run `cue export` with `CUE_REGISTRY` set to the forge to see exactly what the fo
 | `url` | an `http` or `https` URL | a link, for `https` |
 | `money` | an integer of minor units in the property's currency | `GBP 12.50` |
 
-A value is checked when it is written: one that does not fit its property is refused with `invalid`, and so is a property the configuration does not define. `null` clears a property. A default fills in when an issue is read. Changing the configuration never rewrites stored values: a removed property or option stays on the issues that have it.
+A value is checked when it is written: one that does not fit its property is refused with `invalid`, and so is a property the configuration does not define. `null`, an empty string and an empty list all mean no value: on `update` they clear the property, and on `create` they leave it unset, so an unset property is always absent from what Issues stores. A default fills in when an issue is read. Changing the configuration never rewrites stored values: a removed property or option stays on the issues that have it.
 
 ## Tools
 

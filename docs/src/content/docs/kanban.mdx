@@ -84,11 +84,11 @@ Kanban's module refuses, at evaluation:
 - a board without columns, an unknown key, or an invalid board id;
 - Kanban without the `#issues` binding, unless every board's columns are `"state"`.
 
-CUE compares values, not where they were written: an inline select identical to one of Issues' select properties, name aside, unifies with it and is that property. Kanban's manifest also requires `rawkode.issues`, so a configuration that installs Kanban without Issues is refused.
+CUE compares values, not where they were written: an inline select identical to one of Issues' select properties, name aside, unifies with it and is that property. For the same reason CUE cannot tell that `#issues` is bound to the repository's own Issues entry, so Kanban also checks every board against the properties the installed Issues lists (its `properties` tool): a board using a property Issues does not have, or one whose definition differs from Issues' property of that name, is listed under `invalid` and cannot be shown or moved on. Kanban's manifest also requires `rawkode.issues`, so a configuration that installs Kanban without Issues is refused.
 
 ## Boards
 
-Column titles come from the property's labels, falling back to the values; lane and group titles likewise, and project roots and person ids as they are. A select's lanes include every option, in order; groups include only the values with cards. Other values come next, sorted, and cards without a value come last under "None". A card with no column value is in the first column (or its property's default column); a card whose value is no column's, such as an option a subset leaves out, is listed as unplaced.
+Column titles come from the property's labels, falling back to the values; lane and group titles likewise, and project roots and person ids as they are. A select's lanes include every option, in order; groups include only the values with cards. Other values come next, sorted, and cards without a value come last under "None". An issue that never set the column property has its default as its value, as Issues shows it; with no default, its card is in the first column. A card whose value is no column's, such as an option a subset leaves out (a default included), is listed as unplaced.
 
 ## Tools
 
@@ -122,4 +122,4 @@ Column titles come from the property's labels, falling back to the values; lane 
 
 ## Moving cards
 
-`move` (and the `board` slot's `move` action) sets the board's column property, or the issue's state for a `"state"` board, by calling Issues' `update` on the repository, which Kanban's manifest permits with `"calls": {"rawkode.issues": ["update"]}`. Moving to a value that is not a column is refused, and so is a card that is not on the board.
+`move` (and the `board` slot's `move` action) sets the board's column property, or the issue's state for a `"state"` board, by calling Issues' `update` on the repository, which Kanban's manifest permits with `"calls": {"rawkode.issues": ["properties", "update"]}`. Moving to a value that is not a column is refused, and so is a card that is not on the board. The card is then kept as the issue `update` returns it, title and every property included, and Issues' snapshot of that version replaces it when it arrives.

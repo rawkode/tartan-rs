@@ -386,20 +386,35 @@ pub fn format_money(amount: i64, currency: &str) -> String {
 	format!("{currency} {sign}{}.{:0places$}", abs / unit, abs % unit)
 }
 
-/// Checks written values against the current configuration. Null clears a
-/// property. Only what is being written is checked: a stored value of a
-/// property the configuration no longer has stays, and is never rewritten.
+/// Whether a written value means "no value": null, an empty string or an
+/// empty list. An unset property is always an absent key.
+fn is_unset(value: &Value) -> bool {
+	match value {
+		Value::Null => true,
+		Value::String(s) => s.is_empty(),
+		Value::Array(items) => items.is_empty(),
+		_ => false,
+	}
+}
+
+/// Checks written values against the current configuration. Only what is
+/// being written is checked: a stored value of a property the configuration
+/// no longer has stays, and is never rewritten. A value that means no value
+/// ([`is_unset`]) comes back as null, which clears the property on update and
+/// is left out on create.
 pub fn checked_properties(given: &Value, defs: &[PropertyDef]) -> Result<Map<String, Value>, Error> {
 	let given = match given {
 		Value::Null => return Ok(Map::new()),
 		Value::Object(values) => values,
 		_ => return Err(Error::invalid("properties is an object")),
 	};
+	let mut checked = Map::new();
 	for (name, value) in given {
 		let def = defs.iter().find(|d| &d.name == name).ok_or_else(|| {
 			Error::invalid(format!("no property {name} in this repository's configuration"))
 		})?;
-		if value.is_null() {
+		if is_unset(value) {
+			checked.insert(name.clone(), Value::Null);
 			continue;
 		}
 		if !fits(def, value) {
@@ -408,8 +423,9 @@ pub fn checked_properties(given: &Value, defs: &[PropertyDef]) -> Result<Map<Str
 				def.kind_name
 			)));
 		}
+		checked.insert(name.clone(), value.clone());
 	}
-	Ok(given.clone())
+	Ok(checked)
 }
 
 /// Stored values with the configuration's defaults for what an issue never set.
@@ -478,10 +494,12 @@ fn body_of(value: &Value) -> Result<String, Error> {
 /// `create` arguments: a trimmed, non-empty one-line title, an optional body and
 /// values of the repository's properties.
 pub fn new_issue(args: &Value, defs: &[PropertyDef]) -> Result<NewIssue, Error> {
+	let mut properties = checked_properties(&args["properties"], defs)?;
+	properties.retain(|_, value| !value.is_null());
 	Ok(NewIssue {
 		title: title_of(&args["title"])?,
 		body: body_of(&args["body"])?,
-		properties: checked_properties(&args["properties"], defs)?,
+		properties,
 	})
 }
 
@@ -1150,6 +1168,25 @@ mod tests {
 	}
 
 	#[test]
+	fn an_unset_value_is_an_absent_key() {
+		let defs = defs();
+		let created = new_issue(
+			&json!({ "title": "t", "properties": { "status": null, "estimate": 2, "note": "", "notes": "" } }),
+			&defs,
+		)
+		.unwrap();
+		assert_eq!(
+			created.properties,
+			json!({ "estimate": 2 }).as_object().cloned().unwrap()
+		);
+		let change = change_args(&json!({ "properties": { "status": "", "note": null } }), &defs).unwrap();
+		assert_eq!(change.properties["status"], Value::Null);
+		assert_eq!(change.properties["note"], Value::Null);
+		assert!(is_unset(&json!([])));
+		assert!(!is_unset(&json!(0)) && !is_unset(&json!(false)));
+	}
+
+	#[test]
 	fn a_removed_property_stays_stored_and_shown() {
 		let mut stored = Map::new();
 		stored.insert("gone".into(), json!("kept"));
@@ -1198,15 +1235,16 @@ mod tests {
 		for case in vectors.as_array().unwrap() {
 			let defs = property_defs(&json!({ "properties": { "p": case["property"] } }));
 			kinds.push(defs[0].kind.unwrap());
+			// The vectors are values CUE accepts or refuses; a write of a value
+			// that means no value (an empty string or list) clears the property
+			// instead of storing it.
 			for value in case["valid"].as_array().unwrap() {
-				assert!(
-					checked_properties(&json!({ "p": value }), &defs).is_ok(),
-					"{case} {value}"
-				);
+				assert!(fits(&defs[0], value), "{case} {value}");
 			}
 			for value in case["invalid"].as_array().unwrap() {
+				assert!(!fits(&defs[0], value), "{case} {value}");
 				assert!(
-					checked_properties(&json!({ "p": value }), &defs).is_err(),
+					is_unset(value) || checked_properties(&json!({ "p": value }), &defs).is_err(),
 					"{case} {value}"
 				);
 			}
