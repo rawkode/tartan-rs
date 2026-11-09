@@ -39,6 +39,8 @@ Variations:
 
 Signing works with Git 2.19 or later. Git before 2.40 shows only "gpg failed to sign the data" when signing fails; run `tt status`, which names the last signing failure, or upgrade Git to see `tt`'s own message.
 
+**A forge on your own machine.** `tt login` signs you in for signing through the forge's `tt` client, whose metadata your authorization server fetches from the forge over public HTTPS. A forge at `http://127.0.0.1` cannot serve it, so sign in for signing with ATProto's development client instead: `tt sign --login --client localhost --handle <your handle>`. Servers that follow the reference implementation, such as bsky.social, accept it; some self-hosted servers accept only `https` client ids and refuse it ("client_id must be a safe https metadata URL"), and then signing needs a forge on public HTTPS, such as one behind a tunnel. The [demo](/demo/#with-your-own-identity) runs a local forge with you as its owner.
+
 Only Git is a supported caller. Other tools that speak the same program interface, such as Jujutsu's gpgsm backend, are refused. `git commit-tree` and `git stash` do not sign even with `commit.gpgSign` set. `git push --signed` is not supported: the Git host does not accept push certificates.
 
 ## Signing offline

@@ -100,11 +100,14 @@ drop.
 WALGIT_BIN=/path/to/walgit REGISTRY_BIN=/path/to/registry CUE_BIN=/path/to/cue scripts/demo.sh
 ```
 
-Starts RustFS, walgit, a source CUE registry with the types, Issues and Kanban modules, the Rivet engine, the gateway
-and the web interface, then seeds org `acme` and repository `acme/api`: a configuration pushed with `git` that
-installs Issues with typed properties and Kanban with two boards, and a dozen issues. Open
-`http://127.0.0.1:4321/#/acme/api/boards/triage`; the admin token is `dev-admin-token`. Ctrl-C stops everything.
-State lives in `.dev/demo`; each run starts fresh, and `--keep` reuses the previous one. See `docs/` (Demo).
+Starts RustFS, walgit, a source CUE registry with the types, Issues and Kanban modules, tartan-devnet (a local
+ATProto network), the Rivet engine, the gateway and the web interface, then seeds org `acme` and repository
+`acme/api`: a configuration pushed with `git` that installs Issues with typed properties, Kanban with two boards and a
+signing rule, commits signed with `tt` by the devnet's `@alice.test` (the owner) and `@bob.test`, and a dozen issues.
+Open the printed address (`http://127.0.0.1:4321/#/acme/api` when that port is free) and sign in as `@alice.test`,
+or as `@bob.test` for read-only access; the devnet approves at once. Nothing leaves the machine. Ctrl-C stops
+everything. State lives in `.dev/demo`; each run starts fresh, and `--keep` reuses the previous one.
+`scripts/demo.sh --owner <your DID>` runs against the real ATProto network with you as the owner. See `docs/` (Demo).
 
 ## Running
 

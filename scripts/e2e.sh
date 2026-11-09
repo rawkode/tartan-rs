@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Runs every test, the end-to-end ones against a local Rivet engine and real CUE registries.
+# Everything is built with the `dev-identity` feature, so identity runs against tartan-devnet
+# on localhost and nothing reaches the public network.
 #
 # Needs REGISTRY_BIN, a CNCF distribution `registry` binary: the source registry test modules
 # and the first-party modules are published to (`cue mod publish`) and the forge under test
@@ -27,9 +29,23 @@ cd "$root"
 npm --prefix docs run --silent build >/dev/null
 npm --prefix docs run --silent lint:docs
 
+# The identity switches compile only with `dev-identity` (design D12); the release build must
+# stay clean without them too.
+features=(--features tartan/dev-identity,tt/dev-identity)
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo clippy --all-targets "${features[@]}" -- -D warnings
+# The tests run the real `tt`, built with the same feature (tests that drive it read TT_BIN).
+cargo build --quiet -p tt --features dev-identity
+TT_BIN="${CARGO_TARGET_DIR:-$root/target}/debug/tt"
+export TT_BIN
+cargo test "${features[@]}"
+
+# The admin token is gone: nothing outside the change's own design history mentions it.
+if git grep -n dev-admin-token -- ':!openspec/' ':!scripts/e2e.sh'; then
+	echo "dev-admin-token is still referenced" >&2
+	exit 1
+fi
 
 # The registries: a fresh source registry, and the address the forge under test serves its own
 # registry on. The CUE evaluator in each test process reads CUE_REGISTRY when it starts, so the
@@ -112,10 +128,11 @@ export TARTAN_TYPES_V0_1_MODULE
 "$root/extensions/kanban/cue/test.sh" "$TARTAN_MODULE_SOURCE"
 
 cargo test -p tartan-extensions -- --include-ignored
-cargo test -p tartan --test extensions -- --include-ignored
-cargo test -p tartan --test subscriptions -- --include-ignored
-cargo test -p tartan --test kanban -- --include-ignored
+cargo test -p tartan --features dev-identity --test extensions -- --include-ignored
+cargo test -p tartan --features dev-identity --test subscriptions -- --include-ignored
+cargo test -p tartan --features dev-identity --test kanban -- --include-ignored
 
-# The full stack: RustFS, walgit and the git CLI.
-cargo test -p tartan --test git -- --include-ignored
+# The full stack: RustFS, walgit, the git CLI and, for signing, `tt` against tartan-devnet.
+cargo test -p tartan --features dev-identity --test git -- --include-ignored
+cargo test -p tartan --features dev-identity --test e2e -- --include-ignored
 echo "e2e: every check and suite passed"

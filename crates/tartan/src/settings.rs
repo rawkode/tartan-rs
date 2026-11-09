@@ -645,7 +645,7 @@ mod tests {
         let base = || Env::production(dir.path());
         refused(base().without("TARTAN_CONFIG"), false, "TARTAN_CONFIG");
         refused(
-            base().with("TARTAN_ADMIN_TOKEN", "dev-admin-token"),
+            base().with("TARTAN_ADMIN_TOKEN", "an-old-admin-token"),
             false,
             "owners",
         );

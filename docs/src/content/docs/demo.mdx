@@ -45,11 +45,12 @@ The script builds Issues and Kanban as modules with `scripts/build-extension.sh`
 - Issues' properties, one of each [property type](/property-types/) the demo uses: `status` (a select with labels), `priority` (select), `assignee` (person), `estimate` (number), `due` (date), `notes` (Markdown long text), `link` (URL), `budget` (money in GBP) and `labels` (multi-select).
 - Two [Kanban](/kanban/) boards: **Triage**, with columns by status, lanes by priority and groups by project; and **Web app**, the `web` project's board, with some of the status columns, lanes by label and groups by assignee.
 - Twelve issues across the projects `web`, `crates/api` and `crates/cli` (and some with none), with a mix of properties; one is closed. They are assigned to the devnet's five people by DID, and the interface shows them as `@alice.test`, `@bob.test`, `@carol.test`, `@dave.test` and `@erin.test`.
-- A [signing rule](/signing/) on `main` and `release/*` with alice as the only signer. `main`'s commits are signed by alice, so its badge reads "Signed by @alice.test"; `release/1.0` has a commit signed by bob, so the overview shows it as a violation by @bob.test.
+- A [signing rule](/signing/) on `main` and `release/*` with alice as the only signer. The configuration commit that adds it is signed by alice; it is judged by the rule before it (none), so the demo then pushes a second commit signed by alice to `main`, which the rule judges: `main`'s badge reads "Signed by @alice.test" and it complies. `release/1.0` has a commit signed by bob, so the overview shows it as a violation by @bob.test, and the forge's event stream has one `ref.signature.violation` for it.
+- alice and bob are signed in to `tt` without a browser: the script runs `tt sign --login` and follows the printed address with `curl`, which the devnet approves at once. Each has their own `tt` configuration, state and file credential store under `.dev/demo/people/<name>`, and the script signs with `git -c`, so the demo never touches your own `tt` setup, keychain or Git configuration.
 
 ## Signing in
 
-Open the web interface and use **Sign in as @alice.test**, or type a handle: `alice.test` is the forge's owner, and `bob.test` (or carol, dave or erin) is a signed-in person who is not an owner. The devnet approves every sign-in at once, so there is no password. A non-owner sees what the forge's `readers` setting allows: the demo admits them to read, so bob sees the read-only notice and no write controls.
+Open the web interface and use **Sign in as @alice.test**, or type a handle: `alice.test` is the forge's owner, and `bob.test` (or carol, dave or erin) is a signed-in person who is not an owner. The devnet approves every sign-in at once, so there is no password. A non-owner sees what the forge's `readers` setting allows: the demo admits them to read, so bob can browse issues and boards (through the tools Issues and Kanban declare read-only) but sees the read-only notice and no write controls, and a write he forces anyway is refused with that explanation.
 
 For scripts, an owner's token comes from the operator command, which needs no browser:
 
@@ -62,10 +63,13 @@ tt admin token create --did <alice's DID> --name script --scopes read,write
 To sign commits as one of the devnet's people, sign `tt` in to the devnet and set Git up to sign with it:
 
 ```sh
-export TARTAN_DEV_IDENTITY=1   # in this shell only
+# In this shell only: the devnet as the identity network.
+export TARTAN_DEV_IDENTITY=1 TARTAN_PLC_URL=http://127.0.0.1:9400 TARTAN_DEV_HANDLE_RESOLVER=http://127.0.0.1:9400
 tt sign --login --forge http://127.0.0.1:<web port> --handle bob.test
 tt sign --setup                # in the cloned repository
 ```
+
+Use the `tt` the demo built (`target/debug/tt`): a release `tt` refuses to run while `TARTAN_DEV_IDENTITY` is set. The script prints the command that signs as alice with her demo state.
 
 The devnet keeps everything in memory: its signature records do not survive a restart, so a commit signed before a restart can no longer be proved, and a new demo signs its commits again.
 
@@ -82,6 +86,22 @@ git -c "http.extraHeader=Authorization: Bearer dev-git-host-token" push origin m
 Everything the demo keeps is in `.dev/demo`: the object store, the source registry, the Rivet engine's data, the logs (`.dev/demo/logs`) and the seeded repository's working copy.
 
 - `scripts/demo.sh` starts from nothing: it deletes `.dev/demo` and seeds again, so every run shows the same demo.
-- `scripts/demo.sh --keep` reuses the previous demo's state, with the changes made in it, and seeds only when an earlier run never finished seeding. A state directory seeded before people were DIDs keeps its bare-name assignees (such as `admin`), shown as plain text; delete `.dev/demo`, or run without `--keep`, for the DID-based demo.
+- `scripts/demo.sh --keep` reuses the previous demo's state, with the changes made in it (the web client's key and alice's and bob's `tt` sign-ins included), and seeds only when an earlier run never finished seeding. The devnet itself starts empty each time, so commits signed in an earlier run show their stored results but could not be proved again. A state directory seeded before people were DIDs keeps its bare-name assignees (such as `admin`), shown as plain text; delete `.dev/demo`, or run without `--keep`, for the DID-based demo.
 
 The demo uses the same ports as `scripts/dev.sh`, so run one at a time; the script stops early if one of the forge's ports is taken.
+
+## With your own identity
+
+```sh
+scripts/demo.sh --owner did:web:example.com
+scripts/demo.sh --owner did:web:example.com --client-metadata-url https://example.com/tartan-dev.json
+```
+
+With `--owner`, the demo runs against the real ATProto network instead of the devnet: that DID is the forge's only owner, `readers` keeps its default (only owners read), and you sign in to `http://127.0.0.1:<web port>` as yourself. It seeds the same repository and issues, assigned to you, but no signing rule, and keeps its state in `.dev/demo-owner`. Nothing in it is offline: the forge resolves your DID and handle, reaches your PDS and its authorization server, and follows the public Jetstream.
+
+Your authorization server cannot reach a forge on `127.0.0.1`, so the forge cannot use its normal client. It uses a [development sign-in client](/identity/) instead:
+
+- By default, ATProto's `http://localhost` client. Servers that follow the reference implementation, such as bsky.social, accept it.
+- Some self-hosted servers accept only `https` client ids and refuse it; sign-in then shows that your server refused this forge's configuration, with the server's message ("client_id must be a safe https metadata URL"). For those, run the demo once with `--client-metadata-url <https URL>`, publish exactly what `http://127.0.0.1:<web port>/-/auth/client-metadata.json` then serves at that URL (keep the same web port), and sign in again.
+
+Both are public clients, acceptable only on your own machine. Signing commits as yourself works with `tt sign --login --client localhost` where your server accepts that client; see [Signing](/signing/#setting-up).
