@@ -11,6 +11,13 @@
 //! A module whose zip holds `tartan.json` is an extension: its manifest, component and
 //! migrations are read out of the module, checked, and registered (`package.published`). Its
 //! manifest's version must be the module's, without the leading `v`.
+//!
+//! The listed modules are the only ones the registry serves, from the start of the sync, and
+//! the packages registered from them are the only ones configurations may install, from its
+//! end: a module dropped from the list stays in the store, but neither resolves nor installs.
+//!
+//! No blob of more than [`MODULE_MAX_BYTES`] is copied, and no module whose files hold more
+//! than that, uncompressed, is registered.
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -75,6 +82,13 @@ pub struct SyncTargets<'a> {
 /// Copies every module `deployment` lists into the registry and registers the packages in
 /// them. It never fails as a whole: each module's outcome is in the report.
 pub async fn sync_modules(deployment: &Deployment, targets: &SyncTargets<'_>) -> SyncReport {
+    targets.registry.list(
+        deployment
+            .modules
+            .iter()
+            .map(|m| (m.path.as_str(), m.version.as_str())),
+    );
+    targets.extensions.begin_sync();
     let mut report = SyncReport::default();
     for module in &deployment.modules {
         let name = module.to_string();
@@ -105,6 +119,9 @@ pub async fn sync_modules(deployment: &Deployment, targets: &SyncTargets<'_>) ->
             Err(Registration::Mismatched(reason)) => report.mismatched.push(problem(reason)),
         }
     }
+    targets
+        .extensions
+        .set_available(report.registered.iter().cloned());
     report
 }
 
@@ -165,17 +182,77 @@ async fn copy(
         if registry.blob_size(&digest).await?.is_some() {
             continue;
         }
-        let mut bytes: Vec<u8> = Vec::new();
+        if descriptor.size() > MODULE_MAX_BYTES {
+            bail!(
+                "blob {digest} of {reference} is {} bytes, more than {MODULE_MAX_BYTES}",
+                descriptor.size()
+            );
+        }
+        let mut bytes = Capped::new(MODULE_MAX_BYTES);
         client
             .pull_blob(&reference, digest.as_str(), &mut bytes)
             .await
             .with_context(|| format!("pull blob {digest} of {reference}"))?;
-        registry.put_blob(&digest, Bytes::from(bytes)).await?;
+        registry
+            .put_blob(&digest, Bytes::from(bytes.into_inner()))
+            .await?;
     }
     registry
         .put_manifest(&module.path, &module.version, manifest)
         .await?;
     Ok(CopyOutcome::Copied)
+}
+
+/// A buffer that refuses to grow past a limit, for pulling a blob whose source may send more
+/// than its descriptor says.
+struct Capped {
+    bytes: Vec<u8>,
+    limit: u64,
+}
+
+impl Capped {
+    fn new(limit: u64) -> Self {
+        Self {
+            bytes: Vec::new(),
+            limit,
+        }
+    }
+
+    fn into_inner(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
+impl tokio::io::AsyncWrite for Capped {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let total = self.bytes.len().saturating_add(buf.len());
+        if u64::try_from(total).map_or(true, |total| total > self.limit) {
+            return std::task::Poll::Ready(Err(std::io::Error::other(format!(
+                "the blob holds more than {} bytes",
+                self.limit
+            ))));
+        }
+        self.bytes.extend_from_slice(buf);
+        std::task::Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
 }
 
 enum Registration {
@@ -275,15 +352,52 @@ fn unzip(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
             .to_str()
             .ok_or_else(|| anyhow!("a module path is not UTF-8"))?
             .replace('\\', "/");
-        total = total.saturating_add(file.size());
+        // An entry may hold more than it declares, so what is read counts, not the declared
+        // size, and no entry may read past what the limit leaves.
+        let remaining = MODULE_MAX_BYTES - total;
+        let mut contents = Vec::new();
+        (&mut file).take(remaining + 1).read_to_end(&mut contents)?;
+        total = total.saturating_add(contents.len() as u64);
         if total > MODULE_MAX_BYTES {
             bail!("the module holds more than {MODULE_MAX_BYTES} bytes");
         }
-        let mut contents = Vec::new();
-        (&mut file)
-            .take(MODULE_MAX_BYTES + 1)
-            .read_to_end(&mut contents)?;
         files.insert(path, contents);
     }
     Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use tokio::io::AsyncWriteExt;
+
+    use super::*;
+
+    fn zip_of(files: &[(&str, usize)]) -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, size) in files {
+            writer
+                .start_file(*name, zip::write::SimpleFileOptions::default())
+                .expect("start");
+            writer.write_all(&vec![b'a'; *size]).expect("write");
+        }
+        writer.finish().expect("finish").into_inner()
+    }
+
+    #[test]
+    fn unzips_within_the_limit() {
+        let files = unzip(&zip_of(&[("tartan.json", 2), ("a/b.cue", 3)])).expect("unzips");
+        assert_eq!(files["a/b.cue"].len(), 3);
+        let half = usize::try_from(MODULE_MAX_BYTES / 2).expect("fits");
+        assert!(unzip(&zip_of(&[("a", half), ("b", half), ("c", 1)])).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_capped_buffer_refuses_more_than_its_limit() {
+        let mut buffer = Capped::new(4);
+        buffer.write_all(b"abcd").await.expect("fits");
+        assert!(buffer.write_all(b"e").await.is_err());
+        assert_eq!(buffer.into_inner(), b"abcd");
+    }
 }

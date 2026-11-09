@@ -1,7 +1,7 @@
 //! Extension packages in object storage, their compiled components, and registering a package
 //! with the forge.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
@@ -13,11 +13,15 @@ use tokio::sync::Mutex;
 
 use crate::{PackageInfo, PackageQuery, PublishPackage, forge_handle};
 
-/// Stores packages and runs their components. One per process; cloning is cheap.
+/// Stores packages and runs their components, and knows which packages the deployment makes
+/// available. One per process.
 pub struct Extensions {
     runtime: ExtensionRuntime,
     store: Arc<dyn ObjectStore>,
     loaded: Mutex<HashMap<String, Loaded>>,
+    /// The `id@version` of every package in a module the deployment lists, as this process's
+    /// module sync found them; `None` while the sync runs.
+    available: tokio::sync::watch::Sender<Option<Arc<BTreeSet<String>>>>,
 }
 
 /// A package and its compiled component.
@@ -36,6 +40,33 @@ impl Extensions {
             runtime,
             store,
             loaded: Mutex::new(HashMap::new()),
+            available: tokio::sync::watch::Sender::new(None),
+        }
+    }
+
+    /// Marks a module sync as started: until [`Extensions::set_available`], what is available
+    /// is unknown and [`Extensions::available`] waits.
+    pub fn begin_sync(&self) {
+        self.available.send_replace(None);
+    }
+
+    /// Records the packages the deployment makes available, as `id@version`: those in the
+    /// modules it lists. A package registered from a module that is no longer listed stays
+    /// registered, so installations of it keep running, but no configuration may name it.
+    pub fn set_available(&self, packages: impl IntoIterator<Item = String>) {
+        self.available
+            .send_replace(Some(Arc::new(packages.into_iter().collect())));
+    }
+
+    /// The packages the deployment makes available, as `id@version`, once the module sync has
+    /// finished: until then the forge's registry may lack modules the deployment lists, so a
+    /// configuration evaluated meanwhile could be refused for a module about to arrive.
+    pub async fn available(&self) -> Arc<BTreeSet<String>> {
+        let mut receiver = self.available.subscribe();
+        match receiver.wait_for(Option::is_some).await {
+            Ok(available) => available.clone().unwrap_or_default(),
+            // The sender lives as long as `self`, so this is never reached.
+            Err(_) => Arc::default(),
         }
     }
 

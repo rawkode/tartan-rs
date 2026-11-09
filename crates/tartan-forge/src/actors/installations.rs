@@ -2,7 +2,7 @@
 //! reconciles its `installations` table, and the extension actors behind it, with the
 //! extensions its committed package `tartan` names.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -88,10 +88,17 @@ pub(crate) struct InstallTarget {
     pub(crate) path: String,
 }
 
-/// Makes the installations match `wanted`, the configuration at commit `sha`, all or nothing:
-/// a configuration naming a version that is not available, or a package whose `requires` it
-/// does not also install, is refused and changes nothing. Records `config.applied` or
-/// `config.refused` in `source`'s log, and returns whether the configuration was applied.
+/// Makes the installations match `wanted`, the configuration at commit `sha`.
+///
+/// The checks come first and are all or nothing: a configuration naming a package that is not
+/// in `available` (the deployment's, as `id@version`), or a package whose `requires` it does not
+/// also install, is refused, `config.refused` is recorded, and nothing changes. Then each
+/// extension is initialised in turn, the extensions a package requires before it. If one
+/// fails, the installations already changed stay changed, nothing is recorded, and the error is
+/// returned: the repository actor applies the same configuration again later, and the
+/// extensions already initialised are then unchanged, so the repository converges on the
+/// configuration. Once every extension is initialised, `config.applied` is recorded in
+/// `source`'s log. Returns whether the configuration was applied.
 pub(crate) async fn reconcile<A>(
     ctx: &Ctx<A>,
     outbox: &Arc<Outbox>,
@@ -99,6 +106,7 @@ pub(crate) async fn reconcile<A>(
     target: &InstallTarget,
     sha: &str,
     wanted: BTreeMap<String, Wanted>,
+    available: &BTreeSet<String>,
 ) -> Result<bool>
 where
     A: Actor + Handler<Flush>,
@@ -108,6 +116,13 @@ where
     let mut packages: BTreeMap<String, PackageInfo> = BTreeMap::new();
     let mut problems = Vec::new();
     for (extension_id, want) in &wanted {
+        let package_name = format!("{extension_id}@{}", want.version);
+        if !available.contains(&package_name) {
+            problems.push(format!(
+                "{package_name} is not available: no module the deployment lists holds it"
+            ));
+            continue;
+        }
         let found = forge
             .send(PackageQuery {
                 id: extension_id.clone(),
@@ -115,7 +130,7 @@ where
             })
             .await?;
         match found {
-            None => problems.push(format!("{extension_id}@{} is not published", want.version)),
+            None => problems.push(format!("{package_name} is not registered")),
             Some(package) => {
                 problems.extend(missing_requirements(&package, &wanted));
                 packages.insert(extension_id.clone(), package);
@@ -129,7 +144,11 @@ where
 
     let pool = ctx.inner().client_pool_name().map(str::to_owned);
     let mut changes = Vec::new();
-    for (extension_id, want) in wanted {
+    let mut wanted = wanted;
+    for extension_id in install_order(&packages) {
+        let Some(want) = wanted.remove(&extension_id) else {
+            continue;
+        };
         let package = &packages[&extension_id];
         let current = row(ctx, &extension_id).await?;
         let config = want.config.to_string();
@@ -302,6 +321,38 @@ fn missing_requirements(package: &PackageInfo, wanted: &BTreeMap<String, Wanted>
         .collect()
 }
 
+/// The extensions of `packages` in the order they are initialised: each after the extensions
+/// its manifest `requires`, otherwise by id.
+fn install_order(packages: &BTreeMap<String, PackageInfo>) -> Vec<String> {
+    fn visit(
+        id: &str,
+        packages: &BTreeMap<String, PackageInfo>,
+        visiting: &mut BTreeSet<String>,
+        order: &mut Vec<String>,
+    ) {
+        if order.iter().any(|done| done == id) || !visiting.insert(id.to_owned()) {
+            return;
+        }
+        if let Some(package) = packages.get(id) {
+            for required in package.manifest["requires"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                visit(required, packages, visiting, order);
+            }
+            order.push(id.to_owned());
+        }
+    }
+    let mut order = Vec::new();
+    let mut visiting = BTreeSet::new();
+    for id in packages.keys() {
+        visit(id, packages, &mut visiting, &mut order);
+    }
+    order
+}
+
 /// The event patterns a manifest subscribes to.
 fn subscriptions(manifest: &Value) -> Result<Vec<EventPattern>> {
     Ok(manifest["subscribe"]
@@ -405,6 +456,24 @@ mod tests {
                 ((*id).to_owned(), want)
             })
             .collect()
+    }
+
+    #[test]
+    fn required_extensions_are_initialised_first() {
+        let packages: BTreeMap<String, PackageInfo> = [
+            package("a.board", json!(["z.issues"])),
+            package("m.reports", json!(["a.board", "z.issues"])),
+            package("z.issues", Value::Null),
+            package("b.loop", json!(["c.loop"])),
+            package("c.loop", json!(["b.loop"])),
+        ]
+        .into_iter()
+        .map(|p| (p.id.clone(), p))
+        .collect();
+        assert_eq!(
+            install_order(&packages),
+            vec!["z.issues", "a.board", "c.loop", "b.loop", "m.reports"]
+        );
     }
 
     #[test]

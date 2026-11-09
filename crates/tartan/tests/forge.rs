@@ -180,6 +180,8 @@ async fn forge_end_to_end() {
         git_host: git_host.clone(),
     })
     .expect("installed once");
+    // The deployment lists no modules until a test syncs some.
+    extensions.set_available([]);
 
     let mut registry = Registry::new();
     register_actors(&mut registry);

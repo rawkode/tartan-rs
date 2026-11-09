@@ -12,13 +12,13 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
-use common::{Forge, module_path, package};
+use common::{Forge, PLAIN_MODULE, module_path, package};
 use serde_json::{Value, json};
 use tartan_config::deployment::ModuleVersion;
 
 const FIXTURE: &str = "tartan.fixture";
 
-/// A configuration in plain CUE, without a module.
+/// A configuration in plain CUE, importing no module.
 fn install(version: &str, settings: &str) -> String {
     format!(
         "package tartan\n\nextensions: \"{FIXTURE}\": {{\n\tversion: \"{version}\"\n\tsettings: {{{settings}}}\n}}\n"
@@ -46,6 +46,14 @@ fn through_module(module_version: &str, entry: &str) -> Vec<(String, String)> {
             "env.cue".to_owned(),
             "package cuenv\n\nenv: FOO: \"bar\"\n".to_owned(),
         ),
+    ]
+}
+
+/// `tartan.cue` with the module of a configuration that imports nothing.
+fn plain(tartan_cue: impl Into<String>) -> Vec<(String, String)> {
+    vec![
+        ("cue.mod/module.cue".to_owned(), PLAIN_MODULE.to_owned()),
+        ("tartan.cue".to_owned(), tartan_cue.into()),
     ]
 }
 
@@ -121,6 +129,7 @@ async fn extensions_come_from_modules_and_pushed_configuration() {
     modules_are_synced_and_their_packages_registered(&forge, &fixture).await;
     the_registry_serves_cue_and_refuses_writes(&forge).await;
     configuration_installs_and_configures(&forge).await;
+    a_module_dropped_from_the_deployment_is_unavailable(&forge).await;
 
     let types = forge.received_types("audit").await;
     let count = |kind: &str| types.iter().filter(|t| *t == kind).count();
@@ -315,6 +324,16 @@ async fn the_registry_serves_cue_and_refuses_writes(forge: &Forge) {
     assert_eq!(tags, json!({"name": name, "tags": ["v0.1.0", "v0.2.0"]}));
     let missing = response(http.get(format!("{}/v2/{name}/manifests/v9.9.9", forge.base))).await;
     assert_eq!(missing.status(), 404);
+    // Content is served only under the repository that holds it, and a layer is no manifest.
+    let elsewhere =
+        response(http.head(format!("{}/v2/no.such/repo/blobs/{layer}", forge.base))).await;
+    assert_eq!(elsewhere.status(), 404);
+    let elsewhere =
+        response(http.head(format!("{}/v2/no.such/repo/manifests/{digest}", forge.base))).await;
+    assert_eq!(elsewhere.status(), 404);
+    let layer_as_manifest =
+        response(http.head(format!("{}/v2/{name}/manifests/{layer}", forge.base))).await;
+    assert_eq!(layer_as_manifest.status(), 404);
     let upload = response(http.post(format!("{}/v2/{name}/blobs/uploads/", forge.base))).await;
     assert_eq!(upload.status(), 405);
     let put = response(
@@ -407,20 +426,23 @@ async fn configuration_installs_and_configures(forge: &Forge) {
 
     // Refused configurations change nothing.
     let refusals: Vec<(Vec<(String, String)>, &str)> = vec![
+        (plain(install("9.9.9", "")), "tartan.fixture@9.9.9 is not available"),
+        (plain("package tartan\nthis is not cue\n"), ""),
         (
-            vec![("tartan.cue".into(), install("9.9.9", ""))],
-            "not published",
-        ),
-        (
-            vec![("tartan.cue".into(), "package tartan\nthis is not cue\n".into())],
-            "",
-        ),
-        (
-            vec![(
-                "tartan.cue".into(),
-                format!("package tartan\nextensions: \"{FIXTURE}\": {{version: \"0.1.0\", colour: \"red\"}}\n"),
-            )],
+            plain(format!(
+                "package tartan\nextensions: \"{FIXTURE}\": {{version: \"0.1.0\", colour: \"red\"}}\n"
+            )),
             "colour",
+        ),
+        // What `cue export` refuses as not concrete is refused, not applied as null.
+        (
+            plain(install("0.1.0", "colour: string")),
+            "settings.colour is not concrete",
+        ),
+        // Without a module the package is refused: the forge adds none.
+        (
+            vec![("tartan.cue".into(), install("0.1.0", ""))],
+            "cue.mod/module.cue",
         ),
         // A version the module's #Extension does not have conflicts with it.
         (through_module("v0.2.0", "{version: \"0.1.0\"}"), ""),
@@ -484,4 +506,62 @@ async fn configuration_installs_and_configures(forge: &Forge) {
         rows(&before) > 0,
         "the fixture saw the configuration pushes"
     );
+}
+
+/// A forge restarted with a deployment that no longer lists a module: the registry stops
+/// serving it, configurations naming its package are refused, and the installation of it keeps
+/// running until the repository's configuration changes.
+async fn a_module_dropped_from_the_deployment_is_unavailable(forge: &Forge) {
+    let name = module_path(FIXTURE);
+    let mut deployment = forge.modules.deployment();
+    deployment
+        .modules
+        .retain(|m| !(m.path == name && m.version == "v0.2.0"));
+    let report = forge.sync_deployment(&deployment).await;
+    assert!(
+        !report
+            .registered
+            .contains(&"tartan.fixture@0.2.0".to_owned()),
+        "{report:?}"
+    );
+    let tags: Value = forge
+        .http
+        .get(format!("{}/v2/{name}/tags/list", forge.base))
+        .send()
+        .await
+        .expect("answers")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(tags["tags"], json!(["v0.1.0"]));
+    let refusals = forge
+        .received_types("audit")
+        .await
+        .iter()
+        .filter(|t| *t == "config.refused")
+        .count();
+    let dropped: Vec<(Vec<(String, String)>, &str)> = vec![
+        (
+            plain(install("0.2.0", "colour: \"blue\"")),
+            "tartan.fixture@0.2.0 is not available",
+        ),
+        // CUE's module cache may still hold the version, so the refusal comes from CUE or
+        // from the forge's own check; either names the version.
+        (
+            through_module("v0.2.0", "{settings: colour: \"blue\"}"),
+            "0.2.0",
+        ),
+    ];
+    for (count, (files, problem)) in dropped.iter().enumerate() {
+        push(forge, "acme/api", files).await;
+        wait_for_count(forge, "config.refused", refusals + count + 1).await;
+        let refusal = last_refusal(forge).await;
+        assert!(refusal.contains(problem), "{problem}: {refusal}");
+    }
+    assert_eq!(
+        forge.installed("acme/api").await,
+        vec!["tartan.fixture@0.2.0"],
+        "the installation keeps running"
+    );
+    forge.sync().await;
 }

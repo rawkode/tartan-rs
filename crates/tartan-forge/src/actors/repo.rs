@@ -352,33 +352,65 @@ impl Handler<RepoStatusQuery> for Repo {
     }
 }
 
+/// What one attempt to apply the configuration came to.
+enum Reconciled {
+    /// The configuration was applied or refused, or there is none to apply.
+    Done,
+    /// It could not be evaluated for a reason that may pass, such as the Git host or the
+    /// registry failing; it stays unapplied and is tried again.
+    Later(String),
+}
+
+/// The wait before trying a configuration again; it doubles up to [`RETRY_LAST_DELAY`], about
+/// two minutes in all. After that the configuration stays unapplied until the actor starts
+/// again or `main` moves.
+const RETRY_FIRST_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+const RETRY_LAST_DELAY: std::time::Duration = std::time::Duration::from_secs(64);
+
 impl Repo {
-    /// Applies the latest recorded `main` in the background.
+    /// Applies the latest recorded `main` in the background, trying again with a growing delay
+    /// while it fails for a reason that may pass.
     fn reconcile_later(self: &Arc<Self>, ctx: &Ctx<Self>) {
         let repo = Arc::clone(self);
         let ctx = ctx.clone();
         ctx.clone().wait_until(async move {
-            if let Err(error) = repo.reconcile(&ctx).await {
-                tracing::warn!(repo = %repo.id, error = format!("{error:#}"),
-                    "could not apply the repository's configuration");
+            let mut delay = RETRY_FIRST_DELAY;
+            loop {
+                let reason = match repo.reconcile(&ctx).await {
+                    Ok(Reconciled::Done) => return,
+                    Ok(Reconciled::Later(reason)) => reason,
+                    Err(error) => format!("{error:#}"),
+                };
+                if delay > RETRY_LAST_DELAY {
+                    tracing::warn!(repo = %repo.id, %reason,
+                        "could not apply the repository's configuration; it stays unapplied");
+                    return;
+                }
+                tracing::info!(repo = %repo.id, %reason, ?delay,
+                    "could not apply the repository's configuration yet; trying again");
+                tokio::time::sleep(delay).await;
+                delay *= 2;
             }
         });
     }
 
     /// Applies the configuration at the latest recorded `main`, unless it is applied already.
-    async fn reconcile(&self, ctx: &Ctx<Self>) -> Result<()> {
+    /// It waits for this process's module sync first, so the registry holds every module the
+    /// deployment lists and the packages available are known.
+    async fn reconcile(&self, ctx: &Ctx<Self>) -> Result<Reconciled> {
         let _reconciling = self.reconciling.lock().await;
         let head = ctx
             .sql()
             .query("SELECT sha, applied FROM config_head WHERE id = 1", None)
             .await?;
         let Some(row) = head.rows.first() else {
-            return Ok(());
+            return Ok(Reconciled::Done);
         };
         let (sha, applied) = (text(row, 0)?, crate::sql::integer(row, 1)? != 0);
         if applied {
-            return Ok(());
+            return Ok(Reconciled::Done);
         }
+        let available = services()?.extensions.available().await;
         let (org_slug, slug) = self.path(ctx).await?;
         let org_id = self.org_id(ctx).await?;
         let source = HostSource {
@@ -387,16 +419,15 @@ impl Repo {
             rev: sha.clone(),
         };
         let evaluated = match tartan_config::load(&source, tartan_config::LIMITS).await {
-            Ok(files) => tartan_config::evaluate(files)
-                .await
-                .map_err(|error| error.to_string()),
-            Err(error) => Err(error.to_string()),
+            Ok(files) => tartan_config::evaluate(files).await,
+            Err(error) => Err(error),
         };
         let config = match evaluated {
             Ok(config) => Some(config),
-            Err(problem) => {
-                installations::refuse(ctx, &self.outbox, &self.source(), &sha, vec![problem])
-                    .await?;
+            Err(error) if error.is_transient() => return Ok(Reconciled::Later(error.to_string())),
+            Err(error) => {
+                let problems = vec![error.to_string()];
+                installations::refuse(ctx, &self.outbox, &self.source(), &sha, problems).await?;
                 None
             }
         };
@@ -417,8 +448,16 @@ impl Repo {
                 repo_id: self.id.clone(),
                 path: format!("{org_slug}/{slug}"),
             };
-            installations::reconcile(ctx, &self.outbox, &self.source(), &target, &sha, wanted)
-                .await?;
+            installations::reconcile(
+                ctx,
+                &self.outbox,
+                &self.source(),
+                &target,
+                &sha,
+                wanted,
+                &available,
+            )
+            .await?;
         }
         ctx.sql()
             .execute(
@@ -426,7 +465,7 @@ impl Repo {
                 Some(vec![param_text(sha.as_str())]),
             )
             .await?;
-        Ok(())
+        Ok(Reconciled::Done)
     }
 
     async fn org_id(&self, ctx: &Ctx<Self>) -> Result<String> {

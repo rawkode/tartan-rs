@@ -10,5 +10,8 @@
 		"scope": "repo",
 		"migrations": ["migrations/0001_seen.sql"]
 	},
-	"subscribe": [{ "event": "ref.*" }]
+	"subscribe": [{ "event": "ref.*" }],
+	"permissions": {
+		"calls": { "tartan.fixture": ["seen"] }
+	}
 }

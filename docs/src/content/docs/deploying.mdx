@@ -32,7 +32,7 @@ modules: [
 
 A module comes from the source whose prefix matches the most whole elements of its path, and its repository there is the source's prefix followed by the module path. A registry on `localhost` or `127.0.0.1` is reached over plain HTTP unless it says `+secure`.
 
-The file is evaluated as `cue export` evaluates it, without a registry. The forge does not start when it does not evaluate, has a field other than `modules` and `sources`, lists a module without a full version (`@v0` is not one) or lists a module no source serves; the log names the problem. Without `TARTAN_CONFIG` the forge starts with no modules.
+The file is evaluated as `cue export` evaluates it, without a registry, and may import only CUE's standard library. It is the operator's file, so unlike a repository's configuration it needs no `cue.mod/module.cue`: the forge evaluates a file or directory without one in an empty module of its own, which changes nothing it exports. Values must be concrete. The forge does not start when it does not evaluate, has a field other than `modules` and `sources`, lists a module without a full version (`@v0` is not one) or lists a module no source serves; the log names the problem. Without `TARTAN_CONFIG` the forge starts with no modules.
 
 ## The forge's registry
 
@@ -46,6 +46,8 @@ cue export
 
 Every write answers 405: only the forge fills its registry. Modules hold schemas and extension packages, never repository data, so the registry needs no token.
 
+The registry serves only the module versions `modules` lists: a version it holds but the deployment no longer lists answers 404, as an unknown one does. A blob, or a manifest asked for by digest, is served under a module's name only when a listed version of that module is or references it.
+
 The forge's process must start with `CUE_REGISTRY` set to its own registry, such as `127.0.0.1:8080+insecure` or its public host. The CUE evaluator reads it once, at startup, and resolves every repository's imports through it, so a configuration that `cue export` accepts against the forge's registry is the configuration the forge applies. The forge refuses to start without it.
 
 ## Syncing modules
@@ -56,9 +58,11 @@ At startup the forge copies each listed module from its source into its registry
 - A version the registry holds is never replaced. If its source now serves other contents, the forge keeps its copy and logs the mismatch.
 - A source that cannot be reached is logged; the forge starts with the modules it holds and tries again at the next start.
 
-A module whose files include `tartan.json` is an extension. Its package becomes installable once it passes the checks in [Extensions](/extensions/#packages), and the forge's log records `package.published`. A module that fails them stays in the registry for `cue`, but its package is not available, and the log says why.
+A module whose files include `tartan.json` is an extension. Its package becomes installable once it passes the checks in [Extensions](/extensions/#packages), and the forge's log records `package.published`. A module that fails them stays in the registry for `cue`, but its package is not available, and the log says why. No blob larger than 64 MiB is copied, and no module holding more than 64 MiB of files is registered.
 
-Removing a module from `modules` stops the forge from copying it at startup. What the registry already holds stays, and a package already registered stays installable.
+Repositories apply configurations pushed while the sync runs once it has finished, so a module the deployment has just started to list is in the registry before any configuration needs it.
+
+Removing a module from `modules` makes it unavailable at the next start: the registry stops serving it, and a configuration naming its package, by importing the module or by writing its version in a plain entry, is refused. What the store holds stays, and an installation of the package keeps running until its repository's configuration changes.
 
 ## Upgrading an extension
 

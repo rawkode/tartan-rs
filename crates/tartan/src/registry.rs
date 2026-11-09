@@ -8,13 +8,19 @@
 //! upload sessions or garbage collection. Modules are public to anyone who can reach the
 //! gateway: they hold schemas and extension packages, never repository data.
 //!
+//! The registry serves only the module versions the deployment lists ([`RegistryStore::list`]):
+//! a version dropped from the list stays in the store but is unknown here, so `cue` and the
+//! forge's own evaluations fail to resolve it alike. A manifest by digest and a blob are served
+//! under a repository name only when a listed manifest of that repository is or references it.
+//!
 //! Layout under the store's `registry/` prefix:
 //!
 //! - `blobs/sha256/<hex>`: every blob, manifests included, by digest;
 //! - `manifests/<name>/<tag>`: each tagged manifest's bytes, so a tag listing is a directory
 //!   listing.
 
-use std::sync::{Arc, LazyLock};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
 use anyhow::{Context, Result};
 use axum::body::{Body, Bytes};
@@ -40,6 +46,21 @@ const DIGEST_HEADER: &str = "docker-content-digest";
 #[derive(Clone)]
 pub struct RegistryStore {
     store: Arc<dyn ObjectStore>,
+    /// The tags (module versions) the deployment lists, by repository name.
+    listed: Arc<RwLock<BTreeMap<String, BTreeSet<String>>>>,
+    /// Each held manifest's digest and the digests of the blobs it references, by repository
+    /// name and tag. A tag is never retagged, so an entry never changes.
+    index: Arc<Mutex<ManifestIndexes>>,
+}
+
+/// [`ManifestIndex`]es by repository name and tag.
+type ManifestIndexes = HashMap<(String, String), Arc<ManifestIndex>>;
+
+/// What one tagged manifest is and references.
+#[derive(Debug)]
+struct ManifestIndex {
+    digest: String,
+    blobs: BTreeSet<String>,
 }
 
 static NAME: LazyLock<Regex> = LazyLock::new(|| {
@@ -69,7 +90,78 @@ pub fn digest_of(bytes: &[u8]) -> String {
 impl RegistryStore {
     /// The registry kept under `registry/` in `store`.
     pub fn new(store: Arc<dyn ObjectStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            listed: Arc::default(),
+            index: Arc::default(),
+        }
+    }
+
+    /// Serves `modules` (`(path, version)` pairs) and no others.
+    pub fn list<'a>(&self, modules: impl IntoIterator<Item = (&'a str, &'a str)>) {
+        let mut listed: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for (path, version) in modules {
+            listed
+                .entry(path.to_owned())
+                .or_default()
+                .insert(version.to_owned());
+        }
+        *self.listed.write().unwrap_or_else(|e| e.into_inner()) = listed;
+    }
+
+    /// The listed tags of repository `name`.
+    fn listed_tags(&self, name: &str) -> BTreeSet<String> {
+        self.listed
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// What the held manifest tagged `tag` in `name` is and references.
+    async fn manifest_index(&self, name: &str, tag: &str) -> Result<Option<Arc<ManifestIndex>>> {
+        let key = (name.to_owned(), tag.to_owned());
+        if let Some(found) = self
+            .index
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&key)
+        {
+            return Ok(Some(found.clone()));
+        }
+        let Some((bytes, digest)) = self.manifest(name, tag).await? else {
+            return Ok(None);
+        };
+        let mut blobs = BTreeSet::new();
+        if let Ok(manifest) = serde_json::from_slice::<oci_spec::image::ImageManifest>(&bytes) {
+            blobs.insert(manifest.config().digest().to_string());
+            blobs.extend(manifest.layers().iter().map(|l| l.digest().to_string()));
+        }
+        let found = Arc::new(ManifestIndex { digest, blobs });
+        self.index
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key, found.clone());
+        Ok(Some(found))
+    }
+
+    /// Whether a listed manifest of `name` has `digest` (`as_manifest`) or references it as a
+    /// blob.
+    async fn serves(&self, name: &str, digest: &str, as_manifest: bool) -> Result<bool> {
+        for tag in self.listed_tags(name) {
+            if let Some(index) = self.manifest_index(name, &tag).await? {
+                let found = if as_manifest {
+                    index.digest == digest
+                } else {
+                    index.blobs.contains(digest)
+                };
+                if found {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     fn blob_path(digest: &str) -> Option<Path> {
@@ -261,23 +353,51 @@ async fn resource(
     read_only(&method)?;
     let registry = &state.registry;
     let head = method == Method::HEAD;
+    match route(&path) {
+        Some(Route::Tags(name)) => {
+            check_name(name)?;
+            tags(registry, name, page).await
+        }
+        Some(Route::Manifest(name, reference)) => {
+            check_name(name)?;
+            manifest(registry, name, reference, head).await
+        }
+        Some(Route::Blob(name, digest)) => {
+            check_name(name)?;
+            blob(registry, name, digest, head).await
+        }
+        None => Err(RegistryError::new(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            format!("/v2/{path} is not a registry resource"),
+        )),
+    }
+}
+
+/// A registry resource: what follows `/v2/`.
+#[derive(Debug, PartialEq, Eq)]
+enum Route<'a> {
+    /// `<name>/tags/list`.
+    Tags(&'a str),
+    /// `<name>/manifests/<reference>`.
+    Manifest(&'a str, &'a str),
+    /// `<name>/blobs/<digest>`.
+    Blob(&'a str, &'a str),
+}
+
+/// Reads a resource path from its end, so a repository name may have `manifests`, `blobs` or
+/// `tags` elements of its own: the last element is the reference, the one before it the kind.
+fn route(path: &str) -> Option<Route<'_>> {
     if let Some(name) = path.strip_suffix("/tags/list") {
-        check_name(name)?;
-        return tags(registry, name, page).await;
+        return Some(Route::Tags(name));
     }
-    if let Some((name, reference)) = path.rsplit_once("/manifests/") {
-        check_name(name)?;
-        return manifest(registry, name, reference, head).await;
+    let (rest, reference) = path.rsplit_once('/')?;
+    let (name, kind) = rest.rsplit_once('/')?;
+    match kind {
+        "manifests" => Some(Route::Manifest(name, reference)),
+        "blobs" => Some(Route::Blob(name, reference)),
+        _ => None,
     }
-    if let Some((name, digest)) = path.rsplit_once("/blobs/") {
-        check_name(name)?;
-        return blob(registry, digest, head).await;
-    }
-    Err(RegistryError::new(
-        StatusCode::NOT_FOUND,
-        "NOT_FOUND",
-        format!("/v2/{path} is not a registry resource"),
-    ))
 }
 
 fn check_name(name: &str) -> Result<(), RegistryError> {
@@ -297,7 +417,13 @@ async fn tags(
     name: &str,
     page: TagPage,
 ) -> Result<Response, RegistryError> {
-    let all = registry.tags(name).await?;
+    let listed = registry.listed_tags(name);
+    let all: Vec<String> = registry
+        .tags(name)
+        .await?
+        .into_iter()
+        .filter(|tag| listed.contains(tag))
+        .collect();
     if all.is_empty() {
         return Err(RegistryError::new(
             StatusCode::NOT_FOUND,
@@ -342,9 +468,15 @@ async fn manifest(
         )
     };
     let (bytes, digest) = if reference.starts_with("sha256:") {
+        if !registry.serves(name, reference, true).await? {
+            return Err(unknown());
+        }
         let bytes = registry.blob(reference).await?.ok_or_else(unknown)?;
         (bytes, reference.to_owned())
     } else if valid_tag(reference) {
+        if !registry.listed_tags(name).contains(reference) {
+            return Err(unknown());
+        }
         registry
             .manifest(name, reference)
             .await?
@@ -379,6 +511,7 @@ async fn manifest(
 
 async fn blob(
     registry: &RegistryStore,
+    name: &str,
     digest: &str,
     head: bool,
 ) -> Result<Response, RegistryError> {
@@ -396,6 +529,9 @@ async fn blob(
             format!("blob {digest} is not known"),
         )
     };
+    if !registry.serves(name, digest, false).await? {
+        return Err(unknown());
+    }
     let size = registry.blob_size(digest).await?.ok_or_else(unknown)?;
     let mut headers = HeaderMap::new();
     insert(
@@ -483,6 +619,76 @@ mod tests {
             registry.manifest("../x", "v0.1.0").await.expect("read"),
             None
         );
+    }
+
+    #[test]
+    fn routes_read_from_the_end() {
+        assert_eq!(route("a/b/tags/list"), Some(Route::Tags("a/b")));
+        assert_eq!(
+            route("github.com/acme/manifests/blobs/sha256:00"),
+            Some(Route::Blob("github.com/acme/manifests", "sha256:00"))
+        );
+        assert_eq!(
+            route("a/blobs/manifests/v0.1.0"),
+            Some(Route::Manifest("a/blobs", "v0.1.0"))
+        );
+        assert_eq!(route("a/tags/tags/list"), Some(Route::Tags("a/tags")));
+        assert_eq!(
+            route("a/tags/manifests/list"),
+            Some(Route::Manifest("a/tags", "list"))
+        );
+        assert_eq!(route("a/manifests"), None);
+        assert_eq!(route("a/other/v1"), None);
+    }
+
+    #[tokio::test]
+    async fn serves_only_listed_modules_and_their_own_blobs() {
+        let registry = RegistryStore::new(Arc::new(InMemory::new()));
+        let layer = Bytes::from_static(b"zip");
+        let layer_digest = digest_of(&layer);
+        registry.put_blob(&layer_digest, layer).await.expect("put");
+        let config = Bytes::from_static(b"{}");
+        let config_digest = digest_of(&config);
+        registry
+            .put_blob(&config_digest, config)
+            .await
+            .expect("put");
+        let manifest = serde_json::to_vec(&json!({
+            "schemaVersion": 2,
+            "mediaType": OCI_MANIFEST,
+            "config": {"mediaType": "application/vnd.cue.module.v1+json", "digest": config_digest, "size": 2},
+            "layers": [{"mediaType": "application/zip", "digest": layer_digest, "size": 3}],
+        }))
+        .expect("encode");
+        let manifest_digest = registry
+            .put_manifest("example.com/a", "v0.1.0", Bytes::from(manifest))
+            .await
+            .expect("put");
+        let blob_of = |name: &'static str, digest: String| {
+            let registry = registry.clone();
+            async move { registry.serves(name, &digest, false).await.expect("read") }
+        };
+        // Not listed: nothing is served.
+        assert!(!blob_of("example.com/a", layer_digest.clone()).await);
+        registry.list([("example.com/a", "v0.1.0")]);
+        assert!(blob_of("example.com/a", layer_digest.clone()).await);
+        assert!(blob_of("example.com/a", config_digest.clone()).await);
+        assert!(!blob_of("example.com/b", layer_digest.clone()).await);
+        assert!(
+            registry
+                .serves("example.com/a", &manifest_digest, true)
+                .await
+                .expect("read")
+        );
+        assert!(
+            !registry
+                .serves("example.com/a", &layer_digest, true)
+                .await
+                .expect("read"),
+            "a layer is not a manifest"
+        );
+        registry.list([]);
+        assert!(!blob_of("example.com/a", layer_digest).await);
     }
 
     #[test]

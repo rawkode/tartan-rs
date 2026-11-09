@@ -3,6 +3,8 @@
 //! - `on-event` records each event it receives in its `seen` table and emits `seen` with the
 //!   event's sequence number; an update of `refs/heads/fail` makes it fail instead.
 //! - the `seen` tool returns what it has recorded, oldest first.
+//! - the `call` tool calls `{extension, repo, tool, args}` through the host, as its manifest's
+//!   `permissions.calls` allows, and returns `{result}` or the host's error.
 
 wit_bindgen::generate!({
     path: "../../wit",
@@ -11,9 +13,9 @@ wit_bindgen::generate!({
 
 use serde_json::{Value, json};
 
-use crate::tartan::ext::effects;
 use crate::tartan::ext::sql::{self, Value as SqlValue};
 use crate::tartan::ext::types::Verdict;
+use crate::tartan::ext::{calls, effects};
 
 struct Fixture;
 
@@ -66,7 +68,20 @@ impl Guest for Fixture {
         Err(Error::NotFound(format!("action {action}")))
     }
 
-    fn call_tool(name: String, _args: String, _ctx: SlotContext) -> Result<String, Error> {
+    fn call_tool(name: String, args: String, _ctx: SlotContext) -> Result<String, Error> {
+        if name == "call" {
+            let args: Value =
+                serde_json::from_str(&args).map_err(|error| Error::Invalid(error.to_string()))?;
+            let text = |key: &str| args[key].as_str().unwrap_or_default().to_owned();
+            let result = calls::call(
+                &text("extension"),
+                args["repo"].as_str(),
+                &text("tool"),
+                &args["args"].to_string(),
+            )?;
+            let result: Value = serde_json::from_str(&result).unwrap_or(Value::String(result));
+            return Ok(json!({ "result": result }).to_string());
+        }
         if name != "seen" {
             return Err(Error::NotFound(format!("tool {name}")));
         }

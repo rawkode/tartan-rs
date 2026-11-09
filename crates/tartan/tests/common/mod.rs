@@ -111,6 +111,9 @@ impl GitHost for FakeGitHost {
     }
 }
 
+/// The `cue.mod/module.cue` of a repository whose configuration imports no other module.
+pub const PLAIN_MODULE: &str = "module: \"example.com/acme\"\nlanguage: version: \"v0.14.1\"\n";
+
 /// The prefix of the module paths test packages are published under.
 pub const MODULE_PREFIX: &str = "tartan.test";
 
@@ -371,6 +374,8 @@ impl Forge {
         let listener = gateway_listener().await;
         let base = format!("http://{}", listener.local_addr().expect("address"));
         tokio::spawn(async move { axum::serve(listener, router(state)).await });
+        // A forge starts with its deployment's modules synced; this one lists none yet.
+        sync(&Deployment::default(), &registry, &client, &extensions).await;
         Self {
             base,
             http: reqwest::Client::new(),
@@ -475,9 +480,11 @@ impl Forge {
     }
 
     /// Pushes a commit to `repo`'s `main` with `config` as its `tartan.cue` (no file for `None`),
-    /// and returns the commit.
+    /// in a module without dependencies ([`PLAIN_MODULE`]), and returns the commit.
     pub async fn push_config(&self, repo: &str, config: Option<&str>) -> String {
-        let files: Vec<(&str, &str)> = config.map(|c| ("tartan.cue", c)).into_iter().collect();
+        let files: Vec<(&str, &str)> = config
+            .map(|c| vec![("cue.mod/module.cue", PLAIN_MODULE), ("tartan.cue", c)])
+            .unwrap_or_default();
         self.push_files(repo, &files).await
     }
 
@@ -511,7 +518,10 @@ impl Forge {
         let sha = format!("{seq:040x}");
         self.git.files.lock().expect("never poisoned").insert(
             (repo.to_owned(), sha.clone()),
-            BTreeMap::from([("tartan.cue".to_owned(), config.to_owned())]),
+            BTreeMap::from([
+                ("cue.mod/module.cue".to_owned(), PLAIN_MODULE.to_owned()),
+                ("tartan.cue".to_owned(), config.to_owned()),
+            ]),
         );
         let event = json!([ref_event(repo, seq, branch, &"0".repeat(40), &sha)]);
         assert_eq!(self.hook(&event).await, 204);

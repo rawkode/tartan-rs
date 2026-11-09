@@ -241,6 +241,8 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
         )),
     })
     .expect("installed once");
+    // The deployment lists no modules until a test syncs some.
+    extensions.set_available([]);
     let mut actor_registry = Registry::new();
     register_actors(&mut actor_registry);
     let actors = rivetkit::test::setup(actor_registry)

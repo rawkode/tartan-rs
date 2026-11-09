@@ -23,6 +23,10 @@ The forge SHALL evaluate a repository's configuration exactly as committed, addi
 - **WHEN** a configuration depends on a module version the deployment does not list
 - **THEN** the configuration is refused, naming the module
 
+#### Scenario: Dropped module
+- **WHEN** the forge restarts with a deployment that no longer lists a module version and a configuration names its package
+- **THEN** the configuration is refused, and an installation of the package keeps running until its repository's configuration changes
+
 ### Requirement: Settings that do not fit are refused
 Settings that do not fit their extension's `#Extension` SHALL fail evaluation and refuse the configuration.
 

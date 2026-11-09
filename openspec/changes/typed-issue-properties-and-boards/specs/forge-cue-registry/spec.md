@@ -16,6 +16,17 @@ The gateway SHALL serve the OCI Distribution read API at `/v2/` — manifests, b
 - **WHEN** a client starts a blob upload at `/v2/<name>/blobs/uploads/`
 - **THEN** the forge answers 405
 
+### Requirement: The registry serves only listed modules
+The registry SHALL serve only the module versions the deployment lists. A blob, or a manifest asked for by digest, SHALL be served under a repository name only when a listed manifest of that repository is or references it.
+
+#### Scenario: Unlisted version
+- **WHEN** the registry holds a module version the deployment no longer lists
+- **THEN** its manifest answers 404 and its tag is not listed
+
+#### Scenario: Content under another name
+- **WHEN** a client asks for a listed module's layer under another repository name, or as a manifest
+- **THEN** the forge answers 404
+
 ### Requirement: The deployment configuration lists available modules
 The forge SHALL read the CUE package `forge` from the path in `TARTAN_CONFIG`: `modules`, fully qualified `path@version` entries, and `sources`, module path prefixes mapped to OCI registries. An invalid configuration SHALL stop the forge from starting.
 
@@ -24,7 +35,7 @@ The forge SHALL read the CUE package `forge` from the path in `TARTAN_CONFIG`: `
 - **THEN** the forge does not start and names the module
 
 ### Requirement: Modules are synced at startup
-At startup the forge SHALL copy each listed module from its source into its registry unless it already holds that version with the same digest, and SHALL refuse a listed version whose digest differs from the one it holds. A module it cannot fetch SHALL be reported and the forge SHALL start with the modules it has.
+At startup the forge SHALL copy each listed module from its source into its registry unless it already holds that version with the same digest, and SHALL refuse a listed version whose digest differs from the one it holds. A module it cannot fetch SHALL be reported and the forge SHALL start with the modules it has. No blob larger than 64 MiB SHALL be copied, and no module holding more than 64 MiB of files SHALL be registered.
 
 #### Scenario: Already synced
 - **WHEN** the forge restarts with the same module list

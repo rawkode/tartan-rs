@@ -154,6 +154,38 @@ async fn an_extension_receives_its_scope_and_emits_its_own() {
     forge.stop().await;
 }
 
+/// The listener's `call` tool on `acme/api` (the fixture's, under another id, with the
+/// fixture's `permissions.calls`) calls the fixture's `seen` on the repository `repo`.
+async fn call_seen(forge: &Forge, repo: &str) -> (u16, Value) {
+    forge
+        .post(
+            &format!("/-/api/orgs/acme/repos/api/extensions/{LISTENER}/tools/call"),
+            json!({"extension": FIXTURE, "repo": repo, "tool": "seen", "args": {}}),
+        )
+        .await
+}
+
+/// With the fixture and the listener on `acme/api` and the fixture on `acme/other`.
+async fn calls_stay_in_the_callers_repository(forge: &Forge) {
+    let id = |repo: &'static str| async move {
+        let (status, info) = forge.get(&format!("/-/api/orgs/acme/repos/{repo}")).await;
+        assert_eq!(status, 200, "{info}");
+        info["id"].as_str().expect("an id").to_owned()
+    };
+    let (api, other) = (id("api").await, id("other").await);
+    let (status, own) = call_seen(forge, &api).await;
+    assert_eq!(status, 200, "{own}");
+    assert!(own["result"]["seen"].is_array(), "{own}");
+    // The fixture is installed on acme/other too, but an installation never calls into another
+    // repository.
+    let (status, denied) = call_seen(forge, &other).await;
+    assert_eq!(status, 403, "{denied}");
+    assert!(
+        denied.to_string().contains("its own repository"),
+        "{denied}"
+    );
+}
+
 async fn another_extension_on_the_repository_receives_its_events(forge: &Forge) {
     // The fixture on another repository emits events of its own.
     forge
@@ -232,6 +264,8 @@ async fn another_extension_on_the_repository_receives_its_events(forge: &Forge) 
             },
         )
         .await;
+    calls_stay_in_the_callers_repository(forge).await;
+
     let heard = rows(&heard["heard"]);
     assert!(
         heard

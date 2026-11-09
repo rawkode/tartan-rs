@@ -347,5 +347,70 @@ async fn boards_from_a_repository_configuration_importing_the_modules() {
     let listed_again = forge.ok(&kanban("list_boards"), json!({})).await;
     assert_eq!(listed_again, listed);
 
+    // What `cue export` refuses as incomplete is refused too: a board without columns, and a
+    // select property without options.
+    let no_columns = KANBAN.replace(
+        "open: {columns: \"state\", lanes: \"project\"}",
+        "open: {columns: \"state\", lanes: \"project\"}\n\t\tbare: name: \"No columns\"",
+    );
+    assert_ne!(no_columns, KANBAN);
+    push(
+        &forge,
+        "acme/api",
+        &config(&format!("{ISSUES}{no_columns}")),
+    )
+    .await;
+    refusal(&forge, "boards.bare.columns is not concrete").await;
+    let no_options = ISSUES.replace(
+        "estimate: types.#Number & {min: 0}",
+        "estimate: types.#Number & {min: 0}\n\tblank: types.#Select",
+    );
+    assert_ne!(no_options, ISSUES);
+    push(
+        &forge,
+        "acme/api",
+        &config(&format!("{no_options}{KANBAN}")),
+    )
+    .await;
+    refusal(&forge, "properties.blank.options").await;
+
+    // CUE cannot tell that #issues is the repository's Issues entry, so Kanban checks each board
+    // against the properties the installed Issues lists: a board over a property Issues does not
+    // have is invalid, and the other boards still work.
+    let unbound = r#"
+extensions: "rawkode.kanban": kanban.#Extension & {
+	#issues: issues.#Extension & {settings: properties: phase: types.#Select & {options: ["a", "b"]}}
+	settings: boards: {
+		phases: {columns: #issues.settings.properties.phase}
+		open: {columns: "state", lanes: "project"}
+	}
+}
+"#;
+    push(&forge, "acme/api", &config(&format!("{ISSUES}{unbound}"))).await;
+    let boards = forge
+        .until(
+            "the board over another Issues entry is invalid",
+            async || forge.ok(&kanban("list_boards"), json!({})).await,
+            |listed| listed["invalid"].as_array().is_some_and(|i| !i.is_empty()),
+        )
+        .await;
+    assert_eq!(
+        boards,
+        json!({
+            "boards": [{"id": "open", "name": "open", "project": null}],
+            "invalid": [{
+                "id": "phases",
+                "problem": "columns: Issues on this repository has no property phase",
+            }],
+        })
+    );
+    let (status, body) = forge
+        .post(
+            &kanban("move"),
+            json!({"board": "phases", "number": 1, "column": "a"}),
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
+
     forge.stop().await;
 }

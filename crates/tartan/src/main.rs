@@ -85,6 +85,13 @@ async fn main() -> Result<()> {
         .context("the object store")?;
     let store: Arc<dyn ObjectStore> = Arc::new(PrefixStore::new(object_store, "tartan"));
     let registry = RegistryStore::new(store.clone());
+    // The registry serves the listed modules it already holds from the moment it listens.
+    registry.list(
+        deployment
+            .modules
+            .iter()
+            .map(|m| (m.path.as_str(), m.version.as_str())),
+    );
     let extensions = Arc::new(Extensions::new(ExtensionRuntime::new()?, store));
     install_services(Services {
         forge_id: env_or("TARTAN_FORGE_ID", "forge"),
@@ -124,6 +131,7 @@ async fn main() -> Result<()> {
     tracing::info!(%listen, "tartan gateway listening");
 
     // The registry serves what it already holds while the sync copies what is missing.
+    // Repositories apply their configurations once the sync has finished.
     tokio::spawn(async move {
         let targets = SyncTargets {
             registry: &registry,
