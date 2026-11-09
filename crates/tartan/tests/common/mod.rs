@@ -225,6 +225,7 @@ impl ModuleSource {
                 .into_iter()
                 .map(|prefix| (prefix.to_owned(), source.parse().expect("a source")))
                 .collect(),
+            ..Deployment::default()
         }
     }
 }

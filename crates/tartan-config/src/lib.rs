@@ -36,6 +36,7 @@
 //! from being silently ignored.
 
 pub mod deployment;
+pub mod did;
 mod files;
 
 use std::collections::BTreeMap;
