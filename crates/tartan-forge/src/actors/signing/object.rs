@@ -85,6 +85,9 @@ pub(crate) struct Stored {
     pub(crate) record_rev: Option<String>,
     pub(crate) detail: Option<String>,
     pub(crate) committed_at: Option<i64>,
+    /// The claimed author and committer (a tag's tagger) as JSON `{author, committer}`, each
+    /// `{name, email}` or `null`.
+    pub(crate) idents: Option<String>,
     /// The proof bundle of a `verified` result: its store key, digest and bytes.
     pub(crate) bundle: Option<(String, String, Vec<u8>)>,
 }
@@ -94,8 +97,9 @@ pub(crate) struct Stored {
 pub(crate) struct Failure {
     /// A short reason, without secrets.
     pub(crate) reason: String,
-    /// The record is missing, or the signer's PDS could not be reached, timed out or answered
-    /// 5xx or 429: the cases an update on a covered ref may wait up to seven days for.
+    /// The record is missing, or the signer's PDS, DID host or PLC directory could not be
+    /// reached, timed out or answered 5xx or 429: the cases an update on a covered ref may wait
+    /// up to seven days for.
     pub(crate) waiting: bool,
     /// The signer the check waits on.
     pub(crate) did: Option<String>,
@@ -104,7 +108,7 @@ pub(crate) struct Failure {
 /// What one object's check came to in one attempt.
 #[derive(Clone, Debug)]
 pub(crate) enum Outcome {
-    Final(Stored),
+    Final(Box<Stored>),
     Failed(Failure),
 }
 
@@ -134,8 +138,33 @@ fn stored(
         record_rev: None,
         detail,
         committed_at,
+        idents: idents(raw),
         bundle: None,
     }
+}
+
+/// The `{name, email}` of a Git identity line's value (`Name <email> time zone`).
+fn ident(value: &str) -> Option<serde_json::Value> {
+    let (name, rest) = value.split_once(" <")?;
+    let (email, _) = rest.split_once('>')?;
+    Some(serde_json::json!({ "name": name.trim(), "email": email.trim() }))
+}
+
+/// The claimed author and committer of a raw commit, or the tagger of a tag (as `committer`),
+/// as stored in `object_signatures.idents`.
+pub(crate) fn idents(raw: &RawObject) -> Option<String> {
+    let text = std::str::from_utf8(&raw.bytes).ok()?;
+    let header = |name: &str| {
+        text.split('\n')
+            .take_while(|line| !line.is_empty())
+            .find_map(|line| line.strip_prefix(name))
+            .and_then(ident)
+    };
+    let (author, committer) = match raw.kind {
+        ObjectKind::Commit => (header("author "), header("committer ")),
+        ObjectKind::Tag => (None, header("tagger ")),
+    };
+    Some(serde_json::json!({ "author": author, "committer": committer }).to_string())
 }
 
 /// The committer's (or tagger's) time of a raw object, in Unix milliseconds.
@@ -407,14 +436,17 @@ impl Verifier {
             result.did = Some(did.clone());
             result.rkey = Some(rkey.clone());
             result.record_cid = Some(block.cid.to_string());
-            Outcome::Final(result)
+            Outcome::Final(Box::new(result))
         };
 
         // Step 4: the signer's identity and status.
         let mut resolved = match self.resolve(&block.did, false).await {
             Ok(resolved) => resolved,
             Err(error) => {
-                return failed(format!("could not resolve {did}: {error}"), false);
+                // An unreachable DID host (a did:web signer's own host, often its PDS too) or
+                // PLC directory is waited on like an unreachable PDS.
+                let waiting = error.is_transient();
+                return failed(format!("could not resolve {did}: {error}"), waiting);
             }
         };
         if resolved.identity.is_none() {
@@ -494,7 +526,7 @@ impl Verifier {
                     result.record_cid = Some(block.cid.to_string());
                     result.record_rev = Some(commit.rev.clone());
                     result.bundle = Some((bundle.store_key(), bundle.sha256(), bundle.to_json()));
-                    return Outcome::Final(result);
+                    return Outcome::Final(Box::new(result));
                 }
                 SignatureJudgement::Mismatch(reason) => {
                     return final_with(
@@ -520,9 +552,10 @@ impl Verifier {
                     match self.resolve(&block.did, true).await {
                         Ok(fresh) => resolved = fresh,
                         Err(error) => {
+                            let waiting = error.is_transient();
                             return failed(
                                 format!("could not re-resolve {did} to confirm: {error}"),
-                                false,
+                                waiting,
                             );
                         }
                     }
@@ -551,7 +584,8 @@ impl Verifier {
                     match self.resolve(&block.did, true).await {
                         Ok(fresh) => resolved = fresh,
                         Err(error) => {
-                            return failed(format!("could not re-resolve {did}: {error}"), false);
+                            let waiting = error.is_transient();
+                            return failed(format!("could not re-resolve {did}: {error}"), waiting);
                         }
                     }
                     retried = true;
@@ -650,6 +684,15 @@ mod tests {
             bytes: b"tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A <a@b> 1 +0000\ncommitter C <c@d> 1700000000 +0100\n\nmessage\n".to_vec(),
         };
         assert_eq!(committed_at(&raw), Some(1_700_000_000_000));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&idents(&raw).expect("idents")).expect("json");
+        assert_eq!(
+            parsed,
+            serde_json::json!({
+                "author": {"name": "A", "email": "a@b"},
+                "committer": {"name": "C", "email": "c@d"},
+            })
+        );
         assert!(matches!(
             classify(&raw, Mode::Production),
             Local::Final(Stored {

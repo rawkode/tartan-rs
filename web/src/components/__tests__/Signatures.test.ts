@@ -95,6 +95,22 @@ test("an owner may check an unverifiable result again", async () => {
 	expect(wrapper.text()).toContain("Checking signatures…");
 });
 
+test("a deferred commit shows as not checked, even with only its status and detail", async () => {
+	const state = sampleState();
+	const repo = state.orgs.get("acme")!.repos.get("api")!;
+	repo.commits.set(MAIN, {
+		oid: MAIN,
+		status: "not_checked",
+		detail: "more than 64 signers in one update",
+	} as unknown as StoredSignature);
+	gateway(state);
+	setAccount(sampleOwner());
+	const { wrapper } = await mountAt(`/acme/api/commit/${MAIN}/signature`);
+	expect(wrapper.find("[data-detail]").text()).toBe("more than 64 signers in one update");
+	expect(wrapper.text()).toContain("Claimed author");
+	expect(wrapper.find("[data-annotations]").exists()).toBe(false);
+});
+
 test("a board with lanes by a person labels them by handle", async () => {
 	gateway();
 	setAccount(sampleOwner());

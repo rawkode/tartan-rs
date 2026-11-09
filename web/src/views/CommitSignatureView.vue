@@ -48,7 +48,9 @@ const recheckable = computed(() =>
 		? canRecheck(result.data.value, signedIn.value ? { did: signedIn.value.did, owner: signedIn.value.owner } : null)
 		: false
 );
-const person = (who: GitPerson | null) => (who ? `${who.name} <${who.email}>` : "—");
+const person = (who: GitPerson | null | undefined) => (who ? `${who.name} <${who.email}>` : "—");
+// A result without a stored row (a deferred object) may carry no annotations.
+const annotations = computed(() => stored.value?.annotations ?? []);
 
 const rechecking = ref(false);
 const recheck = async () => {
@@ -127,8 +129,8 @@ const styles = {
 				</template>
 			</dl>
 
-			<ul v-if="stored && stored.annotations.length" :class="styles.notes" data-annotations>
-				<li v-for="note in stored.annotations" :key="note">{{ note }}</li>
+			<ul v-if="annotations.length" :class="styles.notes" data-annotations>
+				<li v-for="note in annotations" :key="note">{{ note }}</li>
 			</ul>
 
 			<div :class="styles.actions">

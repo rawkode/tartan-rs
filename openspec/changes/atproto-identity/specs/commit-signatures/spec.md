@@ -198,6 +198,10 @@ A re-proof SHALL fetch `getRecord` afresh, never from the proof-reuse cache, and
 - **WHEN** a non-owner asks to re-check an `unverifiable` commit whose stored DID is not theirs
 - **THEN** the forge answers 404 and nothing is queued
 
+#### Scenario: Probing for private repositories
+- **WHEN** a signed-in non-owner who may not read the forge asks to re-check a commit in an org or repository that does not exist, under a malformed name, or in an existing repository with no result of theirs
+- **THEN** every answer is the same 404 body, so it reveals nothing about which orgs and repositories exist
+
 ### Requirement: Each check is recorded
 After checking a ref update the forge SHALL record `ref.signatures.checked {ref, old, new, commits: [{sha, status, did}], truncated}` on the repository's source, in the same transaction as the stored results.
 
@@ -206,7 +210,7 @@ After checking a ref update the forge SHALL record `ref.signatures.checked {ref,
 - **THEN** one `ref.signatures.checked` lists both with their statuses
 
 ### Requirement: Transient failures are retried
-When the git host, a DID document or a record cannot be fetched, a record is missing, or a proof does not verify after a fresh identity, the forge SHALL retry with a growing delay for up to one hour (seven days on a covered ref waiting only on allowed signers' records or PDSes), keep the last reason (no secrets), and keep checking other updates. Retries SHALL use one durable schedule per repository, and checks SHALL never run concurrently.
+When the git host, a DID document or a record cannot be fetched, a record is missing, or a proof does not verify after a fresh identity, the forge SHALL retry with a growing delay for up to one hour (seven days on a covered ref waiting only on allowed signers' records, PDSes, DID hosts or the PLC directory), keep the last reason (no secrets), and keep checking other updates. A git host failure SHALL get its own hour from the first of its consecutive failures, without ending an update that is waiting on its signers sooner. A failure of the forge's own storage or services during an attempt SHALL count as a failed attempt of that update, backed off like any other. Retries SHALL use one durable schedule per repository, and checks SHALL never run concurrently.
 
 #### Scenario: PDS down briefly
 - **WHEN** the signer's PDS is unreachable for five minutes after a push
@@ -215,6 +219,18 @@ When the git host, a DID document or a record cannot be fetched, a record is mis
 #### Scenario: PDS down for a day
 - **WHEN** the signer's PDS is unreachable for a day after a push to a covered ref
 - **THEN** the commit stays `pending` meanwhile and is `verified` within an hour of the PDS coming back
+
+#### Scenario: Signer's DID host down
+- **WHEN** a covered ref's signer's DID document cannot be fetched (its `did:web` host or the PLC directory is down) for two hours after a push
+- **THEN** the commit stays `pending` meanwhile and is `verified` once the host is back
+
+#### Scenario: Git host blip while waiting on a signer
+- **WHEN** an update on a covered ref has waited more than an hour for its allowed signer's record and one attempt then fails because the git host fails
+- **THEN** the update stays `pending`, and is `verified` once the record is published
+
+#### Scenario: Object store down during a check
+- **WHEN** storing a proof bundle fails during an attempt
+- **THEN** the attempt counts as failed, its next attempt is scheduled after the backoff rather than at once, and the commit is `verified` once the store is back
 
 #### Scenario: Retry while the forge is idle
 - **WHEN** an attempt fails and no other request reaches the repository until its next attempt is due
@@ -259,11 +275,15 @@ A check that gives up (after an hour, after seven days when waiting on signers, 
 - **THEN** the tip is recorded `unverifiable`, the update is judged non-compliant, and an owner's re-check queues the update again and checks every commit it adds
 
 ### Requirement: Signatures are readable
-`GET /-/api/orgs/<org>/repos/<repo>/commits/<sha>/signature` SHALL answer the stored result with its annotations and a proof URL, and `GET /-/api/orgs/<org>/repos/<repo>/signatures?ref=<ref>` the result and compliance of the ref's latest update; without `ref` it SHALL answer the same for every branch head. While the commit's check, or the ref's latest update, is queued, they SHALL answer `{status: "pending", attempts, next_at, last_error, did}`.
+`GET /-/api/orgs/<org>/repos/<repo>/commits/<sha>/signature` SHALL answer the stored result with its annotations and a proof URL, and `GET /-/api/orgs/<org>/repos/<repo>/signatures?ref=<ref>` the result and compliance of the ref's latest update; without `ref` it SHALL answer the same for every branch head, leaving out deleted branches. A stored commit result SHALL carry the commit's claimed `author` and `committer` as `{name, email}`. While the commit's check, or the ref's latest update, is queued, they SHALL answer `{status: "pending", attempts, next_at, last_error, did}`. A commit an update left unchecked (deferred) SHALL answer the stored-result shape with `status: "not_checked"`, its `detail` and no annotations.
 
 #### Scenario: Older update finishes last
 - **WHEN** `main` moves to W and then to X, and W's check finishes after X's
 - **THEN** the ref's result and the repository page report X's result, and W's result is kept only for W's update
+
+#### Scenario: Deleted branch
+- **WHEN** a branch whose update was judged non-compliant is deleted
+- **THEN** it is no longer listed without `ref`, and `signatures?ref=` for it answers 404
 
 #### Scenario: Unchecked commit
 - **WHEN** a client asks for a commit the forge has neither checked nor queued

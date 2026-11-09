@@ -403,6 +403,89 @@ pub fn commit_bytes(parents: &[&str], message: &str, time: i64) -> Vec<u8> {
     text.into_bytes()
 }
 
+/// An in-memory object store whose writes of proof bundles fail while `failing` is set, as
+/// an unreachable store's would.
+#[derive(Debug, Default)]
+pub struct ProofStore {
+    inner: object_store::memory::InMemory,
+    pub failing: std::sync::atomic::AtomicBool,
+}
+
+impl std::fmt::Display for ProofStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ProofStore({})", self.inner)
+    }
+}
+
+#[async_trait]
+impl object_store::ObjectStore for ProofStore {
+    async fn put_opts(
+        &self,
+        location: &object_store::path::Path,
+        payload: object_store::PutPayload,
+        opts: object_store::PutOptions,
+    ) -> object_store::Result<object_store::PutResult> {
+        if self.failing.load(Ordering::SeqCst) && location.as_ref().starts_with("proofs/") {
+            return Err(object_store::Error::Generic {
+                store: "ProofStore",
+                source: "the store is unreachable".into(),
+            });
+        }
+        self.inner.put_opts(location, payload, opts).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &object_store::path::Path,
+        opts: object_store::PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &object_store::path::Path,
+        options: object_store::GetOptions,
+    ) -> object_store::Result<object_store::GetResult> {
+        self.inner.get_opts(location, options).await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: futures_util::stream::BoxStream<
+            'static,
+            object_store::Result<object_store::path::Path>,
+        >,
+    ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::path::Path>>
+    {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&object_store::path::Path>,
+    ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+    {
+        self.inner.list(prefix)
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&object_store::path::Path>,
+    ) -> object_store::Result<object_store::ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &object_store::path::Path,
+        to: &object_store::path::Path,
+        options: object_store::CopyOptions,
+    ) -> object_store::Result<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
+}
+
 /// A Git host that keeps each pushed commit's files and every object pushed, per repository.
 #[derive(Default)]
 pub struct FakeGitHost {
@@ -754,6 +837,8 @@ pub struct Forge {
     pub extensions: Arc<Extensions>,
     pub modules: ModuleSource,
     pub clock: Arc<TestClock>,
+    /// The object store, whose proof writes can be made to fail.
+    pub proofs: Arc<ProofStore>,
     pub identity: IdentityWorld,
     /// The owner's access token, with every scope.
     pub token: String,
@@ -795,8 +880,8 @@ impl Forge {
             .as_nanos();
         let forge_id = format!("{name}-{nanos}");
         let git = Arc::new(FakeGitHost::default());
-        let store: Arc<dyn object_store::ObjectStore> =
-            Arc::new(object_store::memory::InMemory::new());
+        let proofs = Arc::new(ProofStore::default());
+        let store: Arc<dyn object_store::ObjectStore> = proofs.clone();
         let registry = RegistryStore::new(store.clone());
         let extensions = Arc::new(Extensions::new(
             ExtensionRuntime::new().expect("runtime"),
@@ -843,6 +928,7 @@ impl Forge {
             extensions,
             modules: ModuleSource::default(),
             clock,
+            proofs,
             identity,
             token,
             client,

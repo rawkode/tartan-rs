@@ -322,6 +322,9 @@ impl Handler<RecordRefEvents> for Repo {
                                 )
                                 .await?;
                                 queued = true;
+                            } else if signing::is_zero(&event.new) {
+                                signing::record_deletion(&tx, i64::try_from(seq)?, &event.ref_name)
+                                    .await?;
                             }
                             let moved = event.ref_name == CONFIG_BRANCH
                                 && !event.new.bytes().all(|b| b == b'0');
@@ -349,11 +352,17 @@ impl Handler<RecordRefEvents> for Repo {
         if appended > 0 {
             self.outbox.flush_later(&ctx, SubscriberSource::Forge);
         }
-        if queued {
-            self.ensure_verify_at(&ctx, crate::sql::now_ms()).await?;
-        }
         if config_moved {
             self.reconcile_later(&ctx);
+        }
+        if queued {
+            // The rows are recorded, and a redelivery of these events would queue nothing, so
+            // a failure to register the schedule is not the push's failure: the next push or
+            // `on_start` registers it.
+            if let Err(error) = self.ensure_verify_at(&ctx, crate::sql::now_ms()).await {
+                tracing::warn!(repo = %self.id, error = %format!("{error:#}"),
+                    "could not schedule signature checks; the next push or restart does");
+            }
         }
         Ok(appended)
     }

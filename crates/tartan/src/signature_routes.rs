@@ -74,23 +74,39 @@ async fn recheck(
     Path((org, repo, sha)): Path<(String, String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     let principal = caller.0.as_ref().ok_or(ApiError::Unauthorized)?;
-    let oid = check_oid(&sha)?;
     let owner = principal.owner && principal.rights.write;
-    let signer = if owner {
-        None
-    } else {
-        state
-            .access
-            .self_calls
-            .take(&principal.did)
-            .map_err(|retry_after| ApiError::TooManyRequests {
-                message: "too many signature re-checks for this account; try again later"
-                    .to_owned(),
-                retry_after,
-            })?;
-        Some(principal.did.clone())
-    };
-    let info = resolve_repo(&state.client, &org, &repo).await?;
+    if owner {
+        return requeue(&state, &org, &repo, &sha, None).await;
+    }
+    state
+        .access
+        .self_calls
+        .take(&principal.did)
+        .map_err(|retry_after| ApiError::TooManyRequests {
+            message: "too many signature re-checks for this account; try again later".to_owned(),
+            retry_after,
+        })?;
+    // Anyone who signs in may call this route, including people who may not read the forge, so
+    // every way of not finding their result (an unknown org or repository, a malformed slug or
+    // object id, or no result of theirs) gets the same answer: it reveals nothing about which
+    // orgs and repositories exist.
+    let not_found =
+        || ApiError::NotFound(format!("no unverifiable result signed by you for {sha}"));
+    match requeue(&state, &org, &repo, &sha, Some(principal.did.clone())).await {
+        Err(ApiError::NotFound(_) | ApiError::BadRequest(_)) => Err(not_found()),
+        other => other,
+    }
+}
+
+async fn requeue(
+    state: &GatewayState,
+    org: &str,
+    repo: &str,
+    sha: &str,
+    signer: Option<String>,
+) -> Result<Json<Value>, ApiError> {
+    let oid = check_oid(sha)?;
+    let info = resolve_repo(&state.client, org, repo).await?;
     let outcome = repo_handle(&state.client, &info.id, info.pool)?
         .send(RecheckSignature {
             oid: oid.clone(),

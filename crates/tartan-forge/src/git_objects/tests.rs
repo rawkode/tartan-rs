@@ -264,6 +264,25 @@ fn tags_are_peeled_and_listed() {
 }
 
 #[test]
+fn a_moved_annotated_tag_lists_only_the_new_commits() {
+    let source = Source::new();
+    let chain = source.chain(4, None);
+    let old = source.tag("v1", &chain[1]);
+    git(
+        &source.path,
+        &["tag", "-f", "-a", "v1", "-m", "moved", &chain[3]],
+    );
+    let new = git(&source.path, &["rev-parse", "refs/tags/v1"]);
+    assert_ne!(old, new);
+    let (_dir, cache) = cache();
+    let walk = read(&source, &cache, &new, &[&old]);
+    assert_eq!(
+        oids(&walk),
+        vec![new.as_str(), chain[3].as_str(), chain[2].as_str()]
+    );
+}
+
+#[test]
 fn a_tag_of_a_tree_has_no_commit_tip() {
     let source = Source::new();
     let tree = git(

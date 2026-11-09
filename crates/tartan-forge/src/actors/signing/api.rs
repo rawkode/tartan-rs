@@ -208,6 +208,11 @@ impl Repo {
                 )),
                 _ => None,
             };
+            let idents = stored
+                .idents
+                .as_deref()
+                .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                .unwrap_or_else(|| json!({ "author": null, "committer": null }));
             let verified = stored.status == super::Status::Verified;
             let record_missing = stored.status == super::Status::Unverifiable
                 && stored
@@ -230,8 +235,8 @@ impl Repo {
                 "did_deactivated_at": null,
                 "did_status": null,
                 "record_missing": record_missing,
-                "author": null,
-                "committer": null,
+                "author": idents["author"],
+                "committer": idents["committer"],
                 "proof_sha256": stored.proof_sha256,
                 "proof_url": null,
                 "annotations": [],
@@ -277,14 +282,40 @@ impl Repo {
             )
             .await?;
         if let Some(row) = deferred.rows.first() {
-            return Ok(Some(json!({
-                "oid": oid,
-                "status": "not_checked",
-                "detail": text(row, 0)?,
-            })));
+            return Ok(Some(bare_view(oid, "not_checked", Some(text(row, 0)?))));
         }
         Ok(None)
     }
+}
+
+/// The stored-result shape of design D15 for an object with no stored result (a deferred
+/// object, or a judged head without one): every field present, with no signer, record or proof.
+pub(crate) fn bare_view(oid: &str, status: &str, detail: Option<String>) -> Value {
+    json!({
+        "oid": oid,
+        "kind": null,
+        "status": status,
+        "did": null,
+        "handle": null,
+        "detail": detail,
+        "rkey": null,
+        "record_cid": null,
+        "record_uri": null,
+        "record_rev": null,
+        "verified_at": null,
+        "revoked_at": null,
+        "revoked_reason": null,
+        "did_deactivated_at": null,
+        "did_status": null,
+        "record_missing": false,
+        "author": null,
+        "committer": null,
+        "proof_sha256": null,
+        "proof_url": null,
+        "annotations": [],
+        "committed_at": null,
+        "checked_at": null,
+    })
 }
 
 fn pending_view(oid: &str, failures: &[(String, StoredFailure)], row: &super::CheckRow) -> Value {
@@ -333,7 +364,7 @@ impl Handler<BranchSignatures> for Repo {
         let refs = ctx
             .sql()
             .query(
-                "SELECT ref_name FROM ref_signing WHERE ref_name LIKE 'refs/heads/%'
+                "SELECT ref_name FROM ref_signing WHERE ref_name LIKE 'refs/heads/%' AND head != ''
                  UNION
                  SELECT ref_name FROM signature_checks WHERE ref_name LIKE 'refs/heads/%'
                  ORDER BY 1",
@@ -394,6 +425,10 @@ impl Repo {
             return Ok(None);
         };
         let head = text(r, 1)?;
+        if head.is_empty() {
+            // Deleted, with no newer update queued.
+            return Ok(None);
+        }
         let rule = optional_text(r, 4)?;
         let covered = coverage(rule.as_deref(), ref_name).is_covered();
         let violations = optional_text(r, 5)?
@@ -402,7 +437,7 @@ impl Repo {
         let mut view = self
             .signature_view(ctx, &head)
             .await?
-            .unwrap_or_else(|| json!({ "oid": head, "status": "not_checked", "detail": null }));
+            .unwrap_or_else(|| bare_view(&head, "not_checked", None));
         view["ref"] = json!(ref_name);
         view["oid"] = json!(head);
         view["host_seq"] = json!(integer(r, 0)?);
@@ -627,10 +662,29 @@ impl Handler<RecheckSignature> for Repo {
                             optional_text(r, 2)?,
                             integer(r, 3)? == 1,
                         );
+                        // A row still queued for this update (a re-check of a re-check) is
+                        // replaced with the next generation, so an attempt working the old
+                        // one writes nothing over it.
+                        let generation = tx
+                            .execute(
+                                "SELECT generation FROM signature_checks
+                                 WHERE seq = ? AND ref_name = ?",
+                                Some(vec![
+                                    param_integer(*seq),
+                                    param_text(ref_name.as_str()),
+                                ]),
+                            )
+                            .await?
+                            .rows
+                            .first()
+                            .map(|r| integer(r, 0))
+                            .transpose()?
+                            .map_or(0, |generation| generation + 1);
                         tx.execute(
                             "INSERT OR REPLACE INTO signature_checks
-                               (seq, ref_name, old, new, rule, attempts, next_at, fetched_dids)
-                             VALUES (?, ?, ?, ?, ?, 0, ?, '[]')",
+                               (seq, ref_name, old, new, rule, attempts, next_at, fetched_dids,
+                                generation)
+                             VALUES (?, ?, ?, ?, ?, 0, ?, '[]', ?)",
                             Some(vec![
                                 param_integer(*seq),
                                 param_text(ref_name.as_str()),
@@ -638,6 +692,7 @@ impl Handler<RecheckSignature> for Repo {
                                 param_text(new.as_str()),
                                 rule.clone().map_or(BindParam::Null, param_text),
                                 param_integer(now),
+                                param_integer(generation),
                             ]),
                         )
                         .await?;
@@ -659,5 +714,33 @@ impl Handler<RecheckSignature> for Repo {
         tracing::info!(repo = %self.id, oid = %action.oid, updates = count,
             "unverifiable signature re-queued");
         Ok(RecheckOutcome::Requeued { updates: count })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bare_view;
+
+    #[test]
+    fn a_deferred_object_answers_the_full_stored_shape() {
+        let view = bare_view("ab", "not_checked", Some("more than 64 signers".into()));
+        assert_eq!(view["status"], "not_checked");
+        assert_eq!(view["detail"], "more than 64 signers");
+        assert_eq!(view["record_missing"], false);
+        assert_eq!(view["annotations"], serde_json::json!([]));
+        for key in [
+            "did",
+            "record_uri",
+            "verified_at",
+            "revoked_at",
+            "author",
+            "committer",
+            "proof_url",
+        ] {
+            assert!(
+                view.get(key).is_some_and(serde_json::Value::is_null),
+                "{key}"
+            );
+        }
     }
 }

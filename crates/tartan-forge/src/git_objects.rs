@@ -427,6 +427,20 @@ fn tag_target(data: &[u8]) -> Result<gix::ObjectId> {
     Ok(tag.target())
 }
 
+/// The commit `id` names, peeling annotated tags; `None` when it is not a commit underneath.
+fn peel_to_commit(repo: &gix::Repository, id: gix::ObjectId) -> Result<Option<gix::ObjectId>> {
+    let mut current = id;
+    for _ in 0..=64 {
+        let (kind, data) = read_checked(repo, current)?;
+        match kind {
+            gix::object::Kind::Commit => return Ok(Some(current)),
+            gix::object::Kind::Tag => current = tag_target(&data)?,
+            _ => return Ok(None),
+        }
+    }
+    bail!("tag {id} nests more than 64 tags")
+}
+
 fn list(
     repo: &gix::Repository,
     new: gix::ObjectId,
@@ -456,9 +470,17 @@ fn list(
     if let Some(tip) = tip {
         walk.listed.push((tip.to_string(), ObjectKind::Commit));
         let mut seen: HashSet<gix::ObjectId> = HashSet::from([tip]);
+        // The rev-walk hides only commits, so each hidden tip is peeled through its tags, as
+        // git does for `^old`; one that is not a commit underneath hides nothing.
+        let mut peeled = Vec::with_capacity(hidden.len());
+        for id in hidden {
+            if let Some(commit) = peel_to_commit(repo, *id)? {
+                peeled.push(commit);
+            }
+        }
         let commits = repo
             .rev_walk([tip])
-            .with_hidden(hidden.iter().copied())
+            .with_hidden(peeled)
             .sorting(gix::revision::walk::Sorting::ByCommitTime(
                 gix::traverse::commit::simple::CommitTimeOrder::NewestFirst,
             ))
@@ -601,11 +623,21 @@ impl MemoryObjects {
         };
         if let Some(tip) = tip {
             let mut hidden_set = HashSet::new();
-            let mut stack: Vec<String> = hidden
-                .iter()
-                .filter(|h| self.contains(h))
-                .cloned()
-                .collect();
+            // Hidden tips are peeled through tags, as the cache's walk does.
+            let mut stack: Vec<String> = Vec::new();
+            for hidden_tip in hidden {
+                let mut current = hidden_tip.clone();
+                while let Some((kind, bytes)) = self.get(&current) {
+                    match kind.as_str() {
+                        "tag" => current = tag_target(&bytes)?.to_string(),
+                        "commit" => {
+                            stack.push(current);
+                            break;
+                        }
+                        _ => break,
+                    }
+                }
+            }
             while let Some(oid) = stack.pop() {
                 if hidden_set.insert(oid.clone()) {
                     stack.extend(self.parents(&oid));

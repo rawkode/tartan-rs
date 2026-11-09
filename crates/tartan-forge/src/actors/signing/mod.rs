@@ -6,7 +6,8 @@
 //! queue: it reads what the update introduced from the Git host, verifies each object that has
 //! no stored result yet, stores final results as soon as they are known, and judges the update
 //! once every object has a result or the check gives up. Each judged update writes its own
-//! `update_signing` row; `ref_signing` follows the newest judged update of each ref.
+//! `update_signing` row; `ref_signing` follows the newest judged update of each ref, or its
+//! deletion (an empty `head`).
 //!
 //! Liveness rests on one invariant: while any row is queued, either a run holds `verifying` (and
 //! calls [`Repo::ensure_verify_at`] when it ends) or a `verify` schedule that Rivet still holds
@@ -71,6 +72,8 @@ pub(crate) const SIGNING_SCHEMA: &str = "
         truncated INTEGER NOT NULL DEFAULT 0,
         tip_not_commit TEXT,
         failures TEXT NOT NULL DEFAULT '[]',
+        host_failed_at INTEGER,
+        generation INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (seq, ref_name)
     );
     CREATE TABLE IF NOT EXISTS check_objects (
@@ -94,7 +97,8 @@ pub(crate) const SIGNING_SCHEMA: &str = "
         detail TEXT,
         committed_at INTEGER,
         checked_at INTEGER NOT NULL,
-        recorded INTEGER NOT NULL DEFAULT 0
+        recorded INTEGER NOT NULL DEFAULT 0,
+        idents TEXT
     );
     CREATE INDEX IF NOT EXISTS object_signatures_by_proof ON object_signatures (proof_sha256);
     CREATE TABLE IF NOT EXISTS update_signing (
@@ -171,6 +175,31 @@ fn backoff_ms(attempts: i64) -> i64 {
     (5_000_i64.saturating_mul(1_i64 << exponent)).min(5 * 60 * 1000)
 }
 
+/// A failure reason short enough to keep as `last_error`.
+fn short_reason(reason: &str) -> String {
+    const MAX: usize = 300;
+    if reason.len() <= MAX {
+        return reason.to_owned();
+    }
+    let mut end = MAX;
+    while !reason.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &reason[..end])
+}
+
+/// Whether a row's stored failures make it an update waiting on its signers (design D8,
+/// *Durable retries*): a covered ref whose still-failing objects all failed only on a missing
+/// record or an unreachable signer, each naming a DID its copied rule allows.
+fn row_waiting(row: &CheckRow) -> bool {
+    let cover = coverage(row.rule.as_deref(), &row.ref_name);
+    cover.is_covered()
+        && !row.failures.is_empty()
+        && row.failures.iter().all(|(_, failure)| {
+            failure.waiting && failure.did.as_deref().is_some_and(|did| cover.allows(did))
+        })
+}
+
 /// Whether `oid` is all zeros (a ref deletion or creation).
 pub(crate) fn is_zero(oid: &str) -> bool {
     oid.bytes().all(|b| b == b'0')
@@ -222,6 +251,34 @@ pub(crate) async fn enqueue(
     Ok(())
 }
 
+/// Records a branch or tag deletion in the transaction that records it: `ref_signing` keeps
+/// the deletion (an empty `head`) under the same `seq` guard as a judged update, so the ref
+/// leaves the branch list, and an older update of it that is judged later cannot bring it back.
+pub(crate) async fn record_deletion(
+    tx: &SqliteTransaction,
+    seq: i64,
+    ref_name: &str,
+) -> Result<()> {
+    if !(ref_name.starts_with("refs/heads/") || ref_name.starts_with("refs/tags/")) {
+        return Ok(());
+    }
+    tx.execute(
+        "INSERT INTO ref_signing (ref_name, seq, head, compliant, violation_seq, checked_at)
+         VALUES (?, ?, '', 1, NULL, ?)
+         ON CONFLICT (ref_name) DO UPDATE SET seq = excluded.seq, head = excluded.head,
+           compliant = excluded.compliant, violation_seq = excluded.violation_seq,
+           checked_at = excluded.checked_at
+         WHERE excluded.seq >= ref_signing.seq",
+        Some(vec![
+            param_text(ref_name),
+            param_integer(seq),
+            param_integer(now_ms()),
+        ]),
+    )
+    .await?;
+    Ok(())
+}
+
 /// One queued check.
 #[derive(Clone, Debug)]
 pub(crate) struct CheckRow {
@@ -236,6 +293,9 @@ pub(crate) struct CheckRow {
     pub(crate) fetched_dids: Vec<String>,
     pub(crate) first_attempt_at: Option<i64>,
     pub(crate) failures: Vec<(String, StoredFailure)>,
+    /// Bumped each time a re-check replaces the row, so an attempt that read an earlier
+    /// generation writes nothing over the replacement.
+    pub(crate) generation: i64,
 }
 
 /// A failure kept between attempts, for the pending answer and the seven-day rule.
@@ -257,7 +317,7 @@ impl From<&Failure> for StoredFailure {
 }
 
 const CHECK_COLUMNS: &str = "seq, ref_name, old, new, rule, attempts, next_at, last_error, \
-    fetched_dids, first_attempt_at, failures";
+    fetched_dids, first_attempt_at, failures, generation";
 
 fn check_row(row: &[ColumnValue]) -> Result<CheckRow> {
     Ok(CheckRow {
@@ -272,6 +332,7 @@ fn check_row(row: &[ColumnValue]) -> Result<CheckRow> {
         fetched_dids: serde_json::from_str(&text(row, 8)?).unwrap_or_default(),
         first_attempt_at: optional_integer(row, 9)?,
         failures: serde_json::from_str(&text(row, 10)?).unwrap_or_default(),
+        generation: integer(row, 11)?,
     })
 }
 
@@ -411,7 +472,18 @@ impl Repo {
                     break;
                 };
                 let deadline = (tokio::time::Instant::now() + ATTEMPT_DEADLINE).min(budget_end);
-                self.attempt(ctx, &verifier, row, deadline).await?;
+                if let Err(error) = self.attempt(ctx, &verifier, row.clone(), deadline).await {
+                    // A failure of the forge's own side (the object store, the identity actor,
+                    // SQLite) is a transient failure of this row: it backs off like any other,
+                    // keeping the failures and waiting state it had, and the run moves on.
+                    tracing::warn!(repo = %self.id, seq = row.seq, ref_name = %row.ref_name,
+                        error = %format!("{error:#}"), "a signature check attempt failed");
+                    let first = row.first_attempt_at.unwrap_or_else(now_ms);
+                    let reason = short_reason(&format!("the check failed: {error:#}"));
+                    let waiting = row_waiting(&row);
+                    self.retry_later(ctx, &row, first, &reason, &row.failures, waiting)
+                        .await?;
+                }
                 worked += 1;
             }
             let more = self.verify_rerun.swap(false, Ordering::SeqCst);
@@ -546,30 +618,38 @@ impl Repo {
                 } else {
                     format!("the Git host failed: {error:#}")
                 };
-                let listing = self.stored_listing(ctx, &row).await?;
-                let mut unfinished = Unfinished::default();
-                for (oid, failure) in &row.failures {
-                    unfinished.failures.insert(
-                        oid.clone(),
-                        Failure {
-                            reason: failure.reason.clone(),
-                            waiting: false,
-                            did: failure.did.clone(),
-                        },
-                    );
-                }
-                let tip_failure = Failure {
-                    reason: reason.clone(),
-                    waiting: false,
-                    did: None,
-                };
-                if gone || now - first >= WINDOW_MS {
+                // The Git host failing is judged on its own window, measured from the first
+                // of its consecutive failures, so a single blip does not end an update that is
+                // waiting on its signers; that update keeps its waiting state and its own
+                // seven-day window.
+                let host_failed_at = self.host_failed_since(ctx, &row, now).await?;
+                let waiting = row_waiting(&row);
+                let window = if waiting { SIGNER_WINDOW_MS } else { WINDOW_MS };
+                let expired = now - host_failed_at >= WINDOW_MS || now - first >= window;
+                if gone || expired {
+                    let listing = self.stored_listing(ctx, &row).await?;
+                    let mut unfinished = Unfinished::default();
+                    for (oid, failure) in &row.failures {
+                        unfinished.failures.insert(
+                            oid.clone(),
+                            Failure {
+                                reason: failure.reason.clone(),
+                                waiting: failure.waiting,
+                                did: failure.did.clone(),
+                            },
+                        );
+                    }
+                    let tip_failure = Failure {
+                        reason: reason.clone(),
+                        waiting: false,
+                        did: None,
+                    };
                     return self
                         .give_up(ctx, row, listing, unfinished, Some(tip_failure))
                         .await;
                 }
                 return self
-                    .retry_later(ctx, &row, first, &reason, &[], false)
+                    .retry_later(ctx, &row, first, &reason, &row.failures, waiting)
                     .await;
             }
         };
@@ -650,7 +730,7 @@ impl Repo {
         }
         while let Some(joined) = tasks.join_next().await {
             match joined {
-                Ok((_, Some(Outcome::Final(stored)))) => finals.push(stored),
+                Ok((_, Some(Outcome::Final(stored)))) => finals.push(*stored),
                 Ok((oid, Some(Outcome::Failed(failure)))) => {
                     unfinished.failures.insert(oid, failure);
                 }
@@ -674,13 +754,14 @@ impl Repo {
                 .execute(
                     "UPDATE signature_checks SET next_at = ?, fetched_dids = ?,
                        first_attempt_at = COALESCE(first_attempt_at, ?), failures = '[]'
-                     WHERE seq = ? AND ref_name = ?",
+                     WHERE seq = ? AND ref_name = ? AND generation = ?",
                     Some(vec![
                         param_integer(now_ms()),
                         param_text(serde_json::to_string(&fetched)?),
                         param_integer(first),
                         param_integer(row.seq),
                         param_text(row.ref_name.as_str()),
+                        param_integer(row.generation),
                     ]),
                 )
                 .await?;
@@ -712,6 +793,40 @@ impl Repo {
             .await
     }
 
+    /// When the Git host started failing this row's walks: the stored time, else `now`, which
+    /// is stored. A successful walk clears it (`save_listing`).
+    async fn host_failed_since(&self, ctx: &Ctx<Self>, row: &CheckRow, now: i64) -> Result<i64> {
+        ctx.sql()
+            .execute(
+                "UPDATE signature_checks SET host_failed_at = COALESCE(host_failed_at, ?)
+                 WHERE seq = ? AND ref_name = ? AND generation = ?",
+                Some(vec![
+                    param_integer(now),
+                    param_integer(row.seq),
+                    param_text(row.ref_name.as_str()),
+                    param_integer(row.generation),
+                ]),
+            )
+            .await?;
+        let result = ctx
+            .sql()
+            .query(
+                "SELECT host_failed_at FROM signature_checks WHERE seq = ? AND ref_name = ?",
+                Some(vec![
+                    param_integer(row.seq),
+                    param_text(row.ref_name.as_str()),
+                ]),
+            )
+            .await?;
+        Ok(result
+            .rows
+            .first()
+            .map(|r| optional_integer(r, 0))
+            .transpose()?
+            .flatten()
+            .unwrap_or(now))
+    }
+
     /// Records a failed attempt: `attempts`, `next_at` and `last_error`; registers nothing.
     async fn retry_later(
         &self,
@@ -734,7 +849,7 @@ impl Repo {
                 "UPDATE signature_checks SET attempts = ?, next_at = ?, last_error = ?,
                    fetched_dids = ?, first_attempt_at = COALESCE(first_attempt_at, ?),
                    failures = ?
-                 WHERE seq = ? AND ref_name = ?",
+                 WHERE seq = ? AND ref_name = ? AND generation = ?",
                 Some(vec![
                     param_integer(attempts),
                     param_integer(next_at),
@@ -744,6 +859,7 @@ impl Repo {
                     param_text(serde_json::to_string(failures)?),
                     param_integer(row.seq),
                     param_text(row.ref_name.as_str()),
+                    param_integer(row.generation),
                 ]),
             )
             .await?;
@@ -761,7 +877,7 @@ impl Repo {
         truncated: bool,
         tip_not_commit: Option<&str>,
     ) -> Result<()> {
-        let (seq, ref_name) = (row.seq, row.ref_name.clone());
+        let (seq, ref_name, generation) = (row.seq, row.ref_name.clone(), row.generation);
         let listed = listed.to_vec();
         let tip_not_commit = tip_not_commit.map(str::to_owned);
         ctx.sql()
@@ -787,13 +903,15 @@ impl Repo {
                         .await?;
                     }
                     tx.execute(
-                        "UPDATE signature_checks SET walked = 1, truncated = ?, tip_not_commit = ?
-                         WHERE seq = ? AND ref_name = ?",
+                        "UPDATE signature_checks SET walked = 1, truncated = ?, tip_not_commit = ?,
+                           host_failed_at = NULL
+                         WHERE seq = ? AND ref_name = ? AND generation = ?",
                         Some(vec![
                             param_integer(i64::from(truncated)),
                             param_optional_text(tip_not_commit),
                             param_integer(seq),
                             param_text(ref_name.as_str()),
+                            param_integer(generation),
                         ]),
                     )
                     .await?;
@@ -1025,6 +1143,7 @@ impl Repo {
                         record_rev: None,
                         detail: Some(failure.reason.clone()),
                         committed_at: None,
+                        idents: None,
                         bundle: None,
                     };
                     stored.insert(oid.clone(), StoredRow::from_stored(&result, now));
@@ -1159,10 +1278,26 @@ impl Repo {
         let row_for_tx = row.clone();
         let problem_for_tx = problem.clone();
         let violations_text = Value::Array(violations.clone()).to_string();
-        ctx.sql()
+        let judged_now = ctx
+            .sql()
             .transaction(
                 move |tx| async move {
                     let row = row_for_tx;
+                    // A re-check that replaced the row while this attempt ran wins: the
+                    // replacement is worked later, and this attempt writes nothing.
+                    let current = tx
+                        .execute(
+                            "SELECT generation FROM signature_checks WHERE seq = ? AND ref_name = ?",
+                            Some(vec![param_integer(row.seq), param_text(row.ref_name.as_str())]),
+                        )
+                        .await?
+                        .rows
+                        .first()
+                        .map(|r| integer(r, 0))
+                        .transpose()?;
+                    if current != Some(row.generation) {
+                        return Ok(false);
+                    }
                     for result in &unverifiable {
                         insert_result(&tx, result, now).await?;
                     }
@@ -1256,11 +1391,16 @@ impl Repo {
                         )
                         .await?;
                     }
-                    Ok(())
+                    Ok(true)
                 },
                 options("judge_update"),
             )
             .await?;
+        if !judged_now {
+            tracing::info!(repo = %self.id, seq = row.seq, ref_name = %row.ref_name,
+                "a re-check replaced the update while it was checked; its new check decides");
+            return Ok(());
+        }
         self.outbox.flush_later(ctx, SubscriberSource::Forge);
         tracing::info!(repo = %self.id, seq = row.seq, ref_name = %row.ref_name, compliant,
             problem = problem.as_deref().unwrap_or(""), "ref update judged");
@@ -1355,7 +1495,7 @@ pub(crate) enum Gate {
 }
 
 const STORED_COLUMNS: &str = "oid, kind, status, did, rkey, record_cid, record_rev, proof_sha256, \
-    detail, committed_at, checked_at";
+    detail, committed_at, checked_at, idents";
 
 /// A stored result as read back.
 #[derive(Clone, Debug)]
@@ -1371,6 +1511,7 @@ pub(crate) struct StoredRow {
     pub(crate) detail: Option<String>,
     pub(crate) committed_at: Option<i64>,
     pub(crate) checked_at: i64,
+    pub(crate) idents: Option<String>,
 }
 
 impl StoredRow {
@@ -1387,6 +1528,7 @@ impl StoredRow {
             detail: stored.detail.clone(),
             committed_at: stored.committed_at,
             checked_at: now,
+            idents: stored.idents.clone(),
         }
     }
 
@@ -1401,6 +1543,7 @@ impl StoredRow {
             record_rev: self.record_rev,
             detail: self.detail,
             committed_at: self.committed_at,
+            idents: self.idents,
             bundle: None,
         }
     }
@@ -1419,6 +1562,7 @@ pub(crate) fn stored_row(row: &[ColumnValue]) -> Result<StoredRow> {
         detail: optional_text(row, 8)?,
         committed_at: optional_integer(row, 9)?,
         checked_at: integer(row, 10)?,
+        idents: optional_text(row, 11)?,
     })
 }
 
@@ -1426,8 +1570,8 @@ async fn insert_result(tx: &SqliteTransaction, result: &Stored, now: i64) -> Res
     tx.execute(
         "INSERT OR REPLACE INTO object_signatures
            (oid, kind, status, did, rkey, record_cid, record_rev, proof_sha256, detail,
-            committed_at, checked_at, recorded)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            committed_at, checked_at, recorded, idents)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
         Some(vec![
             param_text(result.oid.as_str()),
             param_text(result.kind.as_str()),
@@ -1440,6 +1584,7 @@ async fn insert_result(tx: &SqliteTransaction, result: &Stored, now: i64) -> Res
             param_optional_text(result.detail.clone()),
             result.committed_at.map_or(BindParam::Null, param_integer),
             param_integer(now),
+            param_optional_text(result.idents.clone()),
         ]),
     )
     .await?;

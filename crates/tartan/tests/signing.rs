@@ -549,6 +549,33 @@ async fn signatures_are_verified_and_the_rule_gates_configuration() {
         world.refusals(&side).await,
         vec![format!("signing: {side} is unsigned")]
     );
+    // A deleted branch has no head, so it leaves the branch listing.
+    let listed = |branches: &Value, name: &str| {
+        branches
+            .as_array()
+            .expect("a list")
+            .iter()
+            .any(|branch| branch["ref"] == name)
+    };
+    let (_, branches) = world
+        .forge
+        .get("/-/api/orgs/acme/repos/api/signatures")
+        .await;
+    assert!(listed(&branches, "refs/heads/side"), "{branches}");
+    world
+        .push("refs/heads/side", Some(&side), &"0".repeat(40))
+        .await;
+    let (_, branches) = world
+        .forge
+        .get("/-/api/orgs/acme/repos/api/signatures")
+        .await;
+    assert!(!listed(&branches, "refs/heads/side"), "{branches}");
+    assert!(listed(&branches, "refs/heads/main"), "{branches}");
+    let (status, _) = world
+        .forge
+        .get("/-/api/orgs/acme/repos/api/signatures?ref=refs/heads/side")
+        .await;
+    assert_eq!(status, 404);
 
     // "Signature revoked before the fast-forward": verified as Alice on an uncovered branch,
     // its record then deleted and the deletion learned, then main fast-forwarded to it.
@@ -634,6 +661,136 @@ async fn signatures_are_verified_and_the_rule_gates_configuration() {
     assert_eq!(world.judged(&down.sha).await["status"], "verified");
     world.handled(&down.sha).await;
     assert_eq!(world.applied().await.as_deref(), Some(down.sha.as_str()));
+
+    // The signer's DID cannot be resolved (the PLC directory, or a did:web signer's own host,
+    // is down): waited on like an unreachable PDS, past the one-hour window.
+    let unresolved = world
+        .sign("alice.test", &alice, &[&down.sha], "plc down", true)
+        .await;
+    world.configure(&unresolved.sha, &world.rule(&[&alice]));
+    world.devnet().set_switches(|s| s.plc_offline = true).await;
+    world
+        .push("refs/heads/main", Some(&down.sha), &unresolved.sha)
+        .await;
+    world
+        .forge
+        .until(
+            "resolving the signer fails once",
+            async || world.signature(&unresolved.sha).await.1,
+            |view| view["status"] == "pending" && view["attempts"].as_i64().unwrap_or(0) >= 1,
+        )
+        .await;
+    for _ in 0..12 {
+        world.forge.clock.advance(Duration::from_secs(10 * 60));
+        world.verify().await;
+    }
+    let (_, view) = world.signature(&unresolved.sha).await;
+    assert_eq!(
+        view["status"], "pending",
+        "still waiting after two hours: {view}"
+    );
+    world.devnet().set_switches(|s| s.plc_offline = false).await;
+    world.forge.clock.advance(Duration::from_secs(60 * 60));
+    world.verify().await;
+    assert_eq!(world.judged(&unresolved.sha).await["status"], "verified");
+    world.handled(&unresolved.sha).await;
+    assert_eq!(
+        world.applied().await.as_deref(),
+        Some(unresolved.sha.as_str())
+    );
+
+    // A failure on the forge's own side (here the object store refusing the proof bundle) is a
+    // failed attempt like any other: counted, backed off and retried, never re-run at once.
+    let stored_later = world
+        .sign("alice.test", &alice, &[], "store down", true)
+        .await;
+    world
+        .forge
+        .proofs
+        .failing
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    world
+        .push("refs/heads/store", None, &stored_later.sha)
+        .await;
+    let pending = world
+        .forge
+        .until(
+            "the store failure is counted",
+            async || world.signature(&stored_later.sha).await.1,
+            |view| view["status"] == "pending" && view["attempts"].as_i64().unwrap_or(0) >= 1,
+        )
+        .await;
+    assert!(
+        pending["last_error"]
+            .as_str()
+            .is_some_and(|error| error.contains("the check failed")),
+        "{pending}"
+    );
+    let now = tartan_forge::Clock::now_ms(world.forge.clock.as_ref());
+    assert!(pending["next_at"].as_i64().unwrap_or(0) > now, "{pending}");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let (_, view) = world.signature(&stored_later.sha).await;
+    assert!(
+        view["attempts"].as_i64().unwrap_or(0) <= 2,
+        "backed off, not retried in a loop: {view}"
+    );
+    let schedules = world
+        .repo()
+        .await
+        .send(VerifySchedules {})
+        .await
+        .expect("schedules");
+    assert!(schedules.len() <= 1, "{schedules:?}");
+    world
+        .forge
+        .proofs
+        .failing
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    world.forge.clock.advance(Duration::from_secs(10 * 60));
+    world.verify().await;
+    assert_eq!(world.judged(&stored_later.sha).await["status"], "verified");
+
+    // A Git host blip after the first hour does not end an update waiting on its signer: the
+    // host gets its own hour, and the update keeps its seven-day window.
+    let waits = world
+        .sign("alice.test", &alice, &[&unresolved.sha], "waits", false)
+        .await;
+    world.configure(&waits.sha, &world.rule(&[&alice]));
+    world
+        .push("refs/heads/main", Some(&unresolved.sha), &waits.sha)
+        .await;
+    world
+        .forge
+        .until(
+            "the record is missing",
+            async || world.signature(&waits.sha).await.1,
+            |view| view["status"] == "pending" && view["attempts"].as_i64().unwrap_or(0) >= 1,
+        )
+        .await;
+    for _ in 0..12 {
+        world.forge.clock.advance(Duration::from_secs(10 * 60));
+        world.verify().await;
+    }
+    world
+        .forge
+        .git
+        .failing
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    world.forge.clock.advance(Duration::from_secs(60 * 60));
+    world.verify().await;
+    let (_, view) = world.signature(&waits.sha).await;
+    assert_eq!(view["status"], "pending", "one host failure: {view}");
+    world
+        .forge
+        .git
+        .failing
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    world.publish("alice.test", &waits).await;
+    world.forge.clock.advance(Duration::from_secs(60 * 60));
+    world.verify().await;
+    assert_eq!(world.judged(&waits.sha).await["status"], "verified");
+    world.handled(&waits.sha).await;
+    assert_eq!(world.applied().await.as_deref(), Some(waits.sha.as_str()));
 
     // "Record published late": the record is still in the signer's queue at the push, and is
     // published twenty minutes later.
@@ -722,6 +879,26 @@ async fn signatures_are_verified_and_the_rule_gates_configuration() {
         .await
         .expect("answers");
     assert_eq!(response.status(), 404, "someone else's commit");
+    let found = response.text().await.expect("body");
+    // A non-owner learns nothing about which orgs and repositories exist: an unknown org, an
+    // unknown repository, a malformed slug and an existing repository answer alike.
+    for path in [
+        "acme/repos/missing",
+        "nobody/repos/api",
+        "acme/repos/Bad%20Slug",
+    ] {
+        let response = reqwest::Client::new()
+            .post(format!(
+                "{}/-/api/orgs/{path}/commits/{}/signature/recheck",
+                world.forge.base, stuck.sha
+            ))
+            .bearer_auth(&bob_session)
+            .send()
+            .await
+            .expect("answers");
+        assert_eq!(response.status(), 404, "{path}");
+        assert_eq!(response.text().await.expect("body"), found, "{path}");
+    }
     world
         .forge
         .git
