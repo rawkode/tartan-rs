@@ -197,7 +197,7 @@ publish() {
 	fi
 	echo "$path@$version"
 }
-modules+=("$(publish "$root/cue/types" v0.1.0)")
+modules+=("$(publish "$root/cue/types" v0.2.0)")
 modules+=("$(publish "$issues_dir" "v$issues_version")")
 modules+=("$(publish "$kanban_dir" "v$kanban_version")")
 {

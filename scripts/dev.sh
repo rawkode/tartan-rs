@@ -76,7 +76,7 @@ publish() {
 }
 
 modules=()
-modules+=("$(publish "$root/cue/types" v0.1.0)")
+modules+=("$(publish "$root/cue/types" v0.2.0)")
 for extension in issues kanban; do
 	dir="$("$root/scripts/build-extension.sh" "$root/extensions/$extension" "$state/modules/$extension")"
 	modules+=("$(publish "$dir" "v$(jq -r .version "$dir/tartan.json")")")

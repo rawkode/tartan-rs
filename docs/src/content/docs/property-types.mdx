@@ -79,6 +79,8 @@ Each rule in `require` has:
 - `refs`: one or more full ref names. `*` matches within one path segment, so `refs/heads/release-*` covers every `release-` branch, and a final `/**` matches any number of segments, as in `refs/tags/**`. `main` alone is not a full ref name and is refused, and so is `**` anywhere but as the whole last segment.
 - `signers`: optional, one or more DIDs allowed to sign commits on those refs. A rule without `signers` accepts a signature by any DID the forge can prove it back to, and anyone can create an ATProto account, so list `signers` whenever it matters who signed.
 
+When several rules cover one ref, a signer must be listed by every one of them that lists `signers`. [Signing commits](/signing/#signing-rules) explains how pushes are judged against the rule.
+
 ## What CUE refuses
 
 Each of these fails `cue export`, and so fails the configuration:

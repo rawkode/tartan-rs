@@ -95,11 +95,16 @@ publish_module() {
 	(cd "$dir" && CUE_REGISTRY="$TARTAN_MODULE_SOURCE+insecure" "$CUE_BIN" mod publish "$version" >/dev/null)
 	echo "$path@$version"
 }
-extension_modules=("$(publish_module "$root/cue/types" v0.1.0)")
+extension_modules=("$(publish_module "$root/cue/types" v0.2.0)")
 for dir in "$TARTAN_ISSUES_PACKAGE" "$TARTAN_KANBAN_PACKAGE"; do
 	extension_modules+=("$(publish_module "$dir" "v$(jq -r .version "$dir/tartan.json")")")
 done
 export TARTAN_EXTENSION_MODULES="${extension_modules[*]}"
+# The last v0.1.0 of the types module, kept as a fixture beside v0.2.0 so configurations written
+# for it stay testable; it is not in TARTAN_EXTENSION_MODULES, whose modules a test repository
+# depends on all at once.
+TARTAN_TYPES_V0_1_MODULE="$(publish_module "$root/cue/types/testdata/v0.1.0" v0.1.0)"
+export TARTAN_TYPES_V0_1_MODULE
 
 # The modules' own CUE checks: the property types, and Kanban's boards against Issues'
 # properties, evaluated natively from the source registry.

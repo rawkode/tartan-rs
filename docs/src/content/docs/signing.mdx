@@ -117,7 +117,53 @@ Do these in order:
 
 ## Signing rules
 
-A repository can require signed commits on chosen refs (the `signing` field of its root package). A `require` entry without `signers` accepts a signature by **any** ATProto account; list DIDs in `signers` to say whose signatures count.
+A repository can require signed commits on chosen refs with the `signing` field of its root package; [Property types](/property-types/#the-signing-rule) has the syntax. A `require` entry without `signers` accepts a signature by **any** ATProto account; list DIDs in `signers` to say whose signatures count.
+
+walgit cannot refuse a push, so a push that breaks the rule is accepted, recorded as a `ref.signature.violation` event, shown on the repository page, and, on `main`, stops its configuration from being applied. How the forge judges a push:
+
+- **Each update is judged on its own.** A push that moves a covered ref complies when its walk lists no more than 1000 new commits, the commit the ref now points to (and the annotated tag, for a tag) and every commit the update adds are `verified`, and each signer is listed in `signers`. A slow check of an older update never delays or overrides a newer one.
+- **The tip is always judged**, even when the update adds nothing: rewinding `main` to an unsigned ancestor, such as a commit from before the rule, is a violation, and so is rewinding to a commit whose signature has since been revoked. Rewinding to a commit an allowed signer signed, whose signature still stands, complies.
+- **Commits arriving through other branches are judged.** Pushing an unsigned commit to an unprotected branch and fast-forwarding `main` to it is a violation on `main`; so is a commit verified as someone allowed on the other branch but not in `main`'s `signers`. A signature checked once is not checked again, but it counts on a later update only while it stands: its record not revoked, its signer's account active.
+- **Compliance is per update, not per history.** If an unsigned configuration commit A is refused and an allowed signer pushes B on top of it, the update judges B alone, so `main` complies and B's configuration, which includes A's change, is applied. B's signature covers B's whole tree.
+- **The rule itself changes only in a descendant of the commit that set it.** A configuration whose `signing` differs from the rule in force (removed, `main` no longer covered, another signer) is applied only when the commit that set the rule is the new head or one of its ancestors; otherwise it is refused with `signing: the signing rule can only change in a descendant of <commit>` and the rule stays. Rewinding to a signed commit from before the rule, force-pushing an unrelated history of signed commits, or deleting `main` and recreating it all keep the rule. To move `main` to an unrelated history with another rule, make the change in a signed commit that merges the commit that set the rule (for example `git merge -s ours <commit>`).
+- **Reverting restores the rest of the configuration.** A rewind to a signed head whose configuration has the same rule applies that configuration, older extension settings included.
+- **`signers` controls who signed, not what they meant to land.** Anyone who can push can push a commit an allowed signer signed for another purpose.
+- **A PDS restored from an old backup revokes the signatures it lost**, once the forge proves them absent.
+
+### Configuration on `main`
+
+When the rule covers `main`, a pushed configuration waits for its update's signature check; `GET /-/api/orgs/<org>/repos/<repo>/config/status` and the repository page show what it waits on. It is applied once the check completes, with no other push, or refused with `signing: <commit> is <status>` (for example `is unsigned`, `is unverifiable`, `signature was revoked`). The previous configuration stays applied meanwhile.
+
+## Verification on the forge
+
+After every push to a branch or tag the forge checks each new commit and annotated tag: it reads the signature, resolves the signer's DID (replaying a `did:plc` operation log rather than trusting it), fetches the record with `com.atproto.sync.getRecord`, proves it under the repository commit your PDS signed with your `#atproto` key, and checks the record's digest against the object with the salt from its signature. The result is stored once, at push time, with its proof.
+
+| Status | Shown as |
+| --- | --- |
+| `verified` | Signed by @handle |
+| `verified`, record withdrawn | Signed by @handle — withdrawn by the signer on *date*; no longer counts for signing rules |
+| `verified`, record deleted | Signed by @handle — signature record deleted on *date*; no longer counts for signing rules |
+| `verified`, record replaced | Signed by @handle — signature record replaced on *date*; no longer counts for signing rules |
+| `verified`, account deactivated | Signed by @handle, with the note "account deactivated on *date*" ("account deleted" for a deleted or tombstoned DID) |
+| `unsigned` | Not signed |
+| `signer_inactive` | Signer's account is not active |
+| `bad_signature` | Invalid signature, with the detail, such as "record does not sign this commit" or "record was replaced" |
+| `unsupported_format` | Signed with GPG, SSH or another X.509 tool; only Tartan signatures are checked |
+| `not_checked` | Not checked: too many commits in one push, more than 64 signers in one update, or not reached before the check gave up |
+| `unverifiable` | Could not verify, with the detail; when the record was never found, "Signature record was not published within seven days; @handle can publish it and run `tt sign recheck`" |
+| `pending` | Checking signatures… or Retrying: *reason*; "Waiting for @handle to publish the signature record (`tt sign --flush`); checked again hourly for up to seven days" when the record is not found yet |
+
+- **`verified` means** that the account named in the signature published a record whose keyed digest matches these exact bytes, proved against the key its DID names. It says the signer vouched for the object, not that they wrote it, and it says nothing about the author and committer lines.
+- **Results are final**, except `unverifiable`: an owner, or the signer whose DID is on the result, can check it again (`tt sign recheck <commit> --repo <org>/<repo>`, or "Check again" on the commit's page).
+- **A commit pushed before its record is published** shows as pending and verifies once the record appears, checked hourly for up to seven days on a ref whose rule allows its signer (an hour elsewhere), with nothing to push again.
+- **Revoking a signature leaves past results `verified`**, with a note, but they stop counting toward signing rules on later updates, in every repository of the forge. A revocation the forge has recorded is permanent there, even if the record is re-created.
+- **A malicious PDS can still prove a revoked record** to someone who has not seen the revocation; rotating your `#atproto` key stops it proving anything new.
+
+### Proof bundles
+
+Each `verified` result keeps a proof bundle (`tartan.signature-proof/2`): the DID evidence as fetched (the `did:plc` audit log, or the `did:web` document), the `#atproto` key, the record's key and CID, the repository commit that proved it, the `getRecord` answer, and the object's `payload_sha256` and salt. Download it from the commit's signature page or `GET /-/api/orgs/<org>/repos/<repo>/proofs/<sha256>`; like the rest of `/-/api` it needs a session or a token with `read`, and a repository serves only the bundles its own results reference.
+
+To check one offline against the commit: the SHA-256 of the commit without its `gpgsig` header is `payload_sha256`; the commit's `Salt` line is the bundle's `salt`; HMAC-SHA256 of the same bytes keyed with that salt is the record's `digest`; the CAR proves the record under a commit signed by `atproto_key`; and, for `did:plc`, replaying the audit log yields that key. For `did:web` the document is a record of what the host served when it was fetched, not an offline proof.
 
 ## Agents and automation
 
