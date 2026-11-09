@@ -18,7 +18,11 @@
 //! the longest prefix that matches whole path elements of its path.
 //!
 //! The package is evaluated natively, with no registry: it is the operator's file, not a
-//! module's. A configuration that does not evaluate, has a key other than `modules` and
+//! repository's, and imports nothing but CUE's standard library. CUE's evaluator in the forge
+//! evaluates only inside a module, so a file or a directory without `cue.mod/module.cue` is
+//! evaluated in an otherwise empty module made for it (see [`OUTSIDE_MODULE`]); unlike a
+//! repository's configuration, the deployment's is never resolved through a registry, so that
+//! module changes nothing `cue export` of the file gives. A configuration that does not evaluate, has a key other than `modules` and
 //! `sources`, lists a module that is not fully qualified or names no source for it is refused,
 //! and the forge does not start.
 
@@ -203,7 +207,7 @@ pub fn load(path: &Path) -> Result<Deployment, DeploymentError> {
     };
     let metadata = std::fs::metadata(path).map_err(|error| read_error(error.to_string()))?;
     let value = if metadata.is_dir() {
-        crate::evaluate_package(path, PACKAGE)
+        evaluate_directory(path)
     } else {
         // A single file is evaluated on its own, as `cue export <file>` would.
         let dir = tempfile::tempdir().map_err(|error| read_error(error.to_string()))?;
@@ -211,14 +215,50 @@ pub fn load(path: &Path) -> Result<Deployment, DeploymentError> {
             .file_name()
             .ok_or_else(|| read_error("no file name".into()))?;
         std::fs::copy(path, dir.path().join(name)).map_err(|e| read_error(e.to_string()))?;
-        crate::evaluate_package(dir.path(), PACKAGE)
+        evaluate_directory(dir.path())
     };
     parse(value.map_err(DeploymentError::Evaluation)?)
+}
+
+/// The module a deployment configuration without its own module is evaluated in: it declares
+/// no dependencies and holds no package to import, so only the standard library can be
+/// imported, as outside any module. Its language version is the evaluator's (CUE v0.16.0).
+const OUTSIDE_MODULE: &str =
+    "module: \"tartan.invalid/outside-any-module\"\nlanguage: version: \"v0.16.0\"\n";
+
+/// The subdirectory of [`OUTSIDE_MODULE`] that holds the configuration's files.
+const OUTSIDE_DIR: &str = "files";
+
+/// Evaluates the package `forge` in `dir`: in place when `dir` is a module, otherwise its root
+/// `*.cue` files in [`OUTSIDE_MODULE`].
+fn evaluate_directory(dir: &Path) -> Result<Value, String> {
+    if dir.join("cue.mod/module.cue").is_file() {
+        return crate::evaluate_module_package(dir, None, PACKAGE, ".");
+    }
+    let outside = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let files = outside.path().join(OUTSIDE_DIR);
+    std::fs::create_dir_all(outside.path().join("cue.mod")).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&files).map_err(|e| e.to_string())?;
+    std::fs::write(outside.path().join("cue.mod/module.cue"), OUTSIDE_MODULE)
+        .map_err(|e| e.to_string())?;
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name();
+        let is_cue = Path::new(&name).extension().is_some_and(|ext| ext == "cue");
+        // Metadata follows symbolic links, as config map mounts use them.
+        if is_cue && std::fs::metadata(entry.path()).is_ok_and(|m| m.is_file()) {
+            std::fs::copy(entry.path(), files.join(&name)).map_err(|e| e.to_string())?;
+        }
+    }
+    crate::evaluate_module_package(outside.path(), Some(&files), PACKAGE, OUTSIDE_DIR)
 }
 
 /// Reads an exported deployment configuration.
 pub fn parse(value: Value) -> Result<Deployment, DeploymentError> {
     let invalid = |message: String| Err(DeploymentError::Invalid(message));
+    if let Some(path) = crate::first_null(&value) {
+        return invalid(format!("{path} is not concrete or is null"));
+    }
     let Value::Object(mut root) = value else {
         return invalid(format!("the package {PACKAGE} is not a struct"));
     };
@@ -406,6 +446,17 @@ modules: [
             load(dir.path()),
             Err(DeploymentError::Evaluation(_))
         ));
+        write(
+            dir.path(),
+            "forge.cue",
+            "package forge\nmodules: [string]\n",
+        );
+        assert!(
+            load(dir.path())
+                .expect_err("not concrete")
+                .to_string()
+                .contains("modules[0] is not concrete")
+        );
         assert!(matches!(
             load(&dir.path().join("missing.cue")),
             Err(DeploymentError::Read { .. })

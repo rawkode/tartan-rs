@@ -16,11 +16,19 @@
 //! }
 //! ```
 //!
-//! Every root `*.cue` file declaring `package tartan` is part of it, evaluated as `cue`
-//! evaluates a package directory: with the repository's `cue.mod/` when there is one, imports of
-//! packages elsewhere in the module, and dependencies on other modules resolved through the
-//! registry in the process's `CUE_REGISTRY`, which is the forge's own. Nothing is added to the
-//! files a repository commits, so `cue export` against the same registry gives the same value.
+//! Every root `*.cue` file declaring `package tartan` is part of it, evaluated as `cue export`
+//! evaluates a package directory of a module: the repository's `cue.mod/module.cue` is required,
+//! packages elsewhere in the module can be imported, files embedded with `@embed` are read from
+//! the repository, and dependencies on other modules resolve through the registry in the
+//! process's `CUE_REGISTRY`, which is the forge's own. Nothing is added to the files a repository
+//! commits, so `cue export` against the same registry gives the same value. A root `package
+//! tartan` without `cue.mod/module.cue` is refused: the evaluator only evaluates inside a module,
+//! and the forge supplies none of its own.
+//!
+//! `cue export` refuses a value that is not concrete, such as `string` or a disjunction without
+//! a default. The evaluator exports such a value as `null`, so the forge refuses every `null` in
+//! the package's value: an explicit `null` cannot be told apart from a value that is not
+//! concrete, and leaving a field out says the same thing.
 //!
 //! After evaluation, the exported value must have the shape the forge applies: `extensions` maps
 //! an extension id to an entry with a semver `version`, optional object `settings`, and
@@ -63,15 +71,24 @@ pub struct ExtensionEntry {
     pub settings: Value,
 }
 
-/// Why a configuration was refused.
+/// Why a configuration was not applied.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    /// The CUE does not evaluate, its value has the wrong shape, or it is too large.
+    /// The CUE does not evaluate, its value has the wrong shape, or it is too large. Evaluating
+    /// the same commit again gives the same answer, so the configuration is refused.
     #[error("{0}")]
     Invalid(String),
-    /// The evaluator or the source failed.
+    /// The evaluator, the repository's source or the registry failed. Evaluating the same commit
+    /// later may succeed.
     #[error("the configuration could not be evaluated: {0}")]
     Evaluator(String),
+}
+
+impl ConfigError {
+    /// Whether evaluating the same commit again may give another answer.
+    pub fn is_transient(&self) -> bool {
+        matches!(self, Self::Evaluator(_))
+    }
 }
 
 /// Evaluates `files`, a repository's configuration package and what it imports. A root with no
@@ -79,6 +96,12 @@ pub enum ConfigError {
 pub async fn evaluate(files: ConfigFiles) -> Result<Config, ConfigError> {
     if !files.has_root_package(PACKAGE) {
         return Ok(Config::default());
+    }
+    if !files.contains(MODULE_FILE) {
+        return Err(ConfigError::Invalid(format!(
+            "the package {PACKAGE} is not in a CUE module: commit {MODULE_FILE} (`cue mod init`) \
+             beside it, as `cue export` of the package with its imports needs"
+        )));
     }
     tokio::task::spawn_blocking(move || evaluate_blocking(&files))
         .await
@@ -90,49 +113,42 @@ fn evaluate_blocking(files: &ConfigFiles) -> Result<Config, ConfigError> {
     for (path, contents) in files.iter() {
         write(dir.path(), path, contents)?;
     }
-    let value = evaluate_package(dir.path(), PACKAGE).map_err(ConfigError::Invalid)?;
+    let value = evaluate_module_package(dir.path(), None, PACKAGE, ".").map_err(classify)?;
     check(value)
 }
 
-/// The module a directory without its own module is evaluated in; see [`evaluate_package`].
-const OUTSIDE_MODULE: &str =
-    "module: \"tartan.invalid/outside-any-module\"\nlanguage: version: \"v0.16.0\"\n";
+/// Fragments of the evaluator's messages that say the registry could not be reached or failed,
+/// rather than that it answered: a module it does not hold is a 404, which is final.
+const TRANSIENT_REGISTRY_FAILURES: &[&str] = &[
+    "connection refused",
+    "connection reset",
+    "i/o timeout",
+    "context deadline exceeded",
+    "TLS handshake timeout",
+    "500 Internal Server Error",
+    "502 Bad Gateway",
+    "503 Service Unavailable",
+    "504 Gateway Timeout",
+    "429 Too Many Requests",
+];
 
-/// The subdirectory of [`OUTSIDE_MODULE`] that holds the directory's files.
-const OUTSIDE_DIR: &str = "files";
-
-/// Evaluates the CUE package `package` in directory `dir` as `cue export` would, and returns
-/// its value.
-///
-/// A directory holding `cue.mod/module.cue` is evaluated in place, as that module. cuengine
-/// evaluates only inside a module, so a directory without one is evaluated as `cue` evaluates a
-/// directory outside any module by copying its root `*.cue` files into a subdirectory of an
-/// otherwise empty module: that module adds no file to the package, holds no other package to
-/// import, and declares no dependencies, so only the standard library can be imported, exactly
-/// as without a module. Its language version is the evaluator's own (CUE v0.16.0), which is what
-/// `cue` uses without a module.
-pub(crate) fn evaluate_package(dir: &Path, package: &str) -> Result<Value, String> {
-    if dir.join(MODULE_FILE).is_file() {
-        return evaluate_in_module(dir, None, package, ".");
+/// Sorts an evaluation failure: one the registry caused by failing may not recur, any other
+/// will.
+fn classify(message: String) -> ConfigError {
+    if TRANSIENT_REGISTRY_FAILURES
+        .iter()
+        .any(|fragment| message.contains(fragment))
+    {
+        ConfigError::Evaluator(message)
+    } else {
+        ConfigError::Invalid(message)
     }
-    let outside = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let files = outside.path().join(OUTSIDE_DIR);
-    std::fs::create_dir_all(outside.path().join("cue.mod")).map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&files).map_err(|e| e.to_string())?;
-    std::fs::write(outside.path().join(MODULE_FILE), OUTSIDE_MODULE).map_err(|e| e.to_string())?;
-    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let name = entry.file_name();
-        let is_cue = Path::new(&name).extension().is_some_and(|ext| ext == "cue");
-        // Metadata follows symbolic links, as config map mounts use them.
-        if is_cue && std::fs::metadata(entry.path()).is_ok_and(|m| m.is_file()) {
-            std::fs::copy(entry.path(), files.join(&name)).map_err(|e| e.to_string())?;
-        }
-    }
-    evaluate_in_module(outside.path(), Some(&files), package, OUTSIDE_DIR)
 }
 
-fn evaluate_in_module(
+/// Evaluates the CUE package `package` of the module rooted at `root` as `cue export` would, and
+/// returns the value of the instance `instance` (its directory relative to `root`); `target` is
+/// that directory when it is not the root.
+pub(crate) fn evaluate_module_package(
     root: &Path,
     target: Option<&Path>,
     package: &str,
@@ -152,6 +168,54 @@ fn evaluate_in_module(
         .ok_or_else(|| format!("the package {package} did not evaluate"))
 }
 
+/// The path of the first `null` in `value`, written as CUE writes a path (`a.b[0]."c.d"`), if
+/// there is one. The evaluator exports a value that is not concrete as `null`.
+pub(crate) fn first_null(value: &Value) -> Option<String> {
+    fn label(name: &str) -> String {
+        let plain = name
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$');
+        if plain {
+            name.to_owned()
+        } else {
+            serde_json::to_string(name).unwrap_or_else(|_| name.to_owned())
+        }
+    }
+    fn walk(value: &Value, path: &mut String) -> bool {
+        match value {
+            Value::Null => true,
+            Value::Array(items) => items.iter().enumerate().any(|(index, item)| {
+                let length = path.len();
+                path.push_str(&format!("[{index}]"));
+                let found = walk(item, path);
+                if !found {
+                    path.truncate(length);
+                }
+                found
+            }),
+            Value::Object(fields) => fields.iter().any(|(name, field)| {
+                let length = path.len();
+                if !path.is_empty() {
+                    path.push('.');
+                }
+                path.push_str(&label(name));
+                let found = walk(field, path);
+                if !found {
+                    path.truncate(length);
+                }
+                found
+            }),
+            _ => false,
+        }
+    }
+    let mut path = String::new();
+    walk(value, &mut path).then_some(path)
+}
+
 static EXTENSION_ID: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9._-]{0,63}$").expect("valid regex"));
 static SEMVER: LazyLock<Regex> = LazyLock::new(|| {
@@ -164,6 +228,16 @@ static SEMVER: LazyLock<Regex> = LazyLock::new(|| {
 /// Checks an exported configuration's shape and reads it.
 pub fn check(value: Value) -> Result<Config, ConfigError> {
     let invalid = |message: String| Err(ConfigError::Invalid(message));
+    if let Some(path) = first_null(&value) {
+        return invalid(format!(
+            "{} is not concrete or is null: give it a value, or leave the field out",
+            if path.is_empty() {
+                "the package tartan"
+            } else {
+                path.as_str()
+            }
+        ));
+    }
     let Value::Object(mut root) = value else {
         return invalid("the package tartan is not a struct".into());
     };
@@ -189,7 +263,7 @@ pub fn check(value: Value) -> Result<Config, ConfigError> {
         }
         let version = match entry.remove("version") {
             Some(Value::String(version)) if SEMVER.is_match(&version) => version,
-            Some(Value::Null) | None => {
+            None => {
                 return invalid(format!("extensions.{id:?} has no version"));
             }
             Some(other) => {
@@ -233,18 +307,23 @@ mod tests {
 
     use super::*;
 
+    const MODULE: &str = "module: \"example.com/acme\"\nlanguage: version: \"v0.14.1\"\n";
+
+    /// A repository: a module holding `list`.
     fn files(list: &[(&str, &str)]) -> ConfigFiles {
-        ConfigFiles::from_iter(list.iter().map(|(p, c)| ((*p).to_owned(), (*c).to_owned())))
+        ConfigFiles::from_iter(
+            std::iter::once(&("cue.mod/module.cue", MODULE))
+                .chain(list)
+                .map(|(p, c)| ((*p).to_owned(), (*c).to_owned())),
+        )
     }
 
     fn one(source: &str) -> ConfigFiles {
         files(&[("tartan.cue", source)])
     }
 
-    const MODULE: &str = "module: \"example.com/acme\"\nlanguage: version: \"v0.14.1\"\n";
-
     #[tokio::test]
-    async fn evaluates_entries_without_a_module() {
+    async fn evaluates_entries() {
         let config = evaluate(one(r#"package tartan
 
 let options = ["todo", "doing", "done"]
@@ -288,7 +367,6 @@ extensions: "rawkode.kanban": version: "0.2.0"
     #[tokio::test]
     async fn imports_packages_of_the_module() {
         let config = evaluate(files(&[
-            ("cue.mod/module.cue", MODULE),
             (
                 "tartan.cue",
                 "package tartan\n\nimport defs \"example.com/acme/config/fields\"\n\nextensions: \"rawkode.issues\": {version: \"0.5.0\", settings: fields: defs.all}\n",
@@ -303,6 +381,23 @@ extensions: "rawkode.kanban": version: "0.2.0"
         assert_eq!(
             config.extensions["rawkode.issues"].settings["fields"]["owner"]["type"],
             "text"
+        );
+    }
+
+    #[tokio::test]
+    async fn embeds_files_of_the_module() {
+        let config = evaluate(files(&[
+            (
+                "tartan.cue",
+                "@extern(embed)\n\npackage tartan\n\nextensions: \"rawkode.issues\": {version: \"0.6.0\", settings: properties: _ @embed(file=\"config/properties.json\")}\n",
+            ),
+            ("config/properties.json", r#"{"due": {"kind": "date"}}"#),
+        ]))
+        .await
+        .expect("valid");
+        assert_eq!(
+            config.extensions["rawkode.issues"].settings["properties"]["due"]["kind"],
+            "date"
         );
     }
 
@@ -334,22 +429,65 @@ extensions: "rawkode.kanban": version: "0.2.0"
             "package tartan\nthis is not cue\n",
         ];
         for source in bad {
-            assert!(evaluate(one(source)).await.is_err(), "{source}");
+            let error = evaluate(one(source)).await.expect_err(source);
+            assert!(!error.is_transient(), "{source}: {error}");
         }
+    }
+
+    #[tokio::test]
+    async fn refuses_values_that_are_not_concrete_as_cue_export_does() {
+        let entry = |settings: &str| {
+            format!(
+                "package tartan\nextensions: \"rawkode.kanban\": {{version: \"0.3.0\", settings: {settings}}}\n"
+            )
+        };
+        for (settings, path) in [
+            ("{x: string}", "settings.x"),
+            ("{x: >5}", "settings.x"),
+            ("{x!: string}", "settings.x"),
+            ("{x: {b: \"x\"} | {b: \"y\"}}", "settings.x"),
+            ("{x: [string, ...string]}", "settings.x[0]"),
+            (
+                "{boards: t: {name: \"T\", columns: _}}",
+                "settings.boards.t.columns",
+            ),
+            ("{\"a b\": null}", "settings.\"a b\""),
+        ] {
+            let error = evaluate(one(&entry(settings)))
+                .await
+                .expect_err(settings)
+                .to_string();
+            assert!(
+                error.contains(&format!(
+                    "extensions.\"rawkode.kanban\".{path} is not concrete"
+                )),
+                "{settings}: {error}"
+            );
+        }
+        // Outside extensions, too: `cue export` of the package fails.
+        assert!(
+            evaluate(one("package tartan\nnote: string\n"))
+                .await
+                .is_err()
+        );
+        // Defaults, open lists and optional fields are concrete.
+        let config = evaluate(one(&entry("{x: int | *3, y: [...string], z?: string}")))
+            .await
+            .expect("valid");
+        assert_eq!(
+            config.extensions["rawkode.kanban"].settings,
+            json!({"x": 3, "y": []})
+        );
     }
 
     #[tokio::test]
     async fn adds_no_files_to_the_evaluation() {
         // A module that declares no dependencies cannot import one: nothing is added to it.
-        let unresolved = files(&[
-            ("cue.mod/module.cue", MODULE),
-            (
-                "tartan.cue",
-                "package tartan\n\nimport \"tartan.test/nowhere/issues\"\n\nextensions: \"rawkode.issues\": issues.#Extension\n",
-            ),
-        ]);
+        let unresolved = one(
+            "package tartan\n\nimport \"tartan.test/nowhere/issues\"\n\nextensions: \"rawkode.issues\": issues.#Extension\n",
+        );
         assert!(evaluate(unresolved).await.is_err());
-        // Without a module, a root file named like the old schema file is evaluated as written.
+        // A root file named like an injected schema file is evaluated as written.
         let config = evaluate(files(&[
             ("tartan.cue", "package tartan\n"),
             (
@@ -360,16 +498,25 @@ extensions: "rawkode.kanban": version: "0.2.0"
         .await
         .expect("valid");
         assert_eq!(config.extensions["rawkode.issues"].version, "1.0.0");
-        // Without a module only the standard library can be imported, as with `cue`.
-        let stdlib = one(
-            "package tartan\n\nimport \"strings\"\n\nextensions: \"rawkode.issues\": version: strings.Join([\"1\", \"2\", \"0\"], \".\")\n",
+        // Without a module the package is refused: the forge supplies no module of its own.
+        let outside = ConfigFiles::from_iter([(
+            "tartan.cue".to_owned(),
+            "package tartan\nextensions: \"rawkode.issues\": version: \"1.0.0\"\n".to_owned(),
+        )]);
+        let error = evaluate(outside).await.expect_err("no module").to_string();
+        assert!(error.contains("cue.mod/module.cue"), "{error}");
+    }
+
+    #[test]
+    fn registry_failures_are_transient_and_answers_are_not() {
+        assert!(
+            classify("dial tcp 127.0.0.1:8080: connect: connection refused".into()).is_transient()
         );
-        let config = evaluate(stdlib).await.expect("valid");
-        assert_eq!(config.extensions["rawkode.issues"].version, "1.2.0");
-        let elsewhere = one(
-            "package tartan\n\nimport \"tartan.invalid/outside-any-module/files\"\n\nx: files\n",
+        assert!(classify("503 Service Unavailable: UNAVAILABLE".into()).is_transient());
+        assert!(
+            !classify("404 Not Found: module example.com/x@v0.1.0 not found".into()).is_transient()
         );
-        assert!(evaluate(elsewhere).await.is_err());
+        assert!(!classify("conflicting values 1 and 2".into()).is_transient());
     }
 
     #[test]
@@ -382,6 +529,7 @@ extensions: "rawkode.kanban": version: "0.2.0"
         assert_eq!(config.extensions["rawkode.issues"].settings, json!({}));
         assert!(check(json!([])).is_err());
         assert!(check(json!({"extensions": {"a": {"version": null}}})).is_err());
+        assert!(check(json!({"helpers": [1, null]})).is_err());
         assert!(check(json!({"extensions": {"a": {"version": "1.0.0+build.1"}}})).is_ok());
     }
 }

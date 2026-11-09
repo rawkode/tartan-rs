@@ -80,8 +80,10 @@ impl FromIterator<(String, String)> for ConfigFiles {
     }
 }
 
-/// Reads the root's `*.cue` files, the repository's `cue.mod/`, and the directories of the
-/// module's packages that those files import (transitively), within `limits`.
+/// Reads the root's `*.cue` files, the repository's `cue.mod/`, the directories of the
+/// module's packages that those files import (transitively), and the files they embed with
+/// `@embed(file=...)` or `@embed(glob=...)`, within `limits`. Embedded files must be UTF-8 text
+/// (JSON, YAML, text), the formats a configuration embeds.
 pub async fn load(source: &dyn ConfigSource, limits: Limits) -> Result<ConfigFiles, ConfigError> {
     let mut loader = Loader {
         source,
@@ -118,6 +120,7 @@ pub async fn load(source: &dyn ConfigSource, limits: Limits) -> Result<ConfigFil
             pending.extend(loader.imported_dirs(&module, &visited));
         }
     }
+    loader.read_embedded().await?;
     Ok(ConfigFiles {
         files: loader.files,
     })
@@ -147,12 +150,15 @@ impl Loader<'_> {
         if self.files.len() >= self.limits.files {
             return Err(too_large(format!("{} files", self.limits.files)));
         }
-        let bytes = self
+        // A file that is missing is left out, so the evaluator reports it as `cue` would.
+        let Some(bytes) = self
             .source
             .read(&path)
             .await
             .map_err(|error| ConfigError::Evaluator(format!("{error:#}")))?
-            .unwrap_or_default();
+        else {
+            return Ok(());
+        };
         self.bytes += bytes.len();
         if self.bytes > self.limits.bytes {
             return Err(too_large(format!("{} bytes of CUE", self.limits.bytes)));
@@ -189,6 +195,83 @@ impl Loader<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Reads the files that loaded package files embed. Paths are relative to the embedding
+    /// file's directory; one that leaves the repository is skipped, for the evaluator to refuse.
+    async fn read_embedded(&mut self) -> Result<(), ConfigError> {
+        let mut wanted: BTreeSet<Embed> = BTreeSet::new();
+        for (path, text) in &self.files {
+            if path.starts_with("cue.mod/") || !path.ends_with(".cue") {
+                continue;
+            }
+            let dir = path.rsplit_once('/').map_or("", |(dir, _)| dir);
+            for embed in embeds_of(text) {
+                let (pattern, glob) = match &embed {
+                    Embed::File(p) => (p.as_str(), false),
+                    Embed::Glob(p) => (p.as_str(), true),
+                };
+                if let Some(resolved) = resolve(dir, pattern) {
+                    wanted.insert(if glob {
+                        Embed::Glob(resolved)
+                    } else {
+                        Embed::File(resolved)
+                    });
+                }
+            }
+        }
+        for embed in wanted {
+            match embed {
+                Embed::File(path) => {
+                    if !self.files.contains_key(&path) {
+                        self.read(path).await?;
+                    }
+                }
+                Embed::Glob(pattern) => {
+                    for path in self.glob(&pattern).await? {
+                        if !self.files.contains_key(&path) {
+                            self.read(path).await?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The files matching `pattern`, a `/`-separated glob relative to the root whose elements
+    /// may use `*`, `?` and `[...]`.
+    async fn glob(&mut self, pattern: &str) -> Result<Vec<String>, ConfigError> {
+        let elements: Vec<&str> = pattern.split('/').collect();
+        let mut dirs = vec![String::new()];
+        let mut found = Vec::new();
+        for (index, element) in elements.iter().enumerate() {
+            let last = index + 1 == elements.len();
+            let matcher = glob::Pattern::new(element).ok();
+            let mut next = Vec::new();
+            for dir in &dirs {
+                let Some(entries) = self.list(dir).await? else {
+                    continue;
+                };
+                for entry in entries {
+                    let matches = match &matcher {
+                        Some(matcher) => matcher.matches(&entry.name),
+                        None => entry.name == *element,
+                    };
+                    if !matches {
+                        continue;
+                    }
+                    let path = join(dir, &entry.name);
+                    match (last, entry.is_dir) {
+                        (true, false) => found.push(path),
+                        (false, true) => next.push(path),
+                        _ => {}
+                    }
+                }
+            }
+            dirs = next;
+        }
+        Ok(found)
     }
 
     /// The module's directories that loaded files import and that are not `visited`.
@@ -254,6 +337,54 @@ fn module_of(text: &str) -> Option<String> {
         .captures(text)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_owned())
+}
+
+static EMBED_ATTRIBUTE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"@embed\(([^)]*)\)").expect("valid regex"));
+static EMBED_ARGUMENT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\b(file|glob)\s*=\s*(?:"([^"]*)"|([^,\s)]+))"#).expect("valid regex")
+});
+
+/// What an `@embed` attribute names.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Embed {
+    File(String),
+    Glob(String),
+}
+
+/// The files and globs a CUE file's `@embed` attributes name, relative to its directory.
+fn embeds_of(text: &str) -> Vec<Embed> {
+    EMBED_ATTRIBUTE
+        .captures_iter(text)
+        .filter_map(|c| c.get(1))
+        .flat_map(|args| EMBED_ARGUMENT.captures_iter(args.as_str()))
+        .filter_map(|c| {
+            let value = c.get(2).or_else(|| c.get(3))?.as_str().to_owned();
+            Some(match c.get(1)?.as_str() {
+                "file" => Embed::File(value),
+                _ => Embed::Glob(value),
+            })
+        })
+        .collect()
+}
+
+/// `path` relative to directory `dir`, as a path from the root; `None` when it is absolute or
+/// leaves the root.
+fn resolve(dir: &str, path: &str) -> Option<String> {
+    if path.starts_with('/') {
+        return None;
+    }
+    let mut parts: Vec<&str> = dir.split('/').filter(|p| !p.is_empty()).collect();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            part => parts.push(part),
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
 }
 
 /// The import paths in a CUE file, without `:package` qualifiers.
@@ -377,6 +508,36 @@ mod tests {
                 .expect("never poisoned")
                 .contains(&"unrelated/other.cue".to_owned())
         );
+    }
+
+    #[tokio::test]
+    async fn loads_embedded_files() {
+        let repo = Memory::new(&[
+            ("cue.mod/module.cue", "module: \"example.com/acme@v0\"\n"),
+            (
+                "tartan.cue",
+                "@extern(embed)\npackage tartan\na: _ @embed(file=\"config/a.json\")\nb: _ @embed(glob=config/*.yaml, type=yaml)\nc: _ @embed(file=\"../outside.json\")\nd: _ @embed(file=missing.json)\n",
+            ),
+            ("config/a.json", "{}"),
+            ("config/b.yaml", "b: 1\n"),
+            ("config/c.yaml", "c: 1\n"),
+            ("config/nested/d.yaml", "d: 1\n"),
+            ("config/e.json", "{}"),
+        ]);
+        let files = load(&repo, LIMITS).await.expect("loads");
+        assert_eq!(
+            paths(&files),
+            vec![
+                "config/a.json",
+                "config/b.yaml",
+                "config/c.yaml",
+                "cue.mod/module.cue",
+                "tartan.cue",
+            ]
+        );
+        assert_eq!(resolve("config", "../a.json").as_deref(), Some("a.json"));
+        assert_eq!(resolve("", "../a.json"), None);
+        assert_eq!(resolve("", "/etc/passwd"), None);
     }
 
     #[tokio::test]

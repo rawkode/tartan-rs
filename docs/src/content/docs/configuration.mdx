@@ -41,9 +41,11 @@ export CUE_REGISTRY=forge.example.com
 cue export
 ```
 
+As with `cue export`, every value must be concrete: a field left as a type (`string`), a constraint (`>5`), a disjunction without a default, or a required field never given (`x!`) makes the configuration invalid, and the problem names its path. The evaluator the forge embeds exports such a value as `null`, so the forge also refuses an explicit `null` anywhere in the package; leave a field out instead.
+
 After evaluation the forge checks the exported value: `extensions` maps each extension id to an entry with a semver `version` (`0.6.0`, without a `v`), `settings` that is a struct (`{}` when left out), and optionally `id` equal to its key. Any other key in an entry, an entry without a version, an invalid id, a conflict, or CUE that does not evaluate makes the configuration invalid. Other top-level fields are yours, for helpers and shared values.
 
-An entry does not have to come from a module; plain CUE works too, though nothing then checks its settings before they reach the extension:
+An entry does not have to come from an extension's module; plain CUE works too, in the repository's own module, though nothing then checks its settings before they reach the extension:
 
 ```cue
 package tartan
@@ -76,15 +78,33 @@ import (
 extensions: "rawkode.issues": issues.#Extension & {settings: properties: props.all}
 ```
 
-Without `cue.mod/module.cue`, the root is evaluated as a directory outside any module, as `cue` does: only the standard library can be imported.
+The repository must be a CUE module: a root `package tartan` without `cue.mod/module.cue` is refused. Run `cue mod init example.com/acme-api` once to add one. The forge supplies no module of its own, because its evaluator only evaluates inside a module.
 
-The forge reads only what the package needs at the pushed commit: the root's `*.cue` files, `cue.mod/`, and the directories of the module's packages that are imported. A configuration may read at most 500 files, 64 directories and 4 MiB of CUE. A dependency the forge's registry does not serve cannot be resolved, so a configuration depending on a module the deployment does not list is refused.
+Files embedded with `@embed` are read from the repository too, so JSON or YAML kept beside the CUE can be part of the configuration:
+
+```cue
+@extern(embed)
+
+package tartan
+
+import "github.com/rawkode/tartan-ext/issues"
+
+extensions: "rawkode.issues": issues.#Extension & {
+	settings: properties: _ @embed(file="config/properties.json")
+}
+```
+
+Embedded files must be UTF-8 text (JSON, YAML or plain text); `type=binary` is not supported.
+
+The forge reads only what the package needs at the pushed commit: the root's `*.cue` files, `cue.mod/`, the directories of the module's packages that are imported, and the files they embed. A configuration may read at most 500 files, 64 directories and 4 MiB in all. A dependency the forge's registry does not serve cannot be resolved, so a configuration depending on a module the deployment does not list is refused.
 
 ## When it applies
 
 When `refs/heads/main` moves, the forge loads the configuration at the new commit and applies it. Other branches never apply. When pushes arrive quickly, the latest commit wins.
 
-The configuration is applied all or nothing. Every entry is checked first: its version's package is available on the forge, and the extensions its manifest `requires` are installed by the same configuration (Kanban requires Issues, for example). If anything fails, nothing changes and `config.refused` records the problems.
+Every entry is checked first: its version's package is in a module the deployment lists, and the extensions its manifest `requires` are installed by the same configuration (Kanban requires Issues, for example). If any check fails, nothing changes and `config.refused` records the problems.
+
+Then each extension is installed, upgraded or reconfigured in turn, the extensions it requires first. If one of them fails (a migration error, say), the extensions already handled stay as they are and the forge tries the same configuration again, with a growing delay, for about two minutes; nothing is recorded until it is applied. A failure that may pass, such as the Git host or the forge's registry not answering, is retried the same way rather than refused. A configuration still not applied after that is tried again when the forge restarts or `main` moves. When the forge starts, repositories apply their configurations once it has copied the modules its deployment lists into its registry.
 
 | Change | What happens |
 | --- | --- |

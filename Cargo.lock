@@ -3638,6 +3638,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "cuengine",
+ "glob",
  "regex",
  "serde",
  "serde_json",
