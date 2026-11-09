@@ -756,6 +756,8 @@ pub struct Forge {
     /// The owner's access token, with every scope.
     pub token: String,
     pub client: Client,
+    /// The forge id the identity actor is keyed by (`TARTAN_FORGE_ID`).
+    pub forge_id: String,
     actors: Option<TestHandle>,
     seq: AtomicU64,
     heads: Mutex<HashMap<String, String>>,
@@ -789,6 +791,7 @@ impl Forge {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("after 1970")
             .as_nanos();
+        let forge_id = format!("{name}-{nanos}");
         let git = Arc::new(FakeGitHost::default());
         let store: Arc<dyn object_store::ObjectStore> =
             Arc::new(object_store::memory::InMemory::new());
@@ -800,7 +803,7 @@ impl Forge {
         let clock = Arc::new(TestClock::default());
         let identity = IdentityWorld::start().await;
         install_services(Services {
-            forge_id: format!("{name}-{nanos}"),
+            forge_id: forge_id.clone(),
             git_host: git.clone(),
             extensions: extensions.clone(),
             clock: clock.clone(),
@@ -841,6 +844,7 @@ impl Forge {
             identity,
             token,
             client,
+            forge_id,
             actors: Some(actors),
             seq: AtomicU64::new(1),
             heads: Mutex::new(HashMap::new()),
