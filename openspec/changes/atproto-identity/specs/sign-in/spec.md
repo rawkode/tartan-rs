@@ -34,6 +34,10 @@ The client metadata `scope` SHALL be exactly `atproto repo:org.tangled.key.sshKe
 ### Requirement: The client keys are the operator's
 The forge SHALL load its ES256 client keys from the JWKS file at `TARTAN_OAUTH_KEYS_FILE`, sign client assertions with the first key, publish the public halves of all of them, and refuse to start without at least one valid key. Private key material SHALL never appear in responses, events or logs.
 
+#### Scenario: Published JWKS
+- **WHEN** anyone fetches `/-/auth/jwks.json`
+- **THEN** each key carries only public parameters and no `d` member
+
 #### Scenario: Key rotation
 - **WHEN** the operator puts a new key first in the file and restarts
 - **THEN** new sign-ins use the new key and the old key stays published until removed
@@ -69,15 +73,34 @@ Every sign-in failure SHALL redirect to the sign-in page with a problem code and
 - **THEN** the sign-in page says sign-in took too long and offers to try again
 
 ### Requirement: Inactive accounts cannot sign in
-Before creating a session, the callback SHALL refresh the DID's account status from its verified PLC log and PDS. If the status is inactive, the forge SHALL create no session, record no `person.signed_in`, and redirect to the sign-in page with problem `account_inactive`, the status and the PDS host, keeping `return_to`. A failed status fetch SHALL keep the stored status.
+Before creating a session, the callback SHALL refresh the DID's account status from its verified PLC log and PDS. If the status is inactive, the forge SHALL create no session, record no `person.signed_in`, and redirect to the sign-in page with problem `account_inactive` and the status, keeping `return_to`, and SHALL word the refusal by status. A failed status fetch SHALL keep the stored status.
 
 #### Scenario: Deactivated account
 - **WHEN** the DID's PDS answers `getRepoStatus` with `active: false` and `status: deactivated` at the callback
 - **THEN** no session is created, and the sign-in page shows `account_inactive`, saying the account at that PDS is deactivated and to reactivate it there and sign in again
 
+#### Scenario: Taken-down account
+- **WHEN** the DID's PDS reports the account `takendown` at the callback
+- **THEN** no session is created, and the sign-in page says to contact the hosting provider, not to reactivate the account
+
 #### Scenario: Stale inactive status
 - **WHEN** the forge stored `deactivated` for a DID whose PDS now reports it active, and that DID signs in
 - **THEN** the status becomes `active`, the session is created and the person is not sent back to the sign-in page
+
+### Requirement: Failure details reach only the browser that ran the flow
+Problem redirects SHALL carry only the problem code, a known account status, an outcome id and the validated `return_to`, never a host or a server's text. The forge SHALL keep hosts and server messages for at most 10 minutes, bound to an outcome cookie set with the redirect, and SHALL reveal them once through `POST /-/auth/outcome`, only to that browser. Any other browser SHALL see the generic message for the code.
+
+#### Scenario: Crafted problem link
+- **WHEN** someone opens `/#/-/sign-in?problem=account_inactive&status=deactivated&host=evil.example&error_description=…`
+- **THEN** the page shows the fixed text for a deactivated account and nothing from `host` or `error_description`
+
+#### Scenario: Details for the browser that ran the flow
+- **WHEN** a person's sign-in fails with `client_rejected`
+- **THEN** their sign-in page shows the authorization server's host and message once, read with their outcome cookie
+
+#### Scenario: Real outcome link opened elsewhere
+- **WHEN** that redirect URL, outcome id included, is opened in another browser
+- **THEN** the page shows the generic `client_rejected` message and none of the server's text
 
 ### Requirement: Pending requests are bound to the browser
 `POST /-/auth/login` and `POST /-/auth/keys` SHALL set a pre-auth cookie (`__Host-tartan_oauth`; `tartan_oauth` in development over HTTP), HttpOnly, SameSite=Lax, Path=/, lasting at most 10 minutes, holding 32 random bytes whose SHA-256 the pending request stores. The callback SHALL fail unless that cookie matches, and for a key write unless the current session started it. Every callback SHALL clear the cookie.
@@ -137,6 +160,10 @@ The sign-in page SHALL take a `return_to` path on `TARTAN_PUBLIC_URL`, including
 - **WHEN** a sign-in starts with `return_to=//evil.example/` or `return_to=/\evil.example`
 - **THEN** the callback redirects to `/`
 
+#### Scenario: Fragment route with a query
+- **WHEN** a sign-in started from `/#/acme/api/issues?x=1` fails
+- **THEN** the problem redirect carries `return_to` percent-encoded, and "try again" returns to `/#/acme/api/issues?x=1`
+
 #### Scenario: Back to the page in development
 - **WHEN** a person signs in from `/#/acme/api/issues` in the web UI of a development forge and then creates an issue
 - **THEN** the browser lands on `/#/acme/api/issues` and the issue creation is accepted, because its `Origin` is `TARTAN_PUBLIC_URL`
@@ -149,8 +176,8 @@ The sign-in page SHALL take a `return_to` path on `TARTAN_PUBLIC_URL`, including
 - **THEN** later requests with the old cookie are treated as anonymous
 
 ### Requirement: Sign-ins are recorded
-A successful sign-in SHALL record `person.signed_in {did, handle}` on the `identity` source, and the first sign-in of a DID SHALL add it to the people the forge knows.
+A successful sign-in by a DID that may read (an owner or a reader) SHALL record `person.signed_in {did, handle}` on the `identity` source, and its first sign-in SHALL add it to the people the forge knows. A sign-in by a DID that may not read SHALL record neither.
 
 #### Scenario: First sign-in
-- **WHEN** a DID signs in for the first time
+- **WHEN** a DID that may read signs in for the first time
 - **THEN** `person.signed_in` is recorded and the forge starts watching the DID's keys

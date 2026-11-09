@@ -21,19 +21,57 @@ A principal SHALL be an owner when its DID, or the DID it acts on behalf of, is 
 - **THEN** `GET /-/api/me` answers their DID, handle and `owner: true`
 
 ### Requirement: What callers may do
-Anonymous callers SHALL get 401 from `/-/api` except `GET /-/api/me`. Other people SHALL only read: `GET` routes and extension `render` calls. Writes (extension `tool` and `act` calls) SHALL need an owner. Creating orgs and repositories, placements and subscribers SHALL need an owner with `admin` rights.
+Anonymous callers SHALL get 401 from `/-/api` except `GET /-/api/me`. Readers, the non-owners admitted by the deployment configuration's `readers`, SHALL only read: `GET` routes and extension `render` calls. Other signed-in non-owners SHALL get 403 except `GET /-/api/me`, which reports `rights: []`. Writes (extension `tool` and `act` calls) SHALL need an owner. Creating orgs and repositories, placements and subscribers SHALL need an owner with `admin` rights.
 
 #### Scenario: Person who is not an owner
-- **WHEN** a signed-in person who is not an owner calls an Issues tool that creates an issue
+- **WHEN** a signed-in reader who is not an owner calls an Issues tool that creates an issue
 - **THEN** the forge answers 403 and nothing changes
 
 #### Scenario: Reading
-- **WHEN** a signed-in person who is not an owner lists an org's repositories
+- **WHEN** a signed-in reader who is not an owner lists an org's repositories
+- **THEN** the list is returned
+
+#### Scenario: Non-owner on a private forge
+- **WHEN** `readers` is unset or `"owners"` and a signed-in person who is not an owner lists an org's repositories
+- **THEN** the forge answers 403, and `GET /-/api/me` answers their DID with `rights: []`
+
+#### Scenario: Non-owner on an open forge
+- **WHEN** `readers` is `"signed_in"` and a signed-in person who is not an owner lists an org's repositories
 - **THEN** the list is returned
 
 #### Scenario: Write token
 - **WHEN** an owner's token with scope `write` but not `admin` creates an org
 - **THEN** the forge answers 403
+
+### Requirement: The web UI shows read-only access
+For a principal whose rights from `GET /-/api/me` are empty, the web UI SHALL show a private-forge page instead of the forge. For one whose rights hold `read` but lack `write`, it SHALL hide or disable its write controls, show "Read-only: only forge owners can make changes until membership exists.", and show that message for a 403 from a write call instead of the response body.
+
+#### Scenario: Non-owner opens the issues page
+- **WHEN** a signed-in person who is not an owner opens a repository's issues
+- **THEN** there is no usable New issue button, the read-only notice is shown, and a forced write shows the read-only message rather than the raw 403 text
+
+#### Scenario: Owner sees write controls
+- **WHEN** an owner opens the same page
+- **THEN** the New issue button works and no read-only notice is shown
+
+#### Scenario: Private forge page
+- **WHEN** a signed-in person whose `GET /-/api/me` rights are empty opens any forge page
+- **THEN** the UI shows "This forge is private; ask an owner for access." with their handle and a sign-out button, and no raw 403
+
+### Requirement: Readers are set in the deployment configuration
+The deployment configuration's `readers` SHALL decide which non-owners may read: `"owners"` (the default) admits none, `"signed_in"` admits every signed-in person, and a list admits those DIDs. At startup the forge SHALL log the mode in force. A sign-in SHALL record `person.signed_in` and make the DID known only when the DID may read.
+
+#### Scenario: Upgraded forge stays private
+- **WHEN** a forge starts with a configuration that has `owners` but no `readers`
+- **THEN** it logs that only owners can read, and a non-owner who signs in reads nothing
+
+#### Scenario: Listed reader
+- **WHEN** `readers` is `["did:plc:bbbbbbbbbbbbbbbbbbbbbbbb"]` and that DID signs in
+- **THEN** it may read but not write, and another non-owner gets 403
+
+#### Scenario: Stranger signs in to a private forge
+- **WHEN** a DID with no read right signs in
+- **THEN** it gets a session, but no `person.signed_in` is recorded and the forge does not watch its keys
 
 ### Requirement: Inactive accounts are refused
 The forge SHALL refuse sessions and tokens of a DID whose verified account status is inactive (any status but active, throttled or desynchronized), within 30 seconds of learning it. Status SHALL come only from the DID's verified PLC log and `com.atproto.sync.getRepoStatus` on its verified PDS, refreshed on Jetstream identity or account events, at sign-in and at least every 6 hours; a Jetstream event's payload SHALL never set it, and a failed fetch SHALL keep the last status.

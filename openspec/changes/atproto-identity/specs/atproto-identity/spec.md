@@ -26,7 +26,7 @@ For a `did:plc` DID the forge SHALL fetch the operation log (`/log/audit`) and a
 
 #### Scenario: Tombstoned DID
 - **WHEN** the last valid operation is a `plc_tombstone`
-- **THEN** the DID resolves as deactivated
+- **THEN** the DID has no document and its account status is `deleted`
 
 ### Requirement: A did:web document is fetched from its host
 For a `did:web` DID the forge SHALL fetch `https://<host>/.well-known/did.json` and accept it only when its `id` is the DID. The forge SHALL keep the bytes it fetched when they are used as evidence.

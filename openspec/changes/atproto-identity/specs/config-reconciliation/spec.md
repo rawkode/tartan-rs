@@ -17,6 +17,10 @@ When the signing rule covers `refs/heads/main`, the forge SHALL apply a configur
 - **WHEN** `main` requires signatures and is rewound to an unsigned commit from before the rule existed
 - **THEN** `config.refused` is recorded naming that commit, its configuration is not applied, and the signing rule stays in force
 
+#### Scenario: Configuration signed with a since-removed key
+- **WHEN** `main` requires Alice's signature, a configuration commit verified as Alice on an unprotected branch has its key record deleted, and `main` is then fast-forwarded to it
+- **THEN** `config.refused` is recorded naming the commit as verified with a key since removed, and the previous configuration stays applied
+
 #### Scenario: Signed configuration change
 - **WHEN** the same change is pushed in a commit verified as an allowed signer
 - **THEN** it is applied
@@ -32,6 +36,10 @@ When the signing rule covers `refs/heads/main`, the forge SHALL apply a configur
 #### Scenario: Earlier update still retrying
 - **WHEN** `main` requires signatures, a signed configuration push W waits because its signer's PDS is down, and a second signed configuration push X by another signer whose PDS is up follows
 - **THEN** X's configuration is applied once X's check completes, judged on X's update alone, without waiting for W, and W's later result does not change what is shown for `main`
+
+#### Scenario: Head check gives up
+- **WHEN** `main` requires signatures and the check of the update that set `main` to a configuration ends `unverifiable`
+- **THEN** `config.refused` is recorded with `signing: <oid> is unverifiable`, and an owner's re-check can still apply it
 
 #### Scenario: Waiting is visible
 - **WHEN** a `main` configuration waits for its signature check

@@ -25,18 +25,22 @@ The forge SHALL accept `ssh-ed25519`, `ecdsa-sha2-nistp256`, `ecdsa-sha2-nistp38
 - **THEN** their key list shows it as unsupported
 
 ### Requirement: The forge indexes the keys of people it knows
-The forge SHALL index, by SHA-256 fingerprint, the signing keys of each DID it knows: owners, people who have signed in, DIDs named by a repository's signing rule, and DIDs named as committers of pushed commits. The index SHALL be built from the person's PDS listing and SHALL only find candidates; verification always fetches a proof.
+The forge SHALL index, by SHA-256 fingerprint, the signing keys of each DID it knows: owners, readers who have signed in, DIDs named by a repository's signing rule, and DIDs named as committers of pushed commits. The index SHALL be built from the person's PDS listing and SHALL only find candidates; verification always fetches a proof.
 
 #### Scenario: Owner's keys
 - **WHEN** the forge starts with an owner who has two signing keys
 - **THEN** both fingerprints are in the index for that DID
 
 ### Requirement: Key changes are recorded
-Indexing SHALL record `signing_key.added {did, fingerprint, collection, rkey, name}` for a key it had not seen and `signing_key.removed {did, fingerprint, collection, rkey}` for one no longer published, on the `identity` source.
+Indexing SHALL record `signing_key.added {did, fingerprint, collection, rkey, name}` for a signing key it had not seen and `signing_key.removed {did, fingerprint, collection, rkey}` for one no longer published for signing, including a record replaced in place under the same rkey, on the `identity` source.
 
 #### Scenario: Key deleted
 - **WHEN** a person deletes a key record and the forge refreshes their keys
 - **THEN** `signing_key.removed` is recorded with the key's fingerprint
+
+#### Scenario: Key record replaced in place
+- **WHEN** a person rewrites a key record under the same rkey with a different `publicKey`, or with `usages: ["auth"]`, and the forge refreshes their keys
+- **THEN** `signing_key.removed` is recorded for the old fingerprint (and `signing_key.added` for a new signing key), and commits signed with the old key no longer verify from a cached proof
 
 ### Requirement: The index follows the network
 The forge SHALL refresh a known DID's keys when Jetstream (`TARTAN_JETSTREAM_URL`, empty to disable) reports a commit to either key collection or an identity event for it, when the person signs in or asks, and at least every 6 hours. Every Jetstream filter update SHALL carry both key collections with the full DID list. Commits to other collections and events for unknown DIDs SHALL be ignored. Jetstream events SHALL only trigger a refresh.
@@ -110,6 +114,17 @@ The forge SHALL refresh a known DID's keys when Jetstream (`TARTAN_JETSTREAM_URL
 #### Scenario: Invalid key
 - **WHEN** a person submits a public key that does not parse or is longer than 4096 bytes
 - **THEN** the settings page shows `invalid_key` and no authorization is started
+
+### Requirement: Key-write outcome details reach only the initiating session
+Key-write outcome redirects SHALL carry only the outcome code and an outcome id, never a host, a PDS message, a collection or an rkey. The forge SHALL keep those details for at most 10 minutes and reveal them once through `POST /-/auth/outcome`, only to the session that started the write. Any other viewer SHALL see the generic message for the code.
+
+#### Scenario: Crafted outcome link
+- **WHEN** a signed-in person opens `/#/-/settings?keys=write_failed&host=evil.example&message=…`
+- **THEN** the settings page shows the generic `write_failed` message and nothing from `host` or `message`
+
+#### Scenario: Outcome read by another session
+- **WHEN** a key-write redirect, outcome id included, is opened by a different session
+- **THEN** the forge answers 404 for its details and the page shows the generic message for the code
 
 ### Requirement: Removal is judged by the refreshed index
 After deleting a key record, the forge SHALL refresh the DID's keys and report `removed` only when the key's fingerprint is no longer published by that DID in either collection. Otherwise it SHALL report `still_published` naming the remaining record, or `refresh_failed` when the refresh could not list the PDS. A failed listing SHALL keep the indexed keys unchanged.

@@ -22,7 +22,7 @@ For each `ref.updated` on `refs/heads/*` or `refs/tags/*` (not deletions), the f
 - **THEN** no commit is verified again and the ref is judged on the stored results
 
 ### Requirement: Signature statuses
-Each checked object SHALL get one status: `verified`, `unsigned`, `unknown_key`, `ambiguous_key`, `bad_signature`, `unsupported_format` (OpenPGP, X.509 or an unsupported key type), `unverifiable` (identity or proof could not be fetched after retries) or `not_checked`.
+Each checked object SHALL get one status: `verified`, `unsigned`, `unknown_key`, `ambiguous_key`, `bad_signature`, `unsupported_format` (OpenPGP, X.509 or an unsupported key type), `unverifiable` (identity or proof could not be fetched, or a proof did not verify, after retries) or `not_checked`.
 
 #### Scenario: OpenPGP signature
 - **WHEN** a commit carries a `-----BEGIN PGP SIGNATURE-----` signature
@@ -51,7 +51,7 @@ The forge SHALL look up the signature key's fingerprint in the signing-key index
 - **THEN** the forge indexes their keys and the commit is `verified`
 
 ### Requirement: One signer per key
-When the committer email is a DID, the commit SHALL verify only as that DID. Otherwise, when several DIDs publish the key, the forge SHALL choose the only one the signing rule in force allows, else give `ambiguous_key` listing the DIDs. `verified` SHALL mean the key is published by the signer DID, not that the DID proved holding it.
+When the committer email is a DID, the commit SHALL verify only as that DID. Otherwise, when several DIDs publish the key, the forge SHALL choose the only one allowed by the signing rule in force when the update was pushed, else give `ambiguous_key` listing the DIDs. `verified` SHALL mean the key is published by the signer DID, not that the DID proved holding it.
 
 #### Scenario: Copied key
 - **WHEN** Mallory publishes Alice's public key and Alice's commit names Alice's DID as committer
@@ -66,22 +66,45 @@ When the committer email is a DID, the commit SHALL verify only as that DID. Oth
 - **THEN** its status is `ambiguous_key`
 
 ### Requirement: The key record is proved back to the DID
-Before `verified`, the forge SHALL fetch `com.atproto.sync.getRecord` for the key's record, check every block's hash, check the repository commit's DID and its low-S signature by the DID's verified `#atproto` key, walk the MST to the record and require the record to hold the key with signing usage.
+Before `verified`, the forge SHALL fetch `com.atproto.sync.getRecord` for the key's record, check every block's hash, check the repository commit's DID and its low-S signature by the DID's verified `#atproto` key, walk the MST to the record and require the record to hold the key with signing usage. A signed MST proof that the record does not exist SHALL be conclusive: the key is marked removed and, with no other record of it, the result is `unknown_key`.
+
+#### Scenario: PDS proves the record absent
+- **WHEN** `getRecord` answers 200 with a validly signed commit and a complete MST path without the record's leaf
+- **THEN** the key is marked removed and the commit is `unknown_key` at once, not `unverifiable`
 
 #### Scenario: PDS lies
 - **WHEN** a PDS returns a CAR whose record block does not match the CID in the signed MST
 - **THEN** the commit is not `verified`
 
 #### Scenario: Record deleted
-- **WHEN** the record no longer exists in the signer's repository at push time
+- **WHEN** the record no longer exists in the signer's repository at push time, whether the PDS proves it absent or answers `RecordNotFound`
 - **THEN** the key is removed from the index and the commit is `unknown_key`
 
 #### Scenario: Repository deactivated
 - **WHEN** the signer's PDS answers `getRecord` with `RepoDeactivated`
 - **THEN** the commit is `unknown_key` with that detail and the signer's account status is refreshed
 
+### Requirement: A proof that does not verify is not final
+When the repository commit's signature or the MST proof of a key record fails, the forge SHALL drop its cached proofs for the DID, refresh the DID's identity without any cache, and retry the proof once. A proof that still fails SHALL be a transient failure, never `bad_signature` or `unknown_key`. A record that no longer holds the key, or whose usages exclude `sign`, SHALL give `unknown_key` once the DID's keys are refreshed and no other record holds the key.
+
+#### Scenario: Key rotated while the PDS lags
+- **WHEN** a signer's `#atproto` key is rotated in PLC and their PDS serves a commit signed with the old key for one attempt before re-signing
+- **THEN** the check refreshes the identity, ends `verified`, and never records the commit as `bad_signature`
+
+#### Scenario: Proof never verifies
+- **WHEN** every proof the signer's PDS serves fails against the DID's freshly verified `#atproto` key for an hour
+- **THEN** the commit is recorded `unverifiable` with a reason naming the PDS and the DID, and an owner can re-check it
+
+#### Scenario: Record no longer holds the key
+- **WHEN** the indexed record now holds a different key and no other record of the DID publishes the signature's key
+- **THEN** the signer's keys are refreshed and the commit is `unknown_key` with a detail naming the record
+
 ### Requirement: Results are kept with their proof
-Each result SHALL be stored once with the object id, status, signer DID, fingerprint, record and the digest of a proof bundle in the object store (`proofs/sha256/<hex>.json`) holding the getRecord CAR, the identity evidence and the times. A stored result SHALL never change except `unverifiable`, which an owner may re-check.
+Each result SHALL be stored once with the object id, status, signer DID, fingerprint, record and the digest of a proof bundle in the object store (`proofs/sha256/<hex>.json`) holding the getRecord CAR, the identity evidence and the times. A stored result SHALL never change except `unverifiable`, which an owner may re-check; a re-check SHALL judge again every update that listed the object, each by the rule it was first judged by.
+
+#### Scenario: Owner re-checks an unverifiable commit
+- **WHEN** an `unverifiable` commit was judged on `main` and on `release/1.0`, the signing rule then changes, and an owner re-checks the commit once the signer's PDS is back
+- **THEN** both updates are judged again by the rules copied when they were pushed, and if `main`'s head update is now compliant its configuration is applied
 
 #### Scenario: Offline re-check
 - **WHEN** an auditor downloads a verified commit's proof bundle
@@ -102,7 +125,7 @@ After checking a ref update the forge SHALL record `ref.signatures.checked {ref,
 - **THEN** one `ref.signatures.checked` lists both with their statuses
 
 ### Requirement: Transient failures are retried
-When the git host, a DID document or a proof cannot be fetched, the forge SHALL retry with a growing delay for up to one hour before recording `unverifiable`, keep the last failure's reason (without secrets) with the queued check, and keep checking other updates, including later updates of the same ref. Retries SHALL use one durable schedule per repository that wakes it, and checks SHALL never run concurrently.
+When the git host, a DID document or a proof cannot be fetched, or a proof does not verify after a fresh identity, the forge SHALL retry with a growing delay for up to one hour before giving up, keep the last failure's reason (without secrets) with the queued check, and keep checking other updates, including later updates of the same ref. Retries SHALL use one durable schedule per repository that wakes it, and checks SHALL never run concurrently.
 
 #### Scenario: PDS down briefly
 - **WHEN** the signer's PDS is unreachable for five minutes after a push
@@ -120,9 +143,16 @@ When the git host, a DID document or a proof cannot be fetched, the forge SHALL 
 - **WHEN** two signature-check wakes of one repository overlap
 - **THEN** each ref update records `ref.signatures.checked` once
 
+### Requirement: A check that gives up still judges its update
+A check that gives up (after an hour, or at once when the git host no longer serves `new`) SHALL store the objects it completed as they are and those still failing as `unverifiable`, judge the update with them (on the tip alone when the git host never listed the update's commits), and record the update's result and events. An owner's re-check SHALL queue the update again and check every commit it adds.
+
 #### Scenario: Object gone from the host
 - **WHEN** a ref is force-pushed again before its previous update is checked and the old `new` is no longer served
-- **THEN** that update's head is recorded `unverifiable` at once with a reason naming the missing object
+- **THEN** that update's head is recorded `unverifiable` at once with a reason naming the missing object, and the update is judged with it
+
+#### Scenario: Git host down for an hour
+- **WHEN** the git host fails every attempt for an hour after a push to a covered ref
+- **THEN** the tip is recorded `unverifiable`, the update is judged non-compliant, and an owner's re-check queues the update again and checks every commit it adds
 
 ### Requirement: Signatures are readable
 `GET /-/api/orgs/<org>/repos/<repo>/commits/<sha>/signature` SHALL answer the stored result with its annotations and a proof URL, and `GET /-/api/orgs/<org>/repos/<repo>/signatures?ref=<ref>` the result and compliance of the ref's latest update. While the commit's check, or the ref's latest update, is queued, they SHALL answer `{status: "pending", attempts, next_at, last_error}`.
@@ -140,7 +170,7 @@ When the git host, a DID document or a proof cannot be fetched, the forge SHALL 
 - **THEN** the API answers `pending` with the attempts so far and the last error, and the repository page shows that it is retrying
 
 ### Requirement: The signing rule is enforced after the push
-When the rule in force before a push covers an updated ref, every object the update lists, including the commit `new` resolves to, SHALL be judged on its stored result, including results made for other refs, with the signer checked against this ref's `signers`. Any object not `verified` by an allowed signer, or a truncated walk, SHALL record `ref.signature.violation {ref, old, new, commits}` and mark the ref non-compliant until a later update to it is compliant.
+When the rule in force before a push covers an updated ref, every object the update lists, including the commit `new` resolves to, SHALL be judged on its stored result against this ref's `signers`. A result made on an earlier update SHALL count only while its DID still publishes the key for signing and is not inactive. Any other object, or a truncated walk, SHALL record `ref.signature.violation` and mark the ref non-compliant until a later update to it is compliant.
 
 #### Scenario: Unsigned commit on a protected branch
 - **WHEN** a repository requires signatures on `refs/heads/main` and an unsigned commit is pushed there
@@ -163,8 +193,16 @@ When the rule in force before a push covers an updated ref, every object the upd
 - **THEN** `ref.signature.violation` is recorded for `main` and that commit's configuration is refused with `signing: <oid> is unsigned`
 
 #### Scenario: Rewind to a signed head
-- **WHEN** `main` requires signatures and is force-pushed back to an ancestor verified as an allowed signer
+- **WHEN** `main` requires signatures and is force-pushed back to an ancestor verified as an allowed signer whose key is still published
 - **THEN** the update is compliant
+
+#### Scenario: Key removed before the fast-forward
+- **WHEN** a commit signed with Alice's key is verified on an uncovered branch, Alice's key record is then deleted, and `main`, which requires Alice, is fast-forwarded to it
+- **THEN** `ref.signature.violation` is recorded for `main` with the problem `<oid> was verified with a key since removed`, its configuration is refused, and the commit itself still reads `verified` with the removal noted
+
+#### Scenario: Signer deactivated before the fast-forward
+- **WHEN** a commit verified as Alice on an uncovered branch reaches `main`, which requires Alice, after Alice's account is deactivated
+- **THEN** `ref.signature.violation` is recorded for `main` with the problem `<oid> signer's account is not active`
 
 #### Scenario: Tag of a tree
 - **WHEN** a covered tag ref is pushed pointing, through annotated tags, at a tree rather than a commit
