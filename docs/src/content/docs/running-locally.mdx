@@ -9,7 +9,9 @@ sidebar:
 
 - Rust 1.98, with the `wasm32-unknown-unknown` target for extensions
 - Go, to build the CUE evaluator
-- `git`, `rustfs`, `rclone`, `wasm-tools` and `jq` on `PATH`
+- `git`, `rustfs`, `rclone`, `wasm-tools` and `jq` on `PATH`; Git 2.19 or later to sign commits with `tt` (the demo signs its commits), and 2.40 or later to see `tt`'s own error messages when signing fails
+- `tt`, built with the development identity network: `cargo build -p tt --features dev-identity` (a release `tt` refuses to talk to the development network)
+- `npm`, for the web interface
 - The `cue` command, v0.14 or later: set `CUE_BIN` when it is not `cue` on `PATH`
 - A CNCF [distribution](https://github.com/distribution/distribution) `registry` binary, the source registry extension modules are published to: set `REGISTRY_BIN` to it
 - A walgit binary: build [walgit](https://github.com/tobi/walgit) at `80e9a20` with `cargo build --release -p walgit-cli` (it needs `protoc`), and set `WALGIT_BIN` to `target/release/walgit`
@@ -22,14 +24,20 @@ sidebar:
 WALGIT_BIN=/path/to/walgit REGISTRY_BIN=/path/to/registry scripts/dev.sh
 ```
 
-This starts RustFS on port 9100, walgit on 9200, a source CUE registry on 9300, the Rivet engine on 6420 and the gateway on 8080, with development credentials only. The admin token is `dev-admin-token`.
+This starts RustFS on port 9100, walgit on 9200, a source CUE registry on 9300, the development identity network (`tartan-devnet`) on 9400, the Rivet engine on 6420 and the gateway on 8080, with development credentials only. The forge is built with `--features dev-identity` and runs with `TARTAN_DEV_IDENTITY=1`: its PLC directory, handle resolver and Jetstream are the devnet's, and its owner is the devnet's `@alice.test`. There is no admin token: you [sign in](/identity/) in the web interface, as `@alice.test` or any of the devnet's people (`bob.test`, `carol.test`, `dave.test`, `erin.test`), and scripts use [access tokens](/tokens/), such as an owner's from `tt admin token create`.
+
+Web sign-in, and `tt sign --login`, need the web interface's dev server (`npm --prefix web run dev`) on exactly `http://127.0.0.1:4321`: `dev.sh` sets `TARTAN_PUBLIC_URL=http://127.0.0.1:4321`, the forge's cookies and its `Origin` check belong to that origin, and the devnet's authorization server fetches the forge's client metadata, and `tt`'s, from it. If port 4321 is taken the dev server picks another and sign-in fails, so free it first.
+
+Never export `TARTAN_DEV_IDENTITY` from a shell profile or an `.envrc`: a release forge and a release `tt` refuse to start while it is set.
+
+Once `cargo build` and `npm ci` have run, `dev.sh` and `demo.sh` need no network: the identity network, the registries and the Git host all run on this machine. Ports 9400 (the devnet), the gateway's and the web interface's must be free, as well as the ones above.
 
 Before the forge starts, the script builds the `tartan.rawkode.academy/types`, Issues and Kanban modules, publishes each to the source registry unless that version is already there, and writes `.dev/forge.cue`, the [deployment configuration](/deploying/) listing them. The forge copies them into its own registry at startup and runs with `CUE_REGISTRY=127.0.0.1:8080+insecure`. Point your own `cue` at the same registry to write a repository's configuration:
 
 ```sh
 export CUE_REGISTRY=127.0.0.1:8080+insecure
 cue mod init example.com/acme-api
-cue mod get tartan.rawkode.academy/issues@v0.6.0
+cue mod get tartan.rawkode.academy/issues@v0.7.0
 ```
 
 A module version is published once, so a change to an extension needs a new version in its `tartan.json` (or a fresh `.dev`) before the forge sees it.
@@ -52,7 +60,10 @@ It builds and lints the docs, checks formatting and lints, then runs every test:
 | `TARTAN_CONFIG` | the [deployment configuration](/deploying/#the-deployment-configuration): a CUE file or directory of package `forge` |
 | `TARTAN_LISTEN` | the gateway's address, default `127.0.0.1:8080` |
 | `TARTAN_FORGE_ID` | this forge's id within the Rivet namespace, default `forge` |
-| `TARTAN_ADMIN_TOKEN` | the bearer token of the forge API |
+| `TARTAN_PUBLIC_URL` | the browser-facing origin of the forge: public `https` in production, `http://127.0.0.1:<port>` under `dev-identity` (see [Identity](/identity/)) |
+| `TARTAN_OAUTH_KEYS_FILE` | the web sign-in client's keys, from `tt admin oauth keygen` |
+| `TARTAN_TRUSTED_PROXIES` | the reverse proxies whose `X-Forwarded-For` the gateway believes; `dev.sh` trusts `127.0.0.1/32`, the web dev server |
+| `TARTAN_DEV_IDENTITY`, `TARTAN_PLC_URL`, `TARTAN_DEV_HANDLE_RESOLVER`, `TARTAN_JETSTREAM_URL` | `dev-identity` builds only: use the development identity network |
 | `TARTAN_WEBHOOK_SECRET` | the key the Git host signs its webhook with |
 | `TARTAN_GIT_HOST_URL`, `TARTAN_GIT_HOST_TOKEN` | the walgit base URL and token |
 | `TARTAN_S3_ENDPOINT`, `TARTAN_S3_BUCKET`, `TARTAN_S3_ACCESS_KEY`, `TARTAN_S3_SECRET_KEY` | the object store for the registry and extension packages |

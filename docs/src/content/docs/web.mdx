@@ -16,30 +16,48 @@ npm --prefix web ci
 npm --prefix web run dev
 ```
 
-Open `http://127.0.0.1:4321`. The dev server forwards `/-/` and `/v2/` to the gateway, `http://127.0.0.1:8080` by default; set `TARTAN_GATEWAY` to use another. The browser only talks to its own origin, so the gateway needs no CORS configuration.
+Open `http://127.0.0.1:4321`. The dev server forwards `/-/` and `/v2/` to the gateway, `http://127.0.0.1:8080` by default; set `TARTAN_GATEWAY` to use another. The browser only talks to its own origin, so the gateway needs no CORS configuration. The proxy keeps the browser's `Origin`, which the gateway checks against `TARTAN_PUBLIC_URL`, and adds `X-Forwarded-For`, which the gateway reads only from addresses in `TARTAN_TRUSTED_PROXIES`; so in development `TARTAN_PUBLIC_URL` is `http://127.0.0.1:4321`, this server's own origin.
 
 `npm --prefix web run build` writes a static site to `web/dist`. Routes live in the URL's fragment (`/#/acme/api/issues`), so any file server can host it behind a proxy that forwards `/-/` and `/v2/` to the gateway.
 
+## Signing in
+
+The interface knows you by the forge's session cookie, set when you [sign in](/identity/) with your Atmosphere account; it never sends an `Authorization` header and keeps no forge credential in the browser. Every route needs a session: there is no public view, so an anonymous visitor goes straight to the sign-in page (`/#/-/sign-in`), and comes back to the page they asked for afterwards (`return_to`). A 401 from any request, such as a session that ended, does the same.
+
+- **The sign-in page** takes your handle or DID and posts it to the forge, which sends the browser to your own server to approve. A failed sign-in comes back with a problem code, and the page explains it (the codes are listed under [Identity](/identity/)). Hosts and server messages come only from the forge's one-time outcome record, never from the link, so a crafted link cannot put its own words on the page. On a forge running its development identity network, the page also offers **Sign in as @alice.test**.
+- **The account menu** in the header shows your handle, an owner badge, and signs you out.
+- **Approving `tt`.** `tt login` opens `/#/-/cli-login`, which asks whether to let `tt` on the named device act as you; Approve hands `tt` a one-time code on its loopback address, Cancel tells `tt` you refused.
+- **A private forge.** When the forge's `readers` setting does not admit you, every page shows only "This forge is private; ask an owner for access.", who you are signed in as, and a sign-out button.
+- **Read only.** Until membership exists only owners make changes. A reader sees the notice "Read-only: only forge owners can make changes until membership exists." under the header, and no New issue button, issue edits, card moves or org and repository creation; a write the interface could not foresee that the forge refuses for lack of the right is explained with the same words, while any other refusal shows the forge's own text.
+
 ## Settings
 
-The settings page keeps everything in the browser's local storage:
+The settings page has three sections about you on this forge:
+
+- **Access tokens** for scripts and agents: create one with its scopes, repositories and lifetime, list them and revoke them. A new token's `tartan_pat_` secret is shown once, with a copy button; it cannot be retrieved later, since the forge keeps only its hash. If you may only read, a token can only read too. See [Access tokens](/tokens/).
+- **Signing**: how to sign commits with `tt`, with this forge's address and your DID filled in. See [Signing](/signing/).
+- **Sessions**: your browser and `tt` sessions, with their device names; end any of them.
+
+The rest is kept in the browser's local storage:
 
 | Setting | Meaning |
 | --- | --- |
-| Admin token | sent as `Authorization: Bearer` on every API request; `dev-admin-token` by default, as `scripts/dev.sh` configures |
 | Gateway address for `cue` | the origin `cue` on your machine reaches the forge's registry at; the setup steps derive `CUE_REGISTRY` from it (`host:port`, with `+insecure` over plain HTTP) |
 | Git host token | shown in the `git push` command of a repository's setup steps; `dev-git-host-token` by default |
 | Board refresh | how often an open board reloads, in seconds |
 | Sandbox | answer every request from sample data in the browser instead of the gateway |
 
-The sandbox serves an org `acme` with a repository `api` that installs Issues and Kanban, with sample issues and boards. It follows the gateway's wire format, so the interface can be explored, or its views developed, without a running forge. Its changes last until the page reloads.
+The sandbox serves an org `acme` with a repository `api` that installs Issues and Kanban, with sample issues and boards, signed in as `@alice.test`, an owner, with people known by DID and sample signature results. It follows the gateway's wire format, so the interface can be explored, or its views developed, without a running forge. Its changes last until the page reloads.
 
 ## Pages
 
 - **Orgs and repositories.** `GET` and `POST /-/api/orgs`, and `/-/api/orgs/{org}/repos`, with the forge's slug rule checked before a request is sent.
 - **A repository's overview.** Its clone URL, the extensions its committed configuration installs (`GET …/extensions`), and the files and commands to configure it: a `cue.mod/module.cue` that depends on the types, Issues and Kanban modules, a `tartan.cue` that installs Issues with typed properties and a Kanban board over them, the `CUE_REGISTRY` to set, and the `git push` to `main`. Extensions are installed only by committed CUE, so the overview offers no install button.
-- **Issues.** Lists by state and project with title search and paging, and an issue page that edits the title, the Markdown body and every [property type](/property-types/) with a control suited to it: text and Markdown with a preview, numbers within their bounds, dates, switches, selects and multi-selects by label, people, URLs and money in the currency's major units (stored as minor units). An edit is saved as one `update` with `expectedVersion`; if someone else changed the issue first, the page offers to reload it.
+- **A repository's signatures.** Each branch head has a badge with its [signature](/signing/) result, a banner names each branch the signing rule covers that does not comply (commits whose signer the rule does not allow first, the rest counted), and another says when a configuration pushed to `main` waits for its signature check. A commit's signature page (`/#/acme/api/commit/<sha>/signature`) shows the verified signer apart from the commit's claimed author and committer, the signature record and the revision that proved it, the proof to download and any notes; owners, and the signer, may ask for an unverifiable result to be checked again.
+- **Issues.** Lists by state and project with title search and paging, and an issue page that edits the title, the Markdown body and every [property type](/property-types/) with a control suited to it: text and Markdown with a preview, numbers within their bounds, dates, switches, selects and multi-selects by label, people by handle or DID, URLs and money in the currency's major units (stored as minor units). An edit is saved as one `update` with `expectedVersion`; if someone else changed the issue first, the page offers to reload it.
 - **Boards.** `list_boards` and `board` render lanes as rows, columns across and headed groups inside each cell, with boards that could not be shown listed with their problem. Cards move by drag and drop or with their column picker; a move shows at once, calls `move`, and is rolled back if Kanban refuses it. Kanban learns of changes from Issues' events, so the board reloads every few seconds and keeps showing an accepted move until the board catches up.
+
+People everywhere show as `@handle`, from one batched `GET /-/api/people` per page, or as a shortened DID until the forge knows the handle; the full DID is in the tooltip, with a link to the Bluesky profile except on a development forge. An agent shows as `@handle (agent)`, and an id recorded before people were DIDs as plain text.
 
 Every failed request shows the gateway's own error, the extension's error kind when there is one, and the request it answered.
 
@@ -47,7 +65,7 @@ Every failed request shows the gateway's own error, the extension's error kind w
 
 ```sh
 npm --prefix web run check   # astro check and vue-tsc
-npm --prefix web test        # vitest: the API client, the sandbox, properties, boards and components
+npm --prefix web test        # vitest: the API client, the sandbox, sign-in, settings, signatures, properties, boards and components
 npm --prefix web run build
 ```
 

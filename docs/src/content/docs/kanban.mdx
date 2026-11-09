@@ -16,9 +16,9 @@ The repository depends on the types module and on both extensions' modules:
 module: "example.com/acme-api"
 language: version: "v0.14.1"
 deps: {
-	"tartan.rawkode.academy/types@v0":                     v: "v0.1.0"
-	"tartan.rawkode.academy/issues@v0": v: "v0.6.0"
-	"tartan.rawkode.academy/kanban@v0": v: "v0.3.0"
+	"tartan.rawkode.academy/types@v0":                     v: "v0.2.0"
+	"tartan.rawkode.academy/issues@v0": v: "v0.7.0"
+	"tartan.rawkode.academy/kanban@v0": v: "v0.4.0"
 }
 ```
 
@@ -88,7 +88,7 @@ CUE compares values, not where they were written: an inline select identical to 
 
 ## Boards
 
-Column titles come from the property's labels, falling back to the values; lane and group titles likewise, and project roots and person ids as they are. A select's lanes include every option, in order; groups include only the values with cards. Other values come next, sorted, and cards without a value come last under "None". An issue that never set the column property has its default as its value, as Issues shows it; with no default, its card is in the first column. A card whose value is no column's, such as an option a subset leaves out (a default included), is listed as unplaced.
+Column titles come from the property's labels, falling back to the values; lane and group titles likewise, and project roots as they are. Lanes and groups by a `person` property are keyed by DID: each carries `person`, the DID, and the board shows it as `@handle` (a shortened DID until the forge knows the handle), so a person keeps one lane when their handle changes. A value stored before persons were DIDs (such as `admin`) has a lane of its own, labelled as it is. A select's lanes include every option, in order; groups include only the values with cards. Other values come next, sorted, and cards without a value come last under "None". An issue that never set the column property has its default as its value, as Issues shows it; with no default, its card is in the first column. A card whose value is no column's, such as an option a subset leaves out (a default included), is listed as unplaced.
 
 ## Tools
 

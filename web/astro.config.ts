@@ -30,6 +30,9 @@ export default defineConfig({
 			},
 		},
 		server: {
+			// The forge's `TARTAN_PUBLIC_URL` names this exact origin, so a server that cannot get
+			// its port fails instead of moving to another, where sign-in would not work.
+			strictPort: true,
 			proxy: {
 				"/-/": forward,
 				"/v2/": forward,

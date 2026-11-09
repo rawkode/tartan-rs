@@ -5,20 +5,21 @@ sidebar:
   order: 2.2
 ---
 
-`scripts/demo.sh` runs the whole forge on one machine, seeds it with an org, a repository, its configuration and a dozen issues, and starts the [web interface](/web/). It needs the same tools as [Running locally](/running-locally/#what-you-need), plus `npm`.
+`scripts/demo.sh` runs the whole forge on one machine with its development identity network, seeds it with an org, a repository, its configuration, a dozen issues and signed commits, and starts the [web interface](/web/). It needs the same tools as [Running locally](/running-locally/#what-you-need), `tt` built with `dev-identity` included.
 
 ```sh
 WALGIT_BIN=/path/to/walgit REGISTRY_BIN=/path/to/registry CUE_BIN=/path/to/cue scripts/demo.sh
 ```
 
-When it is ready it prints the addresses. The web interface takes the next free port when 4321 is taken, and the printed addresses say which.
+When it is ready it prints the addresses and the handle to sign in with. The script chooses the web interface's port before it starts the forge (4321 when it is free), makes `http://127.0.0.1:<web port>` the forge's `TARTAN_PUBLIC_URL`, and starts the web interface on exactly that port, which sign-in needs; the printed addresses say which port it is.
 
 | What | Where |
 | --- | --- |
 | Web interface | `http://127.0.0.1:4321/#/acme/api` |
 | Triage board | `http://127.0.0.1:4321/#/acme/api/boards/triage` |
 | Web app board | `http://127.0.0.1:4321/#/acme/api/boards/web` |
-| Gateway API | `http://127.0.0.1:8080/-/api`, with `Authorization: Bearer dev-admin-token` |
+| Gateway API | `http://127.0.0.1:8080/-/api`, with an [access token](/tokens/) |
+| Identity network | `http://127.0.0.1:9400`: the devnet's PLC directory, PDS, authorization server and Jetstream |
 | Git | `http://127.0.0.1:9200/acme/api.git`; pushes send `Authorization: Bearer dev-git-host-token` |
 
 Press Ctrl-C to stop every process it started. The credentials are for development only.
@@ -32,7 +33,8 @@ Press Ctrl-C to stop every process it started. The credentials are for developme
 | distribution | `127.0.0.1:9300` | the source registry the extension modules are published to |
 | Rivet engine | `127.0.0.1:6420` | started by the forge for its actors |
 | Tartan gateway | `127.0.0.1:8080` | the API, and the forge's own CUE registry |
-| Web interface | `127.0.0.1:4321`, or the next free port | the Astro dev server, forwarding `/-/` and `/v2/` to the gateway |
+| tartan-devnet | `127.0.0.1:9400` | the development identity network: five people, their PDS and its authorization server |
+| Web interface | `127.0.0.1:4321`, or the port the script chose | the Astro dev server, forwarding `/-/` and `/v2/` to the gateway |
 
 The script builds Issues and Kanban as modules with `scripts/build-extension.sh` and publishes them, with `tartan.rawkode.academy/types`, to the source registry. The forge's [deployment configuration](/deploying/#the-deployment-configuration) lists the three modules, so at startup the forge copies them into its own registry and registers the extension packages inside them. The forge runs with `CUE_REGISTRY=127.0.0.1:8080+insecure`: every configuration's imports resolve through the forge itself.
 
@@ -42,7 +44,30 @@ The script builds Issues and Kanban as modules with `scripts/build-extension.sh`
 - A configuration pushed with `git push` through walgit, as a person would: `cue.mod/module.cue` depends on the types, Issues and Kanban modules, and `tartan.cue` installs both extensions through their `#Extension`s. Before pushing, the script evaluates it with plain `cue export` against the forge's registry, which is exactly what the forge applies.
 - Issues' properties, one of each [property type](/property-types/) the demo uses: `status` (a select with labels), `priority` (select), `assignee` (person), `estimate` (number), `due` (date), `notes` (Markdown long text), `link` (URL), `budget` (money in GBP) and `labels` (multi-select).
 - Two [Kanban](/kanban/) boards: **Triage**, with columns by status, lanes by priority and groups by project; and **Web app**, the `web` project's board, with some of the status columns, lanes by label and groups by assignee.
-- Twelve issues across the projects `web`, `crates/api` and `crates/cli` (and some with none), with a mix of properties; one is closed.
+- Twelve issues across the projects `web`, `crates/api` and `crates/cli` (and some with none), with a mix of properties; one is closed. They are assigned to the devnet's five people by DID, and the interface shows them as `@alice.test`, `@bob.test`, `@carol.test`, `@dave.test` and `@erin.test`.
+- A [signing rule](/signing/) on `main` and `release/*` with alice as the only signer. `main`'s commits are signed by alice, so its badge reads "Signed by @alice.test"; `release/1.0` has a commit signed by bob, so the overview shows it as a violation by @bob.test.
+
+## Signing in
+
+Open the web interface and use **Sign in as @alice.test**, or type a handle: `alice.test` is the forge's owner, and `bob.test` (or carol, dave or erin) is a signed-in person who is not an owner. The devnet approves every sign-in at once, so there is no password. A non-owner sees what the forge's `readers` setting allows: the demo admits them to read, so bob sees the read-only notice and no write controls.
+
+For scripts, an owner's token comes from the operator command, which needs no browser:
+
+```sh
+tt admin token create --did <alice's DID> --name script --scopes read,write
+```
+
+## Signing your own commits
+
+To sign commits as one of the devnet's people, sign `tt` in to the devnet and set Git up to sign with it:
+
+```sh
+export TARTAN_DEV_IDENTITY=1   # in this shell only
+tt sign --login --forge http://127.0.0.1:<web port> --handle bob.test
+tt sign --setup                # in the cloned repository
+```
+
+The devnet keeps everything in memory: its signature records do not survive a restart, so a commit signed before a restart can no longer be proved, and a new demo signs its commits again.
 
 The configuration is the repository's own: clone it, change a board or a property, and push again to see the forge apply it. A configuration that does not evaluate (for example a board whose columns are not one of Issues' select properties) is refused, and the repository keeps what it had.
 
@@ -57,6 +82,6 @@ git -c "http.extraHeader=Authorization: Bearer dev-git-host-token" push origin m
 Everything the demo keeps is in `.dev/demo`: the object store, the source registry, the Rivet engine's data, the logs (`.dev/demo/logs`) and the seeded repository's working copy.
 
 - `scripts/demo.sh` starts from nothing: it deletes `.dev/demo` and seeds again, so every run shows the same demo.
-- `scripts/demo.sh --keep` reuses the previous demo's state, with the changes made in it, and seeds only when an earlier run never finished seeding.
+- `scripts/demo.sh --keep` reuses the previous demo's state, with the changes made in it, and seeds only when an earlier run never finished seeding. A state directory seeded before people were DIDs keeps its bare-name assignees (such as `admin`), shown as plain text; delete `.dev/demo`, or run without `--keep`, for the DID-based demo.
 
 The demo uses the same ports as `scripts/dev.sh`, so run one at a time; the script stops early if one of the forge's ports is taken.
