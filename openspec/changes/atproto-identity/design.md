@@ -10,7 +10,7 @@ See proposal.md for the motivation. Facts about the current code and tools that 
 - **Deployment configuration.** `crates/tartan-config/src/deployment.rs` parses package `forge` and refuses any key other than `modules` and `sources`.
 - **The forge is private today.** `require_admin` is a `route_layer` over every `/-/api` route, `GET` included (`crates/tartan/src/gateway.rs`), so nobody without the admin token can read anything. An upgrade must not silently open a forge to every ATProto account.
 - **No command-line interface.** The workspace builds one binary, `tartan` (`crates/tartan/src/main.rs`), which takes no subcommands. There is no `tt` crate or binary.
-- **Types.** `tartan.dev/types@v0.1.0` defines `#Person` as a free-form principal id. Issues and Kanban mirror that regex. The web UI keeps an admin token in `localStorage`.
+- **Types.** `tartan.rawkode.academy/types@v0.1.0` defines `#Person` as a free-form principal id. Issues and Kanban mirror that regex. The web UI keeps an admin token in `localStorage`.
 - **Tests.** One Forge and one gateway run per test process. `scripts/e2e.sh` never touches the public network.
 - **Git's signing program interface** (`gpg-interface.c` in git): with `gpg.format=x509`, Git runs `gpg.x509.program` (default `gpgsm`) as a child process without a shell. To sign it runs `<program> --status-fd=2 -bsau <key>` (`sign_buffer_gpg`), which is the same argv for `openpgp` and `x509`, so a signing program cannot tell the two formats apart from its arguments; `--keyid-format=long` appears only when verifying OpenPGP (`openpgp_verify_args`: `<program> --keyid-format=long --status-fd=1 --verify <file> -`). Git picks the verifying program from the signature's armour (`get_format_by_sig`), never from `gpg.format`. It writes the payload to standard input, takes the signature from standard output, and fails unless standard error holds `[GNUPG:] SIG_CREATED `: from Git 2.40 at the start of the buffer or of a line, but before 2.40 only after a newline (`strstr(…, "\n[GNUPG:] SIG_CREATED ")` in v2.19 to v2.39), so it can never be the first line there. `<key>` is `user.signingKey`, or the committer identity when that is unset. Before 2.40 Git captures the program's standard error as status and discards it, printing only "gpg failed to sign the data"; from 2.40 it prints that standard error after the message (`gpg failed to sign the data:\n%s`). Git's own trust gates, `git merge --verify-signatures` and `git pull --verify-signatures`, refuse a signature whose `TRUST_*` level is below `MARGINAL` unless `gpg.minTrustLevel` is set (`builtin/merge.c` `check_trust_level`, `commit.c` `verify_merge_signature`). To verify it writes the signature to a temporary file and runs `<program> --status-fd=1 --verify <file> -` with the payload on standard input; it requires `\n[GNUPG:] GOODSIG ` (so not on the first line) or `EXPKEYSIG` on standard output, parses `GOODSIG`/`BADSIG`/`ERRSIG`, `VALIDSIG` and `TRUST_*` lines, and treats a signature as X.509 only when it starts with `-----BEGIN SIGNED MESSAGE-----`. Sigstore's gitsign uses this interface (it emits `BEGIN_SIGNING` before `SIG_CREATED`, and `NEWSIG` before `GOODSIG` and `TRUST_FULLY`).
 
@@ -323,7 +323,7 @@ CREATE TABLE IF NOT EXISTS jetstream (id INTEGER PRIMARY KEY CHECK (id = 1), cur
 
 **The idea.** A person has exactly one key that the network already binds to their DID: the repository signing key `#atproto` in their DID document, which their PDS uses to sign every commit of their ATProto repository. Tartan signs Git objects with it, indirectly. To sign, `tt` writes a small record to the person's own repository saying "I sign the payload whose salted digest is this", and Git embeds a reference to that record (its `at://` URI and CID), plus the random salt, as the object's signature. The PDS signs the repository commit that contains the record, so anyone can prove, with `com.atproto.sync.getRecord`, that the DID's repository holds a record over exactly these bytes. Nobody generates, publishes, rotates or revokes a separate signing key.
 
-**The lexicon.** `academy.rawkode.tartan.signature`, under the `tartan.dev` domain that also names the CUE modules (`tartan.dev/types`), published in this repository as `lexicons/academy/rawkode/tartan/signature.json`:
+**The lexicon.** `academy.rawkode.tartan.signature`, under the `tartan.rawkode.academy` domain that also names the CUE modules (`tartan.rawkode.academy/types`), published in this repository as `lexicons/academy/rawkode/tartan/signature.json`:
 
 ```json
 {
@@ -741,7 +741,7 @@ Several gateway processes cause duplicate refreshes. These are idempotent and ch
 
 ### D11. The signing rule
 
-The schema is `tartan.dev/types@v0.2.0` `#Signing`:
+The schema is `tartan.rawkode.academy/types@v0.2.0` `#Signing`:
 
 ```cue
 #Signing: {
@@ -873,7 +873,7 @@ The forge refuses to start when `TARTAN_OAUTH_KEYS_FILE` is readable by group or
 
 ### D14. People in CUE, extensions and the UI
 
-**`tartan.dev/types@v0.2.0`:**
+**`tartan.rawkode.academy/types@v0.2.0`:**
 - adds `#DID` (`did:plc:[a-z2-7]{24}`, or `did:web:` host with `%3A` port only for `localhost`). The CUE type accepts the `localhost` port form so development data type-checks, but the forge refuses it in `owners`, signing-rule signers and person values unless dev-identity is on, since ATProto allows it only for local testing;
 - sets `#Person.default?: #DID`;
 - adds `#Signing`.
@@ -1068,7 +1068,7 @@ Sessions, CLI sessions and CLI codes record no events: they are secret-bearing b
 
 1. Deploy the new binary with `owners` (operators find their DID from their handle with `tt identity resolve <handle>`, or any ATProto tool), `TARTAN_PUBLIC_URL`, and `TARTAN_OAUTH_KEYS_FILE` (from `tt admin oauth keygen`). Remove `TARTAN_ADMIN_TOKEN`. The forge refuses to start until all of this is done, so a half-migrated forge never starts. Decide who may read: leaving `readers` out keeps the default `"owners"`, so the migrated forge is as private as the admin token kept it, and other people who sign in see only a private-forge page; set `readers` to a list of DIDs to admit named people, or to `"signed_in"` to let any ATProto account read everything. The startup log names the mode in force.
 2. Replace scripts' admin token with `tt admin token create --did <owner> --scopes admin …`.
-3. List `tartan.dev/types@v0.2.0` and the new Issues and Kanban versions in `modules`, then bump repositories' dependencies when they want DID persons. Repositories on `v0.1.0` keep working.
+3. List `tartan.rawkode.academy/types@v0.2.0` and the new Issues and Kanban versions in `modules`, then bump repositories' dependencies when they want DID persons. Repositories on `v0.1.0` keep working.
 4. Existing actor databases gain new tables only (`CREATE TABLE IF NOT EXISTS`). No existing table changes.
 5. A dev or demo forge seeded before this change keeps its bare-name person values as plain text (D14). Deleting the `.dev` or demo state directory gives the DID-based demo of task 12.1.
 6. Commits pushed before this change are never checked (only updates after it are queued). People who want signatures install `tt` and run `tt login` and `tt sign --setup`; there are no keys to migrate.

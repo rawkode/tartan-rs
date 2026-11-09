@@ -38,8 +38,8 @@ The module SHALL define `#Signing`: `require`, a list of rules each with non-emp
 - **THEN** the configuration is invalid because it is not a full ref name
 
 ### Requirement: The DID change is a new version
-The DID types SHALL be published as `tartan.dev/types@v0.2.0`; `v0.1.0` SHALL stay published and unchanged, so repositories pinned to it keep evaluating.
+The DID types SHALL be published as `tartan.rawkode.academy/types@v0.2.0`; `v0.1.0` SHALL stay published and unchanged, so repositories pinned to it keep evaluating.
 
 #### Scenario: Pinned to the old version
-- **WHEN** a repository depends on `tartan.dev/types@v0.1.0` and the forge lists both versions
+- **WHEN** a repository depends on `tartan.rawkode.academy/types@v0.1.0` and the forge lists both versions
 - **THEN** its configuration evaluates as before

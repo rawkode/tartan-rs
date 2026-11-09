@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: The configuration may require signatures
-The exported value MAY carry a top-level `signing` with the shape of `tartan.dev/types`' `#Signing`. The forge SHALL check it with the rest of the configuration: a rule without `refs`, a ref that is not a full ref name, a signer that is not a DID, or any other key in `signing` or in a rule SHALL make the configuration invalid.
+The exported value MAY carry a top-level `signing` with the shape of `tartan.rawkode.academy/types`' `#Signing`. The forge SHALL check it with the rest of the configuration: a rule without `refs`, a ref that is not a full ref name, a signer that is not a DID, or any other key in `signing` or in a rule SHALL make the configuration invalid.
 
 #### Scenario: Valid rule
 - **WHEN** the root package sets `signing: require: [{refs: ["refs/heads/main", "refs/tags/**"], signers: ["did:plc:abcdefghijklmnopqrstuvwx"]}]`

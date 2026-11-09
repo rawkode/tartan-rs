@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Every property type is stored and shown
-Issues SHALL store and show values of every type in `tartan.dev/types`: short and long text (long text rendered as Markdown), numbers, dates, booleans, selects, multi-selects, persons (stored as DIDs and shown by handle), URLs and money (whole minor units in the property's currency).
+Issues SHALL store and show values of every type in `tartan.rawkode.academy/types`: short and long text (long text rendered as Markdown), numbers, dates, booleans, selects, multi-selects, persons (stored as DIDs and shown by handle), URLs and money (whole minor units in the property's currency).
 
 #### Scenario: Long text
 - **WHEN** an issue's `notes` (`#LongText`) is set to Markdown
