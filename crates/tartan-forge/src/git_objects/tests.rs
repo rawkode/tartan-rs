@@ -15,6 +15,9 @@ fn git(dir: &Path, args: &[&str]) -> String {
         .env("GIT_COMMITTER_NAME", "Tests")
         .env("GIT_COMMITTER_EMAIL", "tests@example.com")
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        // `HOME` alone does not hide `$XDG_CONFIG_HOME/git/config`, whose signing settings
+        // (such as a `tag.gpgSign` program that reaches the network) would apply here.
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("HOME", dir)
         .output()
         .expect("git runs");
