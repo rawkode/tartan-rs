@@ -93,7 +93,7 @@ RCLONE_CONFIG_DEV_TYPE=s3 RCLONE_CONFIG_DEV_PROVIDER=Other \
 	RCLONE_CONFIG_DEV_SECRET_ACCESS_KEY="$TARTAN_S3_SECRET_KEY" \
 	rclone mkdir dev:tartan-dev
 
-(cd "$root" && "$WALGIT_BIN" --config dev/walgit.toml >"$state/logs/walgit.log" 2>&1) &
+(cd "$root" && exec "$WALGIT_BIN" --config dev/walgit.toml >"$state/logs/walgit.log" 2>&1) &
 pids+=($!)
 
 cat >"$state/registry.yml" <<YAML
