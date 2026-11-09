@@ -173,3 +173,18 @@ A successful sign-in by a DID that may read (an owner or a reader) SHALL record 
 #### Scenario: First sign-in
 - **WHEN** a DID that may read signs in for the first time
 - **THEN** `person.signed_in` is recorded and the forge starts watching the DID's identity and account status
+
+### Requirement: Development sign-in clients
+A `dev-identity` build SHALL, only when switched on, sign in as ATProto's `http://localhost` client (`TARTAN_DEV_LOCALHOST_CLIENT=1`) or as a public native client hosted at `TARTAN_DEV_CLIENT_METADATA_URL`. Either SHALL require `TARTAN_PUBLIC_URL` to be `http://127.0.0.1:<port>`, need no key file, and work with or without `TARTAN_DEV_IDENTITY`; a release build SHALL refuse to start with either set.
+
+#### Scenario: Local forge signs in as a real DID
+- **WHEN** a `dev-identity` forge at `http://127.0.0.1:4321` runs with `TARTAN_DEV_LOCALHOST_CLIENT=1` and without `TARTAN_DEV_IDENTITY`, and a person whose authorization server accepts the localhost client signs in
+- **THEN** the PAR carries the `http://localhost?…` client id and no client assertion, and the person is redirected to their authorization server
+
+#### Scenario: Server that accepts only https client ids
+- **WHEN** the person's authorization server refuses the localhost client and the forge instead runs with `TARTAN_DEV_CLIENT_METADATA_URL` naming a hosted copy of its native client document
+- **THEN** sign-in uses that `https` client id with the loopback redirect `http://127.0.0.1:4321/-/auth/callback`
+
+#### Scenario: Release build
+- **WHEN** a build without `dev-identity` starts with `TARTAN_DEV_LOCALHOST_CLIENT` or `TARTAN_DEV_CLIENT_METADATA_URL` set
+- **THEN** it exits with an error naming the variable

@@ -21,7 +21,7 @@ A principal SHALL be an owner when its DID, or the DID it acts on behalf of, is 
 - **THEN** `GET /-/api/me` answers their DID, handle and `owner: true`
 
 ### Requirement: What callers may do
-Anonymous callers SHALL get 401 from `/-/api` except `GET /-/api/me`. Readers, the non-owners admitted by the deployment configuration's `readers`, SHALL only read: `GET` routes and extension `render` calls. Other signed-in non-owners SHALL get 403 except `GET /-/api/me`, which reports `rights: []`, and the `self` routes. Writes (extension `tool` and `act` calls) SHALL need an owner. Creating orgs and repositories, placements and subscribers SHALL need an owner with `admin` rights.
+Anonymous callers SHALL get 401 from `/-/api` except `GET /-/api/me`. Readers (non-owners the configuration's `readers` admits) SHALL only read: `GET` routes and extension `render` calls. Other signed-in non-owners SHALL get 403 except `GET /-/api/me`, which reports `rights: []`, their own sessions at `/-/api/sessions`, and the `self` routes. Writes (extension `tool` and `act` calls) SHALL need an owner. Creating orgs, repositories, placements and subscribers SHALL need `admin` rights.
 
 #### Scenario: Person who is not an owner
 - **WHEN** a signed-in reader who is not an owner calls an Issues tool that creates an issue
@@ -38,6 +38,10 @@ Anonymous callers SHALL get 401 from `/-/api` except `GET /-/api/me`. Readers, t
 #### Scenario: Non-owner on an open forge
 - **WHEN** `readers` is `"signed_in"` and a signed-in person who is not an owner lists an org's repositories
 - **THEN** the list is returned
+
+#### Scenario: Ending one's own session without rights
+- **WHEN** a signed-in person with `rights: []` ends their CLI session with `DELETE /-/api/sessions/current`
+- **THEN** the session ends
 
 #### Scenario: Write token
 - **WHEN** an owner's token with scope `write` but not `admin` creates an org
