@@ -1285,13 +1285,13 @@ async fn rebase_signs_only_what_it_creates() {
     );
     let repo = world.repo("repo", Some(&alice));
     world.git_ok(&repo, &["config", "commit.gpgSign", "true"]);
-    for index in 0..21 {
+    for index in 0..51 {
         std::fs::write(repo.join("f"), format!("{index}")).expect("write");
         world.git_ok(&repo, &["add", "f"]);
         world.git_ok(&repo, &["commit", "-qm", &format!("c{index}")]);
     }
     let before = world.devnet.xrpc_count(APPLY);
-    world.git_ok(&repo, &["rebase", "-q", "HEAD~20"]);
+    world.git_ok(&repo, &["rebase", "-q", "HEAD~50"]);
     assert_eq!(
         world.devnet.xrpc_count(APPLY),
         before,
@@ -1306,10 +1306,10 @@ async fn rebase_signs_only_what_it_creates() {
             "--force-rebase",
             "--exec",
             "true",
-            "HEAD~20",
+            "HEAD~50",
         ],
     );
-    assert_eq!(world.devnet.xrpc_count(APPLY), before + 20);
+    assert_eq!(world.devnet.xrpc_count(APPLY), before + 50);
     assert!(started.elapsed() < Duration::from_secs(120));
 }
 
@@ -1363,4 +1363,475 @@ async fn parallel_signing_refreshes_once() {
 fn set_executable(path: &Path) {
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn identity_resolve_finds_an_owner_did() {
+    let world = World::start().await;
+    let alice = world.did("alice.test").await;
+    let output = world.tt(&["identity", "resolve", "alice.test"]);
+    assert!(output.status.success(), "{}", text(&output));
+    let printed = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(printed.contains(&format!("DID:    {alice}")), "{printed}");
+    assert!(printed.contains("@alice.test (verified)"), "{printed}");
+    assert!(printed.contains(world.devnet.url()), "{printed}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_signing_login_for_another_forge_changes_no_default() {
+    let world = World::start().await;
+    let alice = world.did("alice.test").await;
+    let bob = world.did("bob.test").await;
+    let forge = world.forge.clone();
+    std::fs::create_dir_all(world.home().join("config/tt")).expect("mkdir");
+    std::fs::write(
+        world.home().join("config/tt/config.toml"),
+        format!("default_forge = \"{forge}\"\n"),
+    )
+    .expect("config");
+    assert!(world.sign_login("alice.test", &[]).await.status.success());
+    // A second forge serving its own client metadata.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let other = format!("http://{}", listener.local_addr().expect("address"));
+    let document = tt_metadata(&other);
+    let router = axum::Router::new().route(
+        "/-/auth/tt/client-metadata.json",
+        get(move || async move { Json(document) }),
+    );
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    let output = world.sign_login("bob.test", &["--forge", &other]).await;
+    assert!(output.status.success(), "{}", text(&output));
+    let config = world.config_toml();
+    assert!(
+        config.contains(&format!("default_forge = \"{forge}\"")),
+        "{config}"
+    );
+    assert!(
+        config.contains(&format!("default_signing_did = \"{alice}\"")),
+        "{config}"
+    );
+    let status = String::from_utf8_lossy(&world.tt(&["status"]).stdout).into_owned();
+    assert!(status.contains(&bob), "{status}");
+    assert!(
+        status.contains(&format!("{other}/-/auth/tt/client-metadata.json")),
+        "{status}"
+    );
+    // --set-default makes the new DID the default signing DID, never the forge.
+    let output = world
+        .sign_login("bob.test", &["--forge", &other, "--set-default"])
+        .await;
+    assert!(output.status.success(), "{}", text(&output));
+    let config = world.config_toml();
+    assert!(
+        config.contains(&format!("default_signing_did = \"{bob}\"")),
+        "{config}"
+    );
+    assert!(
+        config.contains(&format!("default_forge = \"{forge}\"")),
+        "{config}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ended_public_client_session_fails_naming_tt_sign_login() {
+    let world = World::start().await;
+    let alice = world.did("alice.test").await;
+    let forge = world.forge.clone();
+    world
+        .devnet
+        .set_switches(|s| {
+            s.access_token_secs = 1;
+            s.public_session_secs = 1;
+        })
+        .await;
+    assert!(
+        world
+            .sign_login("alice.test", &["--forge", &forge])
+            .await
+            .status
+            .success()
+    );
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let repo = world.repo("repo", Some(&alice));
+    let output = world.commit(&repo, "after the session ended");
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("tt sign --login"),
+        "{}",
+        text(&output)
+    );
+    assert_eq!(world.queue_len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_https_client_suggests_the_localhost_client() {
+    let world = World::start().await;
+    let forge = world.forge.clone();
+    for error in ["invalid_client_metadata", "invalid_redirect_uri"] {
+        world
+            .devnet
+            .set_switches(|s| s.par_error = Some(error.into()))
+            .await;
+        let output = world.sign_login("alice.test", &["--forge", &forge]).await;
+        assert!(!output.status.success());
+        let message = stderr(&output);
+        assert!(message.contains(error), "{message}");
+        assert!(message.contains("--client localhost"), "{message}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unreachable_client_metadata_url_is_named_before_any_request() {
+    let world = World::start().await;
+    let closed = format!(
+        "http://127.0.0.1:{}",
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("bind")
+            .local_addr()
+            .expect("address")
+            .port()
+    );
+    let output = world.tt(&[
+        "sign",
+        "--login",
+        "--handle",
+        "alice.test",
+        "--no-open",
+        "--forge",
+        &closed,
+    ]);
+    assert!(!output.status.success());
+    let message = stderr(&output);
+    assert!(
+        message.contains(&format!(
+            "{closed}/-/auth/tt/client-metadata.json could not be loaded"
+        )),
+        "{message}"
+    );
+    assert!(world.devnet.par_requests().await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_record_replaced_while_queued_is_dropped_and_reported() {
+    let world = World::start().await;
+    let alice = world.did("alice.test").await;
+    let forge = world.forge.clone();
+    assert!(
+        world
+            .sign_login("alice.test", &["--forge", &forge])
+            .await
+            .status
+            .success()
+    );
+    let repo = world.repo("repo", Some(&alice));
+    world.devnet.set_switches(|s| s.pds_offline = true).await;
+    world.commit_ok(&repo, "queued");
+    world.devnet.set_switches(|s| s.pds_offline = false).await;
+    let (uri, _) = signature_of(&world, &repo, "HEAD");
+    let rkey = uri.rsplit('/').next().expect("rkey").to_owned();
+    // Someone else writes another record under the same key.
+    let salt = tartan_atproto::signature::record::Salt::from_bytes([7; 32]);
+    world
+        .devnet
+        .write_signature("alice.test", b"something else", &salt, None, Some(&rkey))
+        .await
+        .expect("write");
+    world.close_windows();
+    let flush = world.tt(&["sign", "--flush"]);
+    assert!(flush.status.success(), "{}", text(&flush));
+    assert!(stderr(&flush).contains("replaced"), "{}", text(&flush));
+    assert_eq!(world.queue_len(), 0);
+    let status = String::from_utf8_lossy(&world.tt(&["status"]).stdout).into_owned();
+    assert!(
+        status.contains(&rkey) && status.contains("cannot verify"),
+        "{status}"
+    );
+    let verify = world.git(&repo, &["verify-commit", "--raw", "HEAD"]);
+    assert!(
+        stderr(&verify).contains("[GNUPG:] BADSIG"),
+        "{}",
+        text(&verify)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn verification_failures_are_badsig_or_errsig() {
+    let world = World::start().await;
+    let alice = world.did("alice.test").await;
+    let forge = world.forge.clone();
+    assert!(
+        world
+            .sign_login("alice.test", &["--forge", &forge])
+            .await
+            .status
+            .success()
+    );
+    let repo = world.repo("repo", Some(&alice));
+    world.commit_ok(&repo, "one");
+    world.commit_ok(&repo, "two");
+
+    // An unreachable PDS: ERRSIG.
+    world.devnet.set_switches(|s| s.pds_offline = true).await;
+    let output = world.git(&repo, &["verify-commit", "--raw", "HEAD~1"]);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("[GNUPG:] ERRSIG"),
+        "{}",
+        text(&output)
+    );
+    world.devnet.set_switches(|s| s.pds_offline = false).await;
+    let _ = std::fs::remove_file(world.home().join("cache/tt/hosts.json"));
+
+    // Verified once, then the record replaced: BADSIG without the cache.
+    let output = world.git(&repo, &["verify-commit", "HEAD"]);
+    assert!(output.status.success(), "{}", text(&output));
+    let (uri, _) = signature_of(&world, &repo, "HEAD");
+    let rkey = uri.rsplit('/').next().expect("rkey").to_owned();
+    let salt = tartan_atproto::signature::record::Salt::from_bytes([9; 32]);
+    let other = tartan_atproto::signature::record::SignatureRecord::for_git(
+        b"other",
+        &salt,
+        "2026-11-09T12:00:00Z".into(),
+    );
+    world
+        .devnet
+        .replace_record(
+            "alice.test",
+            "academy.rawkode.tartan.signature",
+            &rkey,
+            other.to_json(),
+            None,
+        )
+        .await
+        .expect("replace");
+    let mut command = Command::new("git");
+    world.env(&mut command);
+    let output = command
+        .env("TT_NO_CACHE", "1")
+        .args(["verify-commit", "--raw", "HEAD"])
+        .current_dir(&repo)
+        .output()
+        .expect("git");
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains(&format!("[GNUPG:] BADSIG {alice}")),
+        "{}",
+        text(&output)
+    );
+
+    // The CID line re-spelt in another multibase: BADSIG, also after the canonical form was
+    // cached.
+    let raw = world.git_ok(&repo, &["cat-file", "commit", "HEAD~1"]);
+    let verified = world.git(&repo, &["verify-commit", "HEAD~1"]);
+    assert!(verified.status.success(), "{}", text(&verified));
+    let cid_line = raw
+        .lines()
+        .find_map(|line| line.trim_start().strip_prefix("CID: "))
+        .expect("a CID line")
+        .to_owned();
+    let cid: cid::Cid = cid_line.parse().expect("cid");
+    let upper = cid
+        .to_string_of_base(cid::multibase::Base::Base32Upper)
+        .expect("base32upper");
+    let respelt = write_object(&world, &repo, "commit", &raw.replace(&cid_line, &upper));
+    let output = world.git(&repo, &["verify-commit", "--raw", &respelt]);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("[GNUPG:] BADSIG"),
+        "{}",
+        text(&output)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revoking_a_queued_signature_needs_no_authorization() {
+    let world = World::start().await;
+    let alice = world.did("alice.test").await;
+    let forge = world.forge.clone();
+    assert!(
+        world
+            .sign_login("alice.test", &["--forge", &forge])
+            .await
+            .status
+            .success()
+    );
+    let repo = world.repo("repo", Some(&alice));
+    world.devnet.set_switches(|s| s.pds_offline = true).await;
+    world.commit_ok(&repo, "queued");
+    assert_eq!(world.queue_len(), 1);
+    let pars = world.devnet.par_requests().await.len();
+    let output = world.git_repo_tt(&repo, &["sign", "revoke", "HEAD"]);
+    assert!(output.status.success(), "{}", text(&output));
+    assert_eq!(world.queue_len(), 0);
+    assert_eq!(world.devnet.par_requests().await.len(), pars);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revoking_with_the_localhost_client_deletes_the_record() {
+    let world = World::start().await;
+    let alice = world.did("alice.test").await;
+    assert!(
+        world
+            .sign_login("alice.test", &["--client", "localhost"])
+            .await
+            .status
+            .success()
+    );
+    let repo = world.repo("repo", Some(&alice));
+    world.commit_ok(&repo, "to withdraw");
+    let (uri, _) = signature_of(&world, &repo, "HEAD");
+    let rkey = uri.rsplit('/').next().expect("rkey").to_owned();
+    assert!(world.record(&alice, &rkey).await.is_some());
+    let output = world
+        .run_login_in(
+            &repo,
+            &[
+                "sign",
+                "revoke",
+                "HEAD",
+                "--client",
+                "localhost",
+                "--no-open",
+            ],
+        )
+        .await;
+    assert!(output.status.success(), "{}", text(&output));
+    assert!(
+        world.record(&alice, &rkey).await.is_none(),
+        "the record is deleted"
+    );
+    let pars = world.devnet.par_requests().await;
+    let scope = pars
+        .last()
+        .and_then(|par| par.iter().find(|(key, _)| key == "scope"))
+        .map(|(_, value)| value.clone());
+    assert_eq!(
+        scope.as_deref(),
+        Some("atproto repo:academy.rawkode.tartan.signature?action=delete")
+    );
+    // The deleted record no longer verifies the commit.
+    let verify = world.git(&repo, &["verify-commit", "HEAD"]);
+    assert!(!verify.status.success());
+}
+
+impl World {
+    /// [`World::run_login`] in `dir`.
+    async fn run_login_in(&self, dir: &Path, args: &[&str]) -> Output {
+        let mut std_command = Command::new(TT);
+        self.env(&mut std_command);
+        let mut command = tokio::process::Command::new(TT);
+        command
+            .env_clear()
+            .envs(
+                std_command.get_envs().filter_map(|(key, value)| {
+                    value.map(|value| (key.to_owned(), value.to_owned()))
+                }),
+            )
+            .args(args)
+            .current_dir(dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().expect("spawn tt");
+        let stderr = child.stderr.take().expect("stderr");
+        let mut lines = BufReader::new(stderr).lines();
+        let mut seen = String::new();
+        let url = tokio::time::timeout(Duration::from_secs(30), async {
+            while let Ok(Some(line)) = lines.next_line().await {
+                seen.push_str(&line);
+                seen.push('\n');
+                let trimmed = line.trim();
+                if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+                    return Some(trimmed.to_owned());
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        if let Some(url) = url {
+            follow(&self.http, &url).await;
+        }
+        let output = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
+            .await
+            .expect("tt finishes")
+            .expect("tt output");
+        let mut rest = String::new();
+        while let Ok(Some(line)) = lines.next_line().await {
+            rest.push_str(&line);
+            rest.push('\n');
+        }
+        Output {
+            status: output.status,
+            stdout: output.stdout,
+            stderr: format!("{seen}{rest}").into_bytes(),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unmarked_hook_beside_a_chained_one_is_refused() {
+    let world = World::start().await;
+    let repo = world.repo("repo", None);
+    let hooks = repo.join(".git/hooks");
+    std::fs::write(hooks.join("pre-push"), "#!/bin/sh\nexit 0\n").expect("hook");
+    std::fs::write(hooks.join("pre-push.tt-chained"), "#!/bin/sh\nexit 0\n").expect("hook");
+    let output = world.git_repo_tt(&repo, &["sign", "--setup", "--verify-only", "--hook"]);
+    assert!(!output.status.success());
+    assert_eq!(
+        std::fs::read_to_string(hooks.join("pre-push")).expect("hook"),
+        "#!/bin/sh\nexit 0\n"
+    );
+    // The program is the absolute path: the tt on PATH (none here) is not this binary.
+    world.git_ok(&repo, &["config", "--unset", "gpg.x509.program"]);
+    let output = world.git_repo_tt(&repo, &["sign", "--setup", "--verify-only"]);
+    assert!(output.status.success(), "{}", text(&output));
+    let program = world.git_ok(&repo, &["config", "gpg.x509.program"]);
+    assert!(Path::new(program.trim()).is_absolute(), "{program}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hook_whose_tt_is_gone_warns_and_still_runs_the_chained_hook() {
+    let world = World::start().await;
+    let repo = world.repo("repo", None);
+    let hooks = repo.join(".git/hooks");
+    let marker = world.home().join("chained-ran");
+    std::fs::write(
+        hooks.join("pre-push"),
+        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    )
+    .expect("hook");
+    set_executable(&hooks.join("pre-push"));
+    let output = world.git_repo_tt(
+        &repo,
+        &[
+            "sign",
+            "--setup",
+            "--verify-only",
+            "--hook",
+            "--program",
+            "/nonexistent/tt",
+        ],
+    );
+    assert!(output.status.success(), "{}", text(&output));
+    std::fs::write(repo.join("f"), "x").expect("write");
+    world.git_ok(&repo, &["add", "f"]);
+    world.git_ok(&repo, &["commit", "-qm", "unsigned"]);
+    let remote = world.home().join("remote.git");
+    world.git_ok(
+        world.home(),
+        &["init", "-q", "--bare", remote.to_str().expect("utf8")],
+    );
+    let push = world.git(
+        &repo,
+        &["push", "-q", remote.to_str().expect("utf8"), "main"],
+    );
+    assert!(push.status.success(), "{}", text(&push));
+    assert!(stderr(&push).contains("was not found"), "{}", text(&push));
+    assert!(marker.exists(), "the chained hook ran");
 }

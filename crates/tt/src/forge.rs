@@ -163,9 +163,15 @@ impl Forge {
             .unwrap_or_else(|| String::from_utf8_lossy(&bytes).trim().to_owned());
         let message = if status == StatusCode::UNAUTHORIZED {
             format!(
-                "the forge {} refused the stored credential (it ended, expired or was revoked); \
+                "the forge {} refused the stored credential (it ended, expired or was revoked){}; \
                  run `tt login --forge {}`",
-                self.origin, self.origin
+                self.origin,
+                if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {detail}")
+                },
+                self.origin
             )
         } else if detail.is_empty() {
             format!("the forge answered {status}")

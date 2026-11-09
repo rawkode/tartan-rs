@@ -310,6 +310,9 @@ async fn revoke_signature(ctx: &Ctx, args: RevokeArgs) -> Result<i32> {
     match forge.send(Method::POST, &path, body.as_ref()).await {
         Ok(_) if body.is_some() => println!("Withdrew the signature on {origin}."),
         Ok(_) => println!("Asked {origin} to re-prove the record."),
+        Err(error) if body.is_none() && error.status == Some(reqwest::StatusCode::NOT_FOUND) => {
+            println!("{origin} does not rely on that record; nothing to re-prove there.");
+        }
         Err(error) => {
             eprintln!("tt: {origin} could not be told: {error}");
             return Ok(1);

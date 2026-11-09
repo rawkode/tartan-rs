@@ -17,6 +17,9 @@ use serde_json::{Value, json};
 use tartan_config::deployment::Readers;
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 
+use tartan_forge::identity_handle;
+use tartan_identity_api::SignatureRecordQuery;
+
 use common::{Forge, browser, sign_in};
 
 /// The `tt` binary: `TT_BIN`, or a `dev-identity` build made here.
@@ -109,6 +112,45 @@ impl Machine {
                 .expect("write stdin");
         }
         child.wait_with_output().expect("tt output")
+    }
+
+    /// Makes a commit signed by this machine's default signing DID and answers its record URI.
+    fn signed_commit(&self, message: &str) -> String {
+        let repo = self.home.path().join("repo");
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .env_clear()
+                .envs(self.envs())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_AUTHOR_NAME", "Alice")
+                .env("GIT_AUTHOR_EMAIL", "alice@example.com")
+                .env("GIT_COMMITTER_NAME", "Alice")
+                .env("GIT_COMMITTER_EMAIL", "alice@example.com")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "git {args:?}: {}", text(&output));
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        };
+        if !repo.exists() {
+            std::fs::create_dir_all(&repo).expect("mkdir");
+            git(&["init", "-q"]);
+            git(&["config", "gpg.format", "x509"]);
+            git(&[
+                "config",
+                "gpg.x509.program",
+                self.tt.to_str().expect("utf8"),
+            ]);
+        }
+        std::fs::write(repo.join("f"), message).expect("write");
+        git(&["add", "f"]);
+        git(&["commit", "-q", "-S", "-m", message]);
+        git(&["cat-file", "commit", "HEAD"])
+            .lines()
+            .find_map(|line| line.trim_start().strip_prefix("Record: "))
+            .expect("a Tartan signature")
+            .to_owned()
     }
 
     fn config(&self) -> String {
@@ -470,6 +512,81 @@ async fn tt_against_a_forge() {
         .await;
     assert!(output.status.success(), "{}", text(&output));
     assert_eq!(devnet.par_requests().await.len(), pars);
+
+    // Revoking a signature: signed in with a CLI session as the record's DID, it is deleted
+    // at the PDS and withdrawn on the forge; with only an access token, the forge re-proves it
+    // and tt says withdrawing needs `tt login`.
+    let uri = first.signed_commit("withdrawn");
+    let output = first
+        .login(
+            &["sign", "revoke", &uri, "--no-open"],
+            vec![Answer::Follow { extra: "" }],
+        )
+        .await;
+    assert!(output.status.success(), "{}", text(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("Withdrew the signature"),
+        "{}",
+        text(&output)
+    );
+    let rkey = uri.rsplit('/').next().expect("rkey").to_owned();
+    let row = identity_handle(&forge.client)
+        .expect("identity")
+        .send(SignatureRecordQuery {
+            did: alice.clone(),
+            rkey: rkey.clone(),
+        })
+        .await
+        .expect("query")
+        .expect("a tracked row");
+    assert!(row.revoked_at.is_some());
+    assert_eq!(
+        serde_json::to_value(row.revoked_reason).expect("json"),
+        json!("withdrawn")
+    );
+    // The token `ci` used was revoked above: sign it in with a fresh one.
+    let created = first.run(
+        &[
+            "token",
+            "create",
+            "--name",
+            "ci2",
+            "--scopes",
+            "read",
+            "--expires-in-days",
+            "1",
+        ],
+        None,
+    );
+    assert!(created.status.success(), "{}", text(&created));
+    let fresh_secret = String::from_utf8_lossy(&created.stdout)
+        .lines()
+        .find(|line| line.starts_with("tartan_pat_"))
+        .expect("secret")
+        .to_owned();
+    let output = ci.run(
+        &["login", "--with-token", "--forge", &base],
+        Some(&format!("{fresh_secret}\n")),
+    );
+    assert!(output.status.success(), "{}", text(&output));
+    let uri = first.signed_commit("re-proved");
+    let output = ci
+        .login(
+            &["sign", "revoke", &uri, "--no-open"],
+            vec![Answer::Follow { extra: "" }],
+        )
+        .await;
+    assert!(output.status.success(), "{}", text(&output));
+    let printed = String::from_utf8_lossy(&output.stdout).into_owned();
+    // The forge never relied on this record, so there is nothing for it to re-prove.
+    assert!(printed.contains("re-prove"), "{printed}");
+    assert!(printed.contains("needs a session"), "{printed}");
+
+    // The operator key file `tt admin oauth keygen` prints is one the forge loads.
+    let keygen = first.run(&["admin", "oauth", "keygen"], None);
+    assert!(keygen.status.success(), "{}", text(&keygen));
+    tartan::settings::parse_keyset(&String::from_utf8_lossy(&keygen.stdout))
+        .expect("the forge accepts the generated JWKS");
 
     // Signing consent cancelled: the CLI session is kept, tt names `tt sign --login`.
     let cancelled = Machine::new(&tt, &forge);
