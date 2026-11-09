@@ -6,6 +6,7 @@ pub(crate) mod identity;
 pub(crate) mod installations;
 pub(crate) mod org;
 pub(crate) mod repo;
+pub(crate) mod signing;
 pub(crate) mod subscriber;
 
 use anyhow::Result;

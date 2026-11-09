@@ -49,6 +49,7 @@ pub fn router(state: GatewayState) -> Router {
         .merge(crate::extension_routes::routes())
         .merge(crate::account_routes::routes())
         .merge(crate::people_routes::routes())
+        .merge(crate::signature_routes::routes())
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate))
         .layer(middleware::from_fn(security_headers));
     let registry = crate::registry::routes().layer(middleware::from_fn(security_headers));

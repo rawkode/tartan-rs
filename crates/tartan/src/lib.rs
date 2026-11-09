@@ -22,6 +22,7 @@ mod extension_routes;
 mod gateway;
 pub mod jetstream;
 mod people_routes;
+mod signature_routes;
 pub mod registry;
 pub mod settings;
 pub mod sync;

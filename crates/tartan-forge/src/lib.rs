@@ -44,6 +44,10 @@ pub use crate::actors::org::{
     CreateRepo, ListRepos, Org, OrgStatus, OrgStatusQuery, RepoInfo, ResolveRepo,
 };
 pub use crate::actors::repo::{RecordRefEvents, Repo, RepoStatus, RepoStatusQuery};
+pub use crate::actors::signing::{
+    ConfigStatus, ConfigStatusQuery, ProofReferenced, RecheckOutcome, RecheckSignature,
+    RefSignatures, SignatureQuery, SignatureView, Verify, VerifySchedules,
+};
 pub use crate::actors::subscriber::{Received, ReceivedEvent, Subscriber};
 pub use crate::clients::{
     extension_handle, forge_handle, identity_handle, org_handle, repo_handle, subscriber_handle,

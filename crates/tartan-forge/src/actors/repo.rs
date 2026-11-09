@@ -16,6 +16,10 @@ use crate::actors::installations::{
     self, INSTALLATIONS_SCHEMA, InstallTarget, InstallationInfo, InstallationQuery,
     ListInstallations, Wanted,
 };
+use crate::actors::signing::{
+    self, CONFIG_BRANCH, ConfigStatusQuery, Gate, ProofReferenced, RecheckSignature, RefSignatures,
+    SIGNING_SCHEMA, SignatureQuery, Verify, VerifySchedules,
+};
 use crate::actors::{apply_schema, key_id};
 use crate::event_log::{EVENT_LOG_SCHEMA, ReadEvents, append, read};
 use crate::outbox::{Flush, FlushTree, Outbox, SubscriberSource};
@@ -27,14 +31,18 @@ use rivetkit::TypedClientExt;
 /// The repository actor.
 #[derive(Debug)]
 pub struct Repo {
-    id: String,
-    outbox: Arc<Outbox>,
+    pub(crate) id: String,
+    pub(crate) outbox: Arc<Outbox>,
     // One reconciliation at a time; each applies the latest recorded `main`.
     reconciling: tokio::sync::Mutex<()>,
+    // One `verify` run at a time (design D8, *Serialised runs*).
+    pub(crate) verifying: tokio::sync::Mutex<()>,
+    // Set by a `verify` wake that found a run in progress, so the run looks at the queue again.
+    pub(crate) verify_rerun: std::sync::atomic::AtomicBool,
+    // Serialises `ensure_verify_at`, so two callers never both register a schedule. Never held
+    // while `verifying` is acquired.
+    pub(crate) verify_schedule_lock: tokio::sync::Mutex<()>,
 }
-
-/// The branch whose `tartan.cue` configures the repository.
-const CONFIG_BRANCH: &str = "refs/heads/main";
 
 const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS repo (
@@ -129,6 +137,13 @@ impl Actor for Repo {
         ReadEvents,
         Flush,
         FlushTree,
+        Verify,
+        SignatureQuery,
+        RefSignatures,
+        ConfigStatusQuery,
+        RecheckSignature,
+        ProofReferenced,
+        VerifySchedules,
     );
     type Events = ();
     type ConnParams = ();
@@ -138,6 +153,7 @@ impl Actor for Repo {
         apply_schema(ctx.sql(), EVENT_LOG_SCHEMA).await?;
         apply_schema(ctx.sql(), SCHEMA).await?;
         apply_schema(ctx.sql(), INSTALLATIONS_SCHEMA).await?;
+        apply_schema(ctx.sql(), SIGNING_SCHEMA).await?;
         let id = key_id(ctx.key())?;
         let outbox = Outbox::new(format!("repo:{id}"));
         outbox.set_repo(id.clone());
@@ -145,11 +161,24 @@ impl Actor for Repo {
             outbox,
             id,
             reconciling: tokio::sync::Mutex::new(()),
+            verifying: tokio::sync::Mutex::new(()),
+            verify_rerun: std::sync::atomic::AtomicBool::new(false),
+            verify_schedule_lock: tokio::sync::Mutex::new(()),
         })
     }
 
     async fn on_start(self: Arc<Self>, ctx: Ctx<Self>) -> Result<()> {
         self.outbox.flush_later(&ctx, SubscriberSource::Forge);
+        // Queued signature checks are scheduled first; a schedule lost to a crash is recovered
+        // and a surviving one is not duplicated.
+        self.schedule_queue(&ctx).await?;
+        // Verified records the identity actor was not told of are told now.
+        let (repo, background) = (Arc::clone(&self), ctx.clone());
+        ctx.wait_until(async move {
+            if let Err(error) = repo.replay_recorded(&background).await {
+                tracing::warn!(repo = %repo.id, %error, "could not replay verified signature records");
+            }
+        });
         // A configuration recorded but not applied before the actor stopped is applied now.
         self.reconcile_later(&ctx);
         Ok(())
@@ -157,12 +186,12 @@ impl Actor for Repo {
 }
 
 impl Repo {
-    fn source(&self) -> String {
+    pub(crate) fn source(&self) -> String {
         format!("repo:{}", self.id)
     }
 
     /// The repository's `org/slug` path, or an error before [`Init`].
-    async fn path(&self, ctx: &Ctx<Self>) -> Result<(Slug, Slug)> {
+    pub(crate) async fn path(&self, ctx: &Ctx<Self>) -> Result<(Slug, Slug)> {
         let result = ctx
             .sql()
             .query("SELECT org_slug, slug FROM repo", None)
@@ -236,12 +265,13 @@ impl Handler<RecordRefEvents> for Repo {
         events.sort_by_key(|(seq, _)| *seq);
 
         let source = self.source();
-        let (appended, config_moved) = ctx
+        let (appended, config_moved, queued) = ctx
             .sql()
             .transaction(
                 move |tx| async move {
                     let mut appended = 0_u32;
                     let mut config_head = None;
+                    let mut queued = false;
                     for (seq, event) in events {
                         let seq_param = param_integer(i64::try_from(seq)?);
                         let new_push = tx
@@ -278,6 +308,17 @@ impl Handler<RecordRefEvents> for Repo {
                             });
                             append(&tx, &source, "ref.updated", data).await?;
                             appended += 1;
+                            if signing::is_checked_ref(&event.ref_name, &event.new) {
+                                signing::enqueue(
+                                    &tx,
+                                    i64::try_from(seq)?,
+                                    &event.ref_name,
+                                    &event.old,
+                                    &event.new,
+                                )
+                                .await?;
+                                queued = true;
+                            }
                             let moved = event.ref_name == CONFIG_BRANCH
                                 && !event.new.bytes().all(|b| b == b'0');
                             if moved {
@@ -293,7 +334,7 @@ impl Handler<RecordRefEvents> for Repo {
                         )
                         .await?;
                     }
-                    Ok((appended, config_head.is_some()))
+                    Ok((appended, config_head.is_some(), queued))
                 },
                 SqliteTransactionOptions {
                     name: Some("record_ref_events"),
@@ -303,6 +344,9 @@ impl Handler<RecordRefEvents> for Repo {
             .await?;
         if appended > 0 {
             self.outbox.flush_later(&ctx, SubscriberSource::Forge);
+        }
+        if queued {
+            self.ensure_verify_at(&ctx, crate::sql::now_ms()).await?;
         }
         if config_moved {
             self.reconcile_later(&ctx);
@@ -353,7 +397,7 @@ impl Handler<RepoStatusQuery> for Repo {
 }
 
 /// What one attempt to apply the configuration came to.
-enum Reconciled {
+pub(crate) enum Reconciled {
     /// The configuration was applied or refused, or there is none to apply.
     Done,
     /// It could not be evaluated for a reason that may pass, such as the Git host or the
@@ -370,13 +414,14 @@ const RETRY_LAST_DELAY: std::time::Duration = std::time::Duration::from_secs(64)
 impl Repo {
     /// Applies the latest recorded `main` in the background, trying again with a growing delay
     /// while it fails for a reason that may pass.
-    fn reconcile_later(self: &Arc<Self>, ctx: &Ctx<Self>) {
+    pub(crate) fn reconcile_later(self: &Arc<Self>, ctx: &Ctx<Self>) {
         let repo = Arc::clone(self);
         let ctx = ctx.clone();
         ctx.clone().wait_until(async move {
             let mut delay = RETRY_FIRST_DELAY;
             loop {
-                let reason = match repo.reconcile(&ctx).await {
+                let last = delay > RETRY_LAST_DELAY;
+                let reason = match repo.reconcile(&ctx, last).await {
                     Ok(Reconciled::Done) => return,
                     Ok(Reconciled::Later(reason)) => reason,
                     Err(error) => format!("{error:#}"),
@@ -397,7 +442,14 @@ impl Repo {
     /// Applies the configuration at the latest recorded `main`, unless it is applied already.
     /// It waits for this process's module sync first, so the registry holds every module the
     /// deployment lists and the packages available are known.
-    async fn reconcile(&self, ctx: &Ctx<Self>) -> Result<Reconciled> {
+    ///
+    /// When the signing rule covers `main`, the head update's signature check decides first
+    /// (design D11, *Configuration gating*): while it is queued nothing is applied and the head
+    /// stays unapplied, and a non-compliant head is refused. A configuration that changes the
+    /// rule in force is applied only from a descendant of the commit that set the rule; `last`
+    /// says this is reconciliation's last try, when an ancestry check that cannot be made
+    /// refuses instead of trying again.
+    pub(crate) async fn reconcile(&self, ctx: &Ctx<Self>, last: bool) -> Result<Reconciled> {
         let _reconciling = self.reconciling.lock().await;
         let head = ctx
             .sql()
@@ -409,6 +461,17 @@ impl Repo {
         let (sha, applied) = (text(row, 0)?, crate::sql::integer(row, 1)? != 0);
         if applied {
             return Ok(Reconciled::Done);
+        }
+        match self.signing_gate(ctx).await? {
+            // The scheduled `verify` action reconciles once the check resolves.
+            Gate::Waiting => return Ok(Reconciled::Done),
+            Gate::Refused(problem) => {
+                installations::refuse(ctx, &self.outbox, &self.source(), &sha, vec![problem])
+                    .await?;
+                self.mark_applied(ctx, &sha).await?;
+                return Ok(Reconciled::Done);
+            }
+            Gate::Open => {}
         }
         let available = services()?.extensions.available().await;
         let (org_slug, slug) = self.path(ctx).await?;
@@ -432,6 +495,55 @@ impl Repo {
             }
         };
         if let Some(config) = config {
+            // The rule changes only through descent (design D11).
+            let current = ctx
+                .sql()
+                .query(
+                    "SELECT rule, config_commit FROM signing_rule WHERE id = 1",
+                    None,
+                )
+                .await?;
+            if let Some(row) = current.rows.first() {
+                let (rule, config_commit) = (text(row, 0)?, text(row, 1)?);
+                let wanted = config.signing.as_ref().map(|rule| rule.to_json());
+                if wanted.as_deref() != Some(rule.as_str()) {
+                    let descends = services()?
+                        .git_host
+                        .is_ancestor(org_slug.as_str(), slug.as_str(), &config_commit, &sha)
+                        .await;
+                    let refusal = match descends {
+                        Ok(true) => None,
+                        Ok(false) => Some(format!(
+                            "signing: the signing rule can only change in a descendant of {config_commit}"
+                        )),
+                        Err(_) if last => Some(format!(
+                            "signing: could not check that {sha} descends from {config_commit}"
+                        )),
+                        Err(error) => {
+                            return Ok(Reconciled::Later(format!(
+                                "could not check that {sha} descends from {config_commit}: {error:#}"
+                            )));
+                        }
+                    };
+                    if let Some(problem) = refusal {
+                        installations::refuse(
+                            ctx,
+                            &self.outbox,
+                            &self.source(),
+                            &sha,
+                            vec![problem],
+                        )
+                        .await?;
+                        self.mark_applied(ctx, &sha).await?;
+                        return Ok(Reconciled::Done);
+                    }
+                }
+            }
+            let signers = config
+                .signing
+                .as_ref()
+                .map(|rule| rule.signers())
+                .unwrap_or_default();
             let wanted = config
                 .extensions
                 .into_iter()
@@ -448,7 +560,7 @@ impl Repo {
                 repo_id: self.id.clone(),
                 path: format!("{org_slug}/{slug}"),
             };
-            installations::reconcile(
+            let applied = installations::reconcile(
                 ctx,
                 &self.outbox,
                 &self.source(),
@@ -456,16 +568,51 @@ impl Repo {
                 &sha,
                 wanted,
                 &available,
+                config.signing.as_ref(),
             )
             .await?;
+            if applied && !signers.is_empty() {
+                self.know_rule_signers(ctx, signers);
+            }
         }
+        self.mark_applied(ctx, &sha).await?;
+        Ok(Reconciled::Done)
+    }
+
+    /// Marks the configuration at `sha` handled, unless `main` has moved since.
+    async fn mark_applied(&self, ctx: &Ctx<Self>, sha: &str) -> Result<()> {
         ctx.sql()
             .execute(
                 "UPDATE config_head SET applied = 1 WHERE id = 1 AND sha = ?",
-                Some(vec![param_text(sha.as_str())]),
+                Some(vec![param_text(sha)]),
             )
             .await?;
-        Ok(Reconciled::Done)
+        Ok(())
+    }
+
+    /// Makes the rule's signers known to the identity actor, in the background.
+    fn know_rule_signers(&self, ctx: &Ctx<Self>, signers: std::collections::BTreeSet<String>) {
+        let (background, repo) = (ctx.clone(), self.id.clone());
+        ctx.wait_until(async move {
+            let identity = match background.client().and_then(|c| crate::identity_handle(&c)) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    tracing::warn!(%repo, %error, "could not reach the identity actor");
+                    return;
+                }
+            };
+            for did in signers {
+                let known = identity
+                    .send(tartan_identity_api::KnowDid {
+                        did: did.clone(),
+                        because: tartan_identity_api::KnownAs::RuleSigner,
+                    })
+                    .await;
+                if let Err(error) = known {
+                    tracing::warn!(%repo, %did, %error, "could not make a rule signer known");
+                }
+            }
+        });
     }
 
     async fn org_id(&self, ctx: &Ctx<Self>) -> Result<String> {

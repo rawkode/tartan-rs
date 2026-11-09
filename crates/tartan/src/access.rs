@@ -369,6 +369,10 @@ pub enum RouteClass {
     /// A signer's own signature records: the principal whose DID is the route's `{did}`,
     /// whatever its rights, or an owner.
     OwnDid,
+    /// Re-checking an `unverifiable` result: an owner, or the principal whose DID is stored on
+    /// the result, whatever its rights; the handler decides which, since only the repository
+    /// knows the stored DID.
+    Recheck,
     /// Reading.
     Read,
     /// Extension `tool` and `act` calls.
@@ -385,6 +389,7 @@ pub fn classify(method: &Method, path: &str) -> RouteClass {
         "/sessions" | "/sessions/current" | "/sessions/{id}" => RouteClass::Sessions,
         "/tokens" | "/tokens/{id}" => RouteClass::Tokens,
         "/people/{did}/signatures/{rkey}/refresh" => RouteClass::OwnDid,
+        "/orgs/{org}/repos/{repo}/commits/{sha}/signature/recheck" => RouteClass::Recheck,
         "/people" | "/people/resolve" => RouteClass::Read,
         "/orgs" | "/orgs/{org}/repos" if !is_get => RouteClass::Admin,
         "/placements" | "/subscribers/{name}" | "/subscribers/{name}/events" => RouteClass::Admin,
@@ -542,6 +547,7 @@ pub async fn authenticate(
         RouteClass::OwnDid => {
             param("did").as_deref() == Some(principal.did.as_str()) || principal.owner
         }
+        RouteClass::Recheck => true,
         RouteClass::Read => rights.read,
         RouteClass::Write => rights.write,
         RouteClass::Admin => rights.admin,

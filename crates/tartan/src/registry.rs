@@ -104,6 +104,12 @@ impl RegistryStore {
         }
     }
 
+    /// The object store the registry keeps its prefix in, which also holds the forge's proof
+    /// bundles under `proofs/`.
+    pub(crate) fn objects(&self) -> Arc<dyn ObjectStore> {
+        self.store.clone()
+    }
+
     /// Serves `modules` (`(path, version)` pairs) and no others.
     pub fn list<'a>(&self, modules: impl IntoIterator<Item = (&'a str, &'a str)>) {
         let mut listed: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
