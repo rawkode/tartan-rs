@@ -2,8 +2,9 @@
 //! `@tartan/ext-api`'s `ui`. A render returns `ui::doc(root).to_string()`.
 //!
 //! The host validates every document (≤ 500 nodes, ≤ 64 KB, depth ≤ 16;
-//! links are same-origin paths `/…` or `https://` URLs; no HTML) and shows an
-//! error chip instead of an invalid one.
+//! links are same-origin paths `/…` or `https://` URLs; no HTML; a
+//! [`person`] names a valid DID) and shows an error chip instead of an
+//! invalid one.
 
 use serde_json::{json, Map, Value};
 
@@ -158,6 +159,13 @@ pub fn link(text: impl Into<String>, href: impl Into<String>) -> Node {
 			("href", Value::String(href.into())),
 		],
 	)
+}
+
+/// A person, by DID (`did:plc:…` or `did:web:…`). The web UI shows them as
+/// `@handle`, or a shortened DID until the handle is known, with the DID in a
+/// tooltip. The host refuses a document whose person node is not a valid DID.
+pub fn person(did: impl Into<String>) -> Node {
+	node("person", vec![("did", Value::String(did.into()))])
 }
 
 pub fn stat(label: &str, value: f64) -> Node {
@@ -333,6 +341,16 @@ mod tests {
 			json!(["gate.decided"])
 		);
 		assert_eq!(result::toast(Tone::Success, "done")["toast"]["tone"], "success");
+	}
+
+	#[test]
+	fn a_person_is_a_did_node() {
+		assert_eq!(
+			person("did:plc:ewvi7nxzyoun6zhxrhs64oiz"),
+			json!({ "t": "person", "did": "did:plc:ewvi7nxzyoun6zhxrhs64oiz" })
+		);
+		// The SDK passes the value through; the host refuses one that is not a DID.
+		assert_eq!(person("admin"), json!({ "t": "person", "did": "admin" }));
 	}
 
 	#[test]

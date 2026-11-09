@@ -4,6 +4,10 @@
 # vectors Issues shares (extensions/issues/testdata/property-values.json): a
 # value Issues accepts for a property must be a valid `default` of it in CUE,
 # and a value Issues refuses must not, so the module and the extension agree.
+# The vectors are checked against the version of this module Issues depends on:
+# an earlier version kept as a fixture in testdata/<version> (such as
+# testdata/v0.1.0, a nested module that is not published with this one) when
+# Issues pins it, otherwise this module.
 #
 #   cue/types/test.sh            # uses `cue` on PATH, or CUE_BIN
 set -euo pipefail
@@ -17,6 +21,13 @@ failed=0
 	echo "FAIL: the types package does not evaluate"
 	failed=1
 }
+for fixture in testdata/v[0-9]*/; do
+	[ -d "$fixture" ] || continue
+	(cd "$fixture" && "$cue" vet -c ./types.cue >/dev/null) || {
+		echo "FAIL: the $fixture fixture does not evaluate"
+		failed=1
+	}
+done
 for case in testdata/valid/*.cue; do
 	if ! output="$("$cue" export "./$case" 2>&1)"; then
 		echo "FAIL (should evaluate): $case"
@@ -32,11 +43,19 @@ for case in testdata/invalid/*.cue; do
 done
 
 vectors="$module/../../extensions/issues/testdata/property-values.json"
+issues_module="$module/../../extensions/issues/cue/cue.mod/module.cue"
 checked=0
+vectors_types="this module"
 if [ -f "$vectors" ]; then
+	types_source="$module"
+	pinned="$(sed -n 's|.*"tartan.rawkode.academy/types@v0": *v: *"\(v[^"]*\)".*|\1|p' "$issues_module" 2>/dev/null | head -n 1)"
+	if [ -n "$pinned" ] && [ -d "$module/testdata/$pinned" ]; then
+		types_source="$module/testdata/$pinned"
+		vectors_types="the $pinned fixture"
+	fi
 	work="$(mktemp -d)"
 	trap 'rm -rf "$work"' EXIT
-	cp -R "$module/cue.mod" "$module/types.cue" "$work/"
+	cp -R "$types_source/cue.mod" "$types_source/types.cue" "$work/"
 	mkdir "$work/vector"
 	# check_vector <expectation> <property JSON> <value JSON>
 	check_vector() {
@@ -64,4 +83,4 @@ invalid="$(find testdata/invalid -name '*.cue' | wc -l)"
 if [ "$failed" -ne 0 ]; then
 	exit 1
 fi
-echo "ok: $valid valid and $invalid invalid cases, $checked shared value vectors"
+echo "ok: $valid valid and $invalid invalid cases, $checked shared value vectors (against $vectors_types)"

@@ -111,16 +111,20 @@ import (
 	default?: [...or(options)] & list.UniqueItems()
 }
 
-// A principal, by its id (such as `usr_dev`).
+// A person, by their DID. The forge shows a person by their verified handle.
 #Person: {
 	#Common
 	kind:     "person"
-	default?: #PersonValue
+	default?: #DID
 }
 
-// A principal id: 1 to 128 letters, digits and `._:@-`, starting with a
-// letter or digit.
-#PersonValue: =~"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$"
+// A person's ATProto identity: `did:plc:` and 24 base32 characters (`a-z`,
+// `2-7`), or `did:web:` and a lowercase hostname of at most 253 characters,
+// with no path. Only `localhost` may carry a port, written `%3A` as did:web
+// encodes it (`did:web:localhost%3A9400`); ATProto allows that only for local
+// testing, so the forge accepts it only with its development identity network.
+// A handle such as `alice.bsky.social` is not a DID.
+#DID: =~"^did:(plc:[a-z2-7]{24}|web:(localhost(%3A[1-9][0-9]{0,4})?|([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?))$" & strings.MaxRunes(261)
 
 // An `http` or `https` URL.
 #URL: {
@@ -144,3 +148,24 @@ import (
 
 // Any property.
 #Property: #ShortText | #LongText | #Number | #Date | #Boolean | #Select | #MultiSelect | #Person | #URL | #Money
+
+// Which refs must be signed, and by whom. Each rule names full ref names in
+// `refs`, where `*` matches within one path segment and a final `/**` matches
+// any number of segments (`refs/heads/release-*`, `refs/tags/**`), and
+// optionally the `signers` allowed on them. A rule without `signers` accepts
+// any signature proved back to its DID.
+//
+//     signing: types.#Signing & {require: [{
+//     	refs: ["refs/heads/main"]
+//     	signers: ["did:plc:abcdefghijklmnopqrstuvwx"]
+//     }]}
+#Signing: {
+	require: [...{
+		refs: [_, ...] & [...#RefPattern]
+		signers?: [_, ...] & [...#DID]
+	}]
+}
+
+// A full ref name or pattern: `refs/` and one or more segments without spaces;
+// `**` only as the whole last segment.
+#RefPattern: =~"^refs/[^/ ]+(/[^/ ]+)*$" & !~"[^/]\\*\\*" & !~"\\*\\*."

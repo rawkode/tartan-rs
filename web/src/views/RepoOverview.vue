@@ -8,10 +8,12 @@ import { computed } from "vue";
 import { RouterLink } from "vue-router";
 import { css } from "styled-system/css";
 import { badge, button, card } from "styled-system/recipes";
+import BranchSignatures from "../components/BranchSignatures.vue";
 import CodeBlock from "../components/ui/CodeBlock.vue";
 import Icon from "../components/ui/Icon.vue";
 import ProblemAlert from "../components/ui/ProblemAlert.vue";
 import Skeleton from "../components/ui/Skeleton.vue";
+import { hasRight } from "../lib/account.ts";
 import { ISSUES_ID, KANBAN_ID } from "../lib/api.ts";
 import { moduleCue, pushCommands, tartanCue } from "../lib/onboarding.ts";
 import { useRepo } from "../lib/repo-context.ts";
@@ -44,6 +46,7 @@ const styles = {
 		alignItems: "start",
 	}),
 	stack: css({ display: "grid", gap: "4" }),
+	signing: css({ display: "grid", gap: "3", mb: "6", _empty: { display: "none" } }),
 	lead: css({ color: "fg.muted", textWrap: "pretty" }),
 	steps: css({ display: "grid", gap: "5" }),
 	step: css({ display: "grid", gap: "2" }),
@@ -108,6 +111,9 @@ const styles = {
 </script>
 
 <template>
+	<div :class="styles.signing">
+		<BranchSignatures :org="org" :repo="repo" />
+	</div>
 	<div :class="styles.grid">
 		<section :class="cardStyles.root" aria-labelledby="setup-title">
 			<div :class="cardStyles.header">
@@ -188,7 +194,7 @@ const styles = {
 			<section v-if="installed(ISSUES_ID) || installed(KANBAN_ID)" :class="cardStyles.root" aria-labelledby="go-title">
 				<div :class="cardStyles.header"><h2 id="go-title" :class="cardStyles.title">Jump in</h2></div>
 				<div :class="[cardStyles.body, styles.quick]">
-					<RouterLink v-if="installed(ISSUES_ID)" :to="{ name: 'issue-new', params: { org, repo } }" :class="button({ variant: 'solid', size: 'sm' })">
+					<RouterLink v-if="installed(ISSUES_ID) && hasRight('write')" :to="{ name: 'issue-new', params: { org, repo } }" :class="button({ variant: 'solid', size: 'sm' })">
 						<Icon name="plus" :size="14" /> New issue
 					</RouterLink>
 					<RouterLink v-if="installed(ISSUES_ID)" :to="{ name: 'issues', params: { org, repo } }" :class="button({ size: 'sm' })">

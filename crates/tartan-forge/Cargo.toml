@@ -6,23 +6,40 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# Development identity switches; they act only with TARTAN_DEV_IDENTITY=1 (design D12).
+dev-identity = ["tartan-atproto/dev-identity"]
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+base64.workspace = true
+cid.workspace = true
+getrandom.workspace = true
+gix.workspace = true
 hex.workspace = true
 hmac.workspace = true
+ipnet.workspace = true
+jacquard-common.workspace = true
 object_store.workspace = true
 reqwest.workspace = true
 rivetkit.workspace = true
 serde.workspace = true
+serde_ipld_dagcbor.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tartan-atproto.workspace = true
 tartan-config.workspace = true
 tartan-extensions.workspace = true
+tartan-identity-api = { workspace = true, features = ["rivetkit"] }
 thiserror.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 tracing.workspace = true
 ulid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

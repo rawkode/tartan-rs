@@ -1,11 +1,15 @@
 /**
- * An in-browser stand-in for the gateway: a `fetch` that answers the gateway's API, Issues'
- * tools and Kanban's tools from memory. It backs the client's tests and the sandbox setting,
- * which lets the interface be explored without a running forge. It follows the same wire
- * contract as the real gateway; it is not a second implementation of the extensions' rules
- * beyond what the interface needs to behave plausibly.
+ * An in-browser stand-in for the gateway: a `fetch` that answers the gateway's API (the
+ * caller, people, sessions, tokens, signatures), Issues' tools and Kanban's tools from memory.
+ * It backs the client's tests and the sandbox setting, which lets the interface be explored
+ * without a running forge. The caller is `state.me`, a signed-in owner by default, and the
+ * sandbox applies the gateway's rights to it (design D4): anonymous callers get 401, and a
+ * call needing a right the caller lacks gets 403. People are DIDs shown by handle. It follows
+ * the same wire contract as the real gateway; it is not a second implementation of the
+ * extensions' rules beyond what the interface needs to behave plausibly.
  */
 
+import { isDid } from "./did.ts";
 import { isEmpty, optionTitle, validateValue } from "./properties.ts";
 import type {
 	BoardCell,
@@ -14,12 +18,48 @@ import type {
 	BoardView,
 	Card,
 	CardGroup,
+	CommitSignature,
+	ConfigStatus,
 	Installation,
 	Issue,
 	IssueState,
+	Me,
+	PersonInfo,
 	PropertyDef,
 	PropertyValue,
+	RefSignature,
+	Right,
+	SessionInfo,
+	SignedInMe,
+	TokenInfo,
 } from "./types.ts";
+
+/** The sample people, by handle: alice is the owner. */
+export const SAMPLE_PEOPLE = {
+	alice: "did:plc:a7lic3a7lic3a7lic3a7lic3",
+	bob: "did:plc:bobbybobbybobbybobbybobb",
+	carol: "did:plc:carolcarolcarolcarolcaro",
+} as const;
+
+/** The sandbox's owner, signed in with a browser session. */
+export const sampleOwner = (): SignedInMe => ({
+	did: SAMPLE_PEOPLE.alice,
+	handle: "alice.test",
+	owner: true,
+	kind: "browser",
+	rights: ["read", "write", "admin"],
+	dev_identity: true,
+});
+
+/** A signed-in person the forge's `readers` admits: read only. */
+export const sampleReader = (): SignedInMe => ({
+	did: SAMPLE_PEOPLE.bob,
+	handle: "bob.test",
+	owner: false,
+	kind: "browser",
+	rights: ["read"],
+	dev_identity: true,
+});
 
 /** A board as a repository's Kanban settings define it, after CUE has checked it. */
 export interface SandboxBoard {
@@ -41,10 +81,21 @@ export interface SandboxRepo {
 	/** Boards whose settings the extension could not use, with why. */
 	invalidBoards: { id: string; problem: string }[];
 	issues: Issue[];
+	/** Branch heads with their signature results. */
+	branches: RefSignature[];
+	/** Commit signature results, by commit id. */
+	commits: Map<string, CommitSignature>;
+	config: ConfigStatus;
 }
 
 export interface SandboxState {
 	orgs: Map<string, { id: string; repos: Map<string, SandboxRepo> }>;
+	/** The caller, as `GET /-/api/me` answers. */
+	me: Me;
+	/** What `GET /-/api/people` knows, by DID. */
+	people: Map<string, PersonInfo>;
+	sessions: SessionInfo[];
+	tokens: TokenInfo[];
 }
 
 const json = (status: number, body: unknown): Response =>
@@ -126,7 +177,7 @@ const setState = (issue: Issue, state: IssueState, at: number): boolean => {
 
 type Input = Record<string, unknown>;
 
-const issuesTool = (repo: SandboxRepo, name: string, input: Input): unknown => {
+const issuesTool = (repo: SandboxRepo, name: string, input: Input, author = ""): unknown => {
 	const now = Date.now();
 	switch (name) {
 		case "list": {
@@ -157,6 +208,7 @@ const issuesTool = (repo: SandboxRepo, name: string, input: Input): unknown => {
 		case "create": {
 			const title = typeof input.title === "string" ? input.title.trim() : "";
 			if (title.length === 0 || title.length > 200) throw invalid("title must be 1 to 200 characters");
+			if (!author) throw new Refusal(403, "an issue needs a signed-in author", "denied");
 			const values = checkProperties(repo, input.properties);
 			const defaults: Record<string, PropertyValue> = {};
 			for (const def of repo.properties) {
@@ -167,7 +219,7 @@ const issuesTool = (repo: SandboxRepo, name: string, input: Input): unknown => {
 				title,
 				project: typeof input.project === "string" ? input.project : null,
 				state: "open",
-				author: { kind: "user", id: "admin" },
+				author: { kind: "user", id: author },
 				createdAt: now,
 				updatedAt: now,
 				closedAt: null,
@@ -252,7 +304,12 @@ const dimension = (repo: SandboxRepo, by: string, issues: Issue[]) => {
 	const values = def?.options ??
 		[...new Set(issues.flatMap((i) => valuesOf(i, by)).filter((v): v is string => v !== null))]
 			.sort();
-	return values.map((value) => ({ value, title: def ? optionTitle(def, value) : value }));
+	return values.map((value) => ({
+		value,
+		title: def ? optionTitle(def, value) : value,
+		// A person lane or group is keyed by DID and labelled by handle.
+		...(def?.kind === "person" && isDid(value) ? { person: value } : {}),
+	}));
 };
 
 const renderBoard = (repo: SandboxRepo, board: SandboxBoard): BoardView => {
@@ -276,11 +333,11 @@ const renderBoard = (repo: SandboxRepo, board: SandboxBoard): BoardView => {
 	const placed = issues.filter((i) => columnFor(i) !== null);
 	const unplaced = issues.filter((i) => columnFor(i) === null).map(toCard);
 
-	const laneValues: { value: string | null; title: string }[] = board.lanes
+	const laneValues: { value: string | null; title: string; person?: string }[] = board.lanes
 		? [...dimension(repo, board.lanes, placed), { value: null, title: "None" }]
 		: [{ value: null, title: "" }];
 	const lanes: BoardLane[] = laneValues
-		.map(({ value, title }): BoardLane => {
+		.map(({ value, title, person }): BoardLane => {
 			const inLane = board.lanes
 				? placed.filter((i) => valuesOf(i, board.lanes!).includes(value))
 				: placed;
@@ -295,13 +352,14 @@ const renderBoard = (repo: SandboxRepo, board: SandboxBoard): BoardView => {
 						.map((g) => ({
 							value: g.value,
 							title: g.title,
+							...("person" in g && g.person ? { person: g.person } : {}),
 							cards: inCell.filter((i) => valuesOf(i, by).includes(g.value)).map(toCard),
 						}))
 						.filter((g) => g.cards.length > 0);
 				}
 				return { column: column.value, groups };
 			});
-			return { value, title, cells };
+			return { value, title, ...(person ? { person } : {}), cells };
 		})
 		// The "None" lane appears only when a card has no value for the lanes' property.
 		.filter((lane, _index, all) =>
@@ -363,8 +421,6 @@ const kanbanTool = (repo: SandboxRepo, name: string, input: Input): unknown => {
 // Routing
 
 export interface SandboxOptions {
-	/** The bearer token requests must carry. */
-	token?: string;
 	/** Delay before answering, in milliseconds, so loading states show. */
 	latencyMs?: number;
 	state?: SandboxState;
@@ -373,14 +429,94 @@ export interface SandboxOptions {
 /** A `fetch` answering the gateway's API from memory. */
 export const createSandboxFetch = (options: SandboxOptions = {}): typeof fetch => {
 	const state = options.state ?? sampleState();
-	const token = options.token ?? "dev-admin-token";
 
-	const route = (method: string, path: string, body: Input): Response => {
+	const signedIn = () => (state.me.anonymous ? null : state.me);
+	const needs = (right: Right) => {
+		const me = signedIn();
+		if (!me) throw new Refusal(401, "unauthorized");
+		if (!me.rights.includes(right)) throw new Refusal(403, `this needs the ${right} right`);
+		return me;
+	};
+
+	const account = (method: string, path: string, url: URL, body: Input): Response | null => {
+		if (path === "/-/api/me") return json(200, state.me);
+		if (path === "/-/auth/logout" && method === "POST") return json(204, undefined);
+		if (path === "/-/auth/outcome") return problem(404, "no such outcome");
+		if (path === "/-/auth/cli/approve" && method === "POST") {
+			if (!signedIn()) throw new Refusal(401, "unauthorized");
+			return json(200, { redirect: `http://127.0.0.1:${String(body.port)}/forge?code=sandbox&state=${String(body.state)}` });
+		}
+		if (path === "/-/api/sessions") {
+			if (!signedIn()) throw new Refusal(401, "unauthorized");
+			return json(200, state.sessions);
+		}
+		const session = path.match(/^\/-\/api\/sessions\/(.+)$/);
+		if (session && method === "DELETE") {
+			const id = decodeURIComponent(session[1]!);
+			const index = state.sessions.findIndex((s) => s.id === id || (id === "current" && s.current));
+			if (index < 0) throw notFound(`session ${id}`);
+			state.sessions.splice(index, 1);
+			return json(204, undefined);
+		}
+		if (path === "/-/api/tokens") {
+			const me = signedIn();
+			if (!me) throw new Refusal(401, "unauthorized");
+			if (me.rights.length === 0) throw new Refusal(403, "this forge is private");
+			if (method === "GET") return json(200, state.tokens.filter((t) => t.did === me.did));
+			const scopes = body.scopes as Right[];
+			const now = Date.now();
+			const token: TokenInfo = {
+				id: newId("tok"),
+				did: me.did,
+				name: String(body.name ?? ""),
+				scopes,
+				repos: (body.repos as string[] | null) ?? null,
+				created_at: now,
+				expires_at: now + Number(body.expires_in_days ?? 30) * 86_400_000,
+				last_used_at: null,
+				revoked_at: null,
+				revoked_by: null,
+			};
+			if (!token.name.trim()) throw invalid("a token needs a name");
+			if (!Array.isArray(scopes) || scopes.length === 0) throw invalid("a token needs a scope");
+			state.tokens.push(token);
+			const secret = `tartan_pat_${"S".repeat(43)}`;
+			return json(201, { token, secret });
+		}
+		const token = path.match(/^\/-\/api\/tokens\/(.+)$/);
+		if (token && method === "DELETE") {
+			const found = state.tokens.find((t) => t.id === decodeURIComponent(token[1]!));
+			if (!found) throw notFound("token");
+			found.revoked_at = Date.now();
+			found.revoked_by = signedIn()?.did ?? null;
+			return json(204, undefined);
+		}
+		if (path === "/-/api/people" && method === "GET") {
+			needs("read");
+			const answer: Record<string, PersonInfo | null> = {};
+			for (const did of url.searchParams.getAll("did")) answer[did] = state.people.get(did) ?? null;
+			return json(200, answer);
+		}
+		if (path === "/-/api/people/resolve" && method === "POST") {
+			needs("read");
+			const handle = String(body.handle ?? "").trim().replace(/^@/, "").toLowerCase();
+			for (const [did, person] of state.people) {
+				if (person.handle === handle) return json(200, { did, handle });
+			}
+			throw notFound(`handle ${handle}`);
+		}
+		return null;
+	};
+
+	const route = (method: string, path: string, url: URL, body: Input): Response => {
+		const answered = account(method, path, url, body);
+		if (answered) return answered;
 		const parts = path.replace(/^\/-\/api\/?/, "").split("/").filter(Boolean).map(
 			decodeURIComponent,
 		);
 		const [orgsSeg, org, reposSeg, repo, extSeg, extension, call, name] = parts;
 		if (orgsSeg !== "orgs") return problem(404, `${path} not found`);
+		const me = needs(method === "GET" ? "read" : extSeg === "extensions" ? "write" : "admin");
 		if (org === undefined) {
 			if (method === "GET") return json(200, [...state.orgs.keys()].sort().map((slug) => ({ slug })));
 			const slug = checkSlug(body.slug);
@@ -417,6 +553,9 @@ export const createSandboxFetch = (options: SandboxOptions = {}): typeof fetch =
 					boards: [],
 					invalidBoards: [],
 					issues: [],
+					branches: [],
+					commits: new Map(),
+					config: { applied: null, pending: null },
 				});
 			}
 			return json(201, {
@@ -431,6 +570,24 @@ export const createSandboxFetch = (options: SandboxOptions = {}): typeof fetch =
 		checkSlug(repo);
 		const repoEntry = orgEntry.repos.get(repo);
 		if (!repoEntry) throw new Refusal(404, `repository ${org}/${repo} not found`);
+		if (extSeg === "signatures") return json(200, repoEntry.branches);
+		if (extSeg === "config" && extension === "status") return json(200, repoEntry.config);
+		if (extSeg === "commits" && extension !== undefined && call === "signature") {
+			const result = repoEntry.commits.get(extension);
+			if (!result) throw notFound(`commit ${extension}`);
+			if (name === "recheck") {
+				repoEntry.commits.set(extension, {
+					status: "pending",
+					attempts: 0,
+					next_at: null,
+					last_error: null,
+					did: "did" in result ? result.did : null,
+					record_missing: false,
+				});
+				return json(204, undefined);
+			}
+			return json(200, result);
+		}
 		if (extSeg === undefined) {
 			return json(200, {
 				id: `${orgEntry.id}/${repo}`,
@@ -450,7 +607,7 @@ export const createSandboxFetch = (options: SandboxOptions = {}): typeof fetch =
 		if (call !== "tools" || name === undefined) {
 			throw new Refusal(404, `${call ?? ""} of extension ${extension} not found`);
 		}
-		if (extension === "issues.tartan.rawkode.academy") return json(200, issuesTool(repoEntry, name, body));
+		if (extension === "issues.tartan.rawkode.academy") return json(200, issuesTool(repoEntry, name, body, me.did));
 		if (extension === "kanban.tartan.rawkode.academy") return json(200, kanbanTool(repoEntry, name, body));
 		throw notFound(`tool ${name} of extension ${extension}`);
 	};
@@ -462,10 +619,6 @@ export const createSandboxFetch = (options: SandboxOptions = {}): typeof fetch =
 			"http://sandbox.invalid",
 		);
 		const method = (init?.method ?? "GET").toUpperCase();
-		const headers = new Headers(init?.headers);
-		if (headers.get("authorization") !== `Bearer ${token}`) {
-			return problem(401, "unauthorized");
-		}
 		let body: Input = {};
 		if (typeof init?.body === "string" && init.body.length > 0) {
 			try {
@@ -475,7 +628,7 @@ export const createSandboxFetch = (options: SandboxOptions = {}): typeof fetch =
 			}
 		}
 		try {
-			return route(method, url.pathname, body);
+			return route(method, url.pathname, url, body);
 		} catch (error) {
 			if (error instanceof Refusal) return problem(error.status, error.message, error.kind);
 			throw error;
@@ -527,7 +680,7 @@ export const sampleState = (): SandboxState => {
 			status: "doing",
 			priority: "p1",
 			tags: ["feature", "infra"],
-			assignee: "admin",
+			assignee: SAMPLE_PEOPLE.alice,
 			estimate: 5,
 		}],
 		["Board columns drop cards without a status", "extensions/kanban", {
@@ -540,7 +693,7 @@ export const sampleState = (): SandboxState => {
 			status: "review",
 			priority: "p2",
 			tags: ["docs"],
-			assignee: "rawkode",
+			assignee: SAMPLE_PEOPLE.carol,
 			link: "https://example.com/design/forge-config",
 		}],
 		["Render long text properties as Markdown", "extensions/issues", {
@@ -565,6 +718,7 @@ export const sampleState = (): SandboxState => {
 			status: "done",
 			priority: "p1",
 			tags: ["feature"],
+			// Assigned before persons were DIDs: kept, and shown as text.
 			assignee: "admin",
 		}, "closed"],
 	];
@@ -573,7 +727,11 @@ export const sampleState = (): SandboxState => {
 		title,
 		project,
 		state: state ?? "open",
-		author: { kind: "user", id: index % 2 === 0 ? "admin" : "rawkode" },
+		author: index === 7
+			? { kind: "user", id: "admin" }
+			: index % 3 === 2
+			? { kind: "agent", id: "token:01JSANDBOX", onBehalfOf: SAMPLE_PEOPLE.alice }
+			: { kind: "user", id: index % 2 === 0 ? SAMPLE_PEOPLE.alice : SAMPLE_PEOPLE.bob },
 		createdAt: base + index * DAY,
 		updatedAt: base + index * DAY + 3_600_000,
 		closedAt: state === "closed" ? base + index * DAY + 7_200_000 : null,
@@ -615,10 +773,94 @@ export const sampleState = (): SandboxState => {
 				columns: { property: "status", values: ["todo", "doing", "done"] },
 			},
 			{ id: "open-closed", name: "Open and closed", columns: "state", group: "tags" },
+			{
+				id: "people",
+				name: "By assignee",
+				columns: { property: "status", values: ["todo", "doing", "review", "done"] },
+				lanes: "assignee",
+			},
 		],
 		invalidBoards: [],
 		issues,
+		branches: sampleBranches(),
+		commits: new Map(sampleBranches().map((b) => [b.oid, b as CommitSignature])),
+		config: { applied: { commit: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c" }, pending: null },
 	};
 	const repos = new Map<string, SandboxRepo>([["api", repo]]);
-	return { orgs: new Map([["acme", { id: "org-acme", repos }]]) };
+	const now = Date.now();
+	return {
+		orgs: new Map([["acme", { id: "org-acme", repos }]]),
+		me: sampleOwner(),
+		people: new Map<string, PersonInfo>([
+			[SAMPLE_PEOPLE.alice, { handle: "alice.test", status: "active" }],
+			[SAMPLE_PEOPLE.bob, { handle: "bob.test", status: "active" }],
+			[SAMPLE_PEOPLE.carol, { handle: "carol.test", status: "active" }],
+		]),
+		sessions: [
+			{
+				id: "ses-browser",
+				kind: "browser",
+				device: "Firefox on Linux",
+				created_at: now - 2 * DAY,
+				last_used_at: now,
+				expires_at: now + 28 * DAY,
+				current: true,
+			},
+			{
+				id: "ses-cli",
+				kind: "cli",
+				device: "laptop",
+				created_at: now - 5 * DAY,
+				last_used_at: now - DAY,
+				expires_at: now + 25 * DAY,
+				current: false,
+			},
+		],
+		tokens: [],
+	};
+};
+
+/** `main` signed by alice; `release/1.0` signed by bob, whom the rule does not allow. */
+const sampleBranches = (): RefSignature[] => {
+	const verified = (oid: string, did: string) => ({
+		status: "verified" as const,
+		oid,
+		detail: null,
+		did,
+		rkey: "3kabcdefghijk",
+		record_cid: "bafyreib2rxk3rybk3aobmv5cjuql3bm2twh4jo5uxgf5ofbcvxl2ylp7ri",
+		record_uri: `at://${did}/academy.rawkode.tartan.signature/3kabcdefghijk`,
+		record_rev: "3kabcdefghijl",
+		verified_at: Date.now() - 3_600_000,
+		revoked_at: null,
+		revoked_reason: null,
+		did_deactivated_at: null,
+		did_status: null,
+		record_missing: false,
+		author: { name: "Alice", email: "alice@example.com" },
+		committer: { name: "Alice", email: "alice@example.com" },
+		proof_url: null,
+		annotations: [],
+	});
+	return [
+		{
+			...verified("4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c", SAMPLE_PEOPLE.alice),
+			ref: "refs/heads/main",
+			covered: true,
+			compliant: true,
+			violations: [],
+		},
+		{
+			...verified("9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b", SAMPLE_PEOPLE.bob),
+			ref: "refs/heads/release/1.0",
+			covered: true,
+			compliant: false,
+			violations: [{
+				oid: "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b",
+				problem: "signed by a DID the rule does not list",
+				did: SAMPLE_PEOPLE.bob,
+				allowed: false,
+			}],
+		},
+	];
 };

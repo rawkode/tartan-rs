@@ -27,16 +27,13 @@ Creating an org, or a repository in an org, SHALL return the existing one when t
 - **WHEN** a client asks for `acme/nope`
 - **THEN** the API answers 404
 
-### Requirement: The forge API requires the admin token
-Every `/-/api` route SHALL require `Authorization: Bearer <admin token>` and SHALL answer 401 without it. Until identities exist, every API call acts as the principal `admin`.
-
-#### Scenario: Missing token
-- **WHEN** a request to `/-/api/orgs` has no bearer token
-- **THEN** the API answers 401
-
 ### Requirement: A forge id separates forges sharing a Rivet namespace
-The forge's singleton actors (the forge actor and its subscribers) SHALL be keyed by the forge id (`TARTAN_FORGE_ID`, default `forge`), so several forges can share one Rivet namespace.
+The forge's singleton actors (the forge actor, its subscribers and the `identity` actor) SHALL be keyed by the forge id (`TARTAN_FORGE_ID`, default `forge`), so several forges can share one Rivet namespace.
 
 #### Scenario: Two forges, one engine
 - **WHEN** two forges with different ids run against the same Rivet engine
 - **THEN** neither sees the other's orgs or subscribers
+
+#### Scenario: Separate identity state
+- **WHEN** two forges with different ids run against the same Rivet engine
+- **THEN** a session or token created on one is not accepted by the other

@@ -11,7 +11,7 @@ sidebar:
 // cue.mod/module.cue
 module: "example.com/acme-api"
 language: version: "v0.14.1"
-deps: "tartan.rawkode.academy/types@v0": v: "v0.1.0"
+deps: "tartan.rawkode.academy/types@v0": v: "v0.2.0"
 ```
 
 ```cue
@@ -22,6 +22,10 @@ import "tartan.rawkode.academy/types"
 
 let status = types.#Select & {options: ["todo", "doing", "done"], labels: todo: "To do", default: "todo"}
 ```
+
+## Versions
+
+`v0.2.0` identifies people by their [ATProto](https://atproto.com) DID: it adds `#DID` and `#Signing`, and `#Person` values are DIDs. A configuration written for `v0.1.0`, whose person values were free-form principal ids such as `usr_dev`, does not evaluate against `v0.2.0` until its person defaults are DIDs. `v0.1.0` stays published unchanged, so a repository that pins it keeps evaluating as before.
 
 ## The types
 
@@ -36,7 +40,7 @@ Every property has a `kind`, an optional `label` (the title people see, 1 to 100
 | `#Boolean` | `boolean` | | `true` or `false` |
 | `#Select` | `select` | `options`, `labels` | one of `options` |
 | `#MultiSelect` | `multiselect` | `options`, `labels` | distinct options, in any order |
-| `#Person` | `person` | | a principal id, such as `usr_dev` |
+| `#Person` | `person` | | a person's DID (`#DID`), such as `did:plc:abcdefghijklmnopqrstuvwx` |
 | `#URL` | `url` | | an `http` or `https` URL of at most 2048 characters |
 | `#Money` | `money` | `currency`, three capital letters (`GBP`) | an integer of minor units: `1250` is GBP 12.50 |
 
@@ -47,6 +51,35 @@ Every property has a `kind`, an optional `label` (the title people see, 1 to 100
 ```cue
 budget: types.#Property & {kind: "money", currency: "GBP"}
 ```
+
+## DIDs
+
+`#DID` is a person's ATProto identity, the identifier Tartan stores wherever it names a person. The forge shows people by their verified handle, but a handle can change hands, so configuration never holds one. A DID is either:
+
+- `did:plc:` followed by 24 characters from `a-z` and `2-7`, such as `did:plc:abcdefghijklmnopqrstuvwx`;
+- `did:web:` followed by a lowercase hostname, such as `did:web:rawkode.dev`. Only hostname-level did:web DIDs are valid: `did:web:example.com:alice` names a path and is refused. Only `localhost` may carry a port, written `%3A` as did:web encodes it (`did:web:localhost%3A9400`); the type accepts it so development data evaluates, but the forge refuses it unless it runs with its development identity network.
+
+```cue
+owner: types.#Person & {label: "Owner", default: "did:web:rawkode.dev"}
+```
+
+## The signing rule
+
+`#Signing` describes which refs must carry signed commits, and by whom. A repository sets it in the `signing` field of its root package `tartan`:
+
+```cue
+signing: types.#Signing & {require: [{
+	refs: ["refs/heads/main", "refs/heads/release-*"]
+	signers: ["did:plc:abcdefghijklmnopqrstuvwx"]
+}]}
+```
+
+Each rule in `require` has:
+
+- `refs`: one or more full ref names. `*` matches within one path segment, so `refs/heads/release-*` covers every `release-` branch, and a final `/**` matches any number of segments, as in `refs/tags/**`. `main` alone is not a full ref name and is refused, and so is `**` anywhere but as the whole last segment.
+- `signers`: optional, one or more DIDs allowed to sign commits on those refs. A rule without `signers` accepts a signature by any DID the forge can prove it back to, and anyone can create an ATProto account, so list `signers` whenever it matters who signed.
+
+When several rules cover one ref, a signer must be listed by every one of them that lists `signers`. [Signing commits](/signing/#signing-rules) explains how pushes are judged against the rule.
 
 ## What CUE refuses
 
@@ -60,11 +93,16 @@ types.#Money & {currency: "gbp"}                                     // not a cu
 types.#Number & {min: 0, default: -1}                                // a default out of bounds
 types.#ShortText & {maxLength: 201}                                  // over the limit
 types.#Property & {kind: "colour"}                                   // an unknown kind
+types.#Person & {default: "usr_dev"}                                 // not a DID
+types.#DID & "alice.bsky.social"                                     // a handle, not a DID
+types.#DID & "did:web:example.com%3A8443"                            // a port on a host other than localhost
+types.#Signing & {require: [{refs: ["main"]}]}                       // not a full ref name
+types.#Signing & {require: [{refs: ["refs/heads/main"], signers: []}]} // signers listed but empty
 ```
 
 ## Checking the module
 
-`cue/types/test.sh` evaluates every case in `cue/types/testdata/valid` and expects every case in `cue/types/testdata/invalid` to fail. It also checks the value vectors Issues shares (`extensions/issues/testdata/property-values.json`): each value Issues accepts must be a valid `default` in CUE and each value it refuses must not, so a default the module accepts is always a value Issues stores.
+`cue/types/test.sh` evaluates every case in `cue/types/testdata/valid` and expects every case in `cue/types/testdata/invalid` to fail. It also checks the value vectors Issues shares (`extensions/issues/testdata/property-values.json`): each value Issues accepts must be a valid `default` in CUE and each value it refuses must not, so a default the module accepts is always a value Issues stores. The vectors are checked against the version of the module Issues depends on: while Issues pins `v0.1.0`, that is the copy of `v0.1.0` kept in `cue/types/testdata/v0.1.0`, a nested module that is not published with the current one.
 
 ```sh
 CUE_BIN=cue cue/types/test.sh

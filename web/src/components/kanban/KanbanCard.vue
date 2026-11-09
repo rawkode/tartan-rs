@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * A card on a board. It can be dragged to another column, or moved from the keyboard with
- * its column picker.
+ * its column picker; a read-only card does neither.
  */
 import { computed } from "vue";
 import { RouterLink } from "vue-router";
@@ -23,6 +23,8 @@ const props = defineProps<{
 	issueLink?: { name: string; params: Record<string, string | number> };
 	pending: boolean;
 	dragging: boolean;
+	/** The viewer may not move cards. */
+	readonly?: boolean;
 }>();
 const emit = defineEmits<{
 	move: [column: string];
@@ -86,19 +88,20 @@ const styles = {
 	<article
 		:class="['group', styles.card]"
 		:data-dragging="props.dragging"
-		draggable="true"
+		:draggable="props.readonly ? 'false' : 'true'"
 		:aria-label="`#${props.card.number} ${props.card.title}`"
 		:aria-busy="props.pending"
 		@dragstart="emit('dragstart', $event)"
 		@dragend="emit('dragend')"
 	>
 		<div :class="styles.top">
-			<Icon name="grip" :size="12" :class="styles.grip" />
+			<Icon v-if="!props.readonly" name="grip" :size="12" :class="styles.grip" />
 			<span :class="styles.number">#{{ props.card.number }}</span>
 			<span v-if="props.card.state === 'closed'" :class="styles.closed"><Icon name="issue-closed" :size="12" /> closed</span>
 			<span :class="styles.spacer" />
 			<span v-if="props.showProject && props.card.project" :class="styles.project" :title="props.card.project">{{ props.card.project }}</span>
 			<select
+				v-if="!props.readonly"
 				:class="styles.move"
 				:aria-label="`Move #${props.card.number} to another column`"
 				value=""

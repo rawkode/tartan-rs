@@ -70,6 +70,19 @@ impl SqlBackend for MemorySql {
         })
     }
 
+    async fn exec_read_only(&self, query: &str, params: Vec<SqlValue>) -> Result<SqlRows> {
+        self.0
+            .lock()
+            .expect("never poisoned")
+            .pragma_update(None, "query_only", true)?;
+        let result = self.exec(query, params).await;
+        self.0
+            .lock()
+            .expect("never poisoned")
+            .pragma_update(None, "query_only", false)?;
+        result
+    }
+
     async fn exec_script(&self, script: &str) -> Result<()> {
         self.0
             .lock()

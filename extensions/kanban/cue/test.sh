@@ -8,7 +8,7 @@
 # <registry> is a registry address in CUE_REGISTRY syntax without `+insecure`,
 # such as localhost:5000; it is used over plain HTTP. With --publish the script
 # first publishes the three modules from this repository's CUE sources
-# (tartan.rawkode.academy/types v0.1.0, Issues v0.6.0, Kanban v0.3.0) with `cue mod
+# (tartan.rawkode.academy/types v0.2.0, Issues v0.7.0, Kanban v0.4.0) with `cue mod
 # publish`: use it only with a throwaway registry, since a published version
 # never changes and these modules hold no component. Without it the modules
 # must already be in the registry, as scripts/build-extension.sh publishes them.
@@ -46,9 +46,9 @@ publish_module() {
 }
 
 if [ "$publish" = "--publish" ]; then
-	publish_module "$repo/cue/types" v0.1.0
-	publish_module "$repo/extensions/issues/cue" v0.6.0 "${ISSUES_PACKAGE:-}"
-	publish_module "$repo/extensions/kanban/cue" v0.3.0 "${KANBAN_PACKAGE:-}"
+	publish_module "$repo/cue/types" v0.2.0
+	publish_module "$repo/extensions/issues/cue" v0.7.0 "${ISSUES_PACKAGE:-}"
+	publish_module "$repo/extensions/kanban/cue" v0.4.0 "${KANBAN_PACKAGE:-}"
 fi
 
 consumer="$work/repo"
@@ -57,9 +57,9 @@ cat >"$consumer/cue.mod/module.cue" <<'EOF'
 module: "example.com/acme-api"
 language: version: "v0.14.1"
 deps: {
-	"tartan.rawkode.academy/types@v0": v: "v0.1.0"
-	"tartan.rawkode.academy/issues@v0": v: "v0.6.0"
-	"tartan.rawkode.academy/kanban@v0": v: "v0.3.0"
+	"tartan.rawkode.academy/types@v0": v: "v0.2.0"
+	"tartan.rawkode.academy/issues@v0": v: "v0.7.0"
+	"tartan.rawkode.academy/kanban@v0": v: "v0.4.0"
 }
 EOF
 
@@ -72,7 +72,7 @@ extensions: "issues.tartan.rawkode.academy": issues.#Extension & {settings: prop
 	status:   types.#Select & {options: ["todo", "doing", "done"], labels: todo: "To do", default: "todo"}
 	priority: types.#Select & {options: ["p1", "p2", "p3"]}
 	tags:     types.#MultiSelect & {options: ["bug", "docs"]}
-	owner:    types.#Person
+	owner:    types.#Person & {default: "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"}
 	summary:  types.#ShortText & {maxLength: 80}
 	notes:    types.#LongText
 	budget:   types.#Money & {currency: "GBP"}
@@ -129,11 +129,11 @@ if ! exported="$(export_config 2>&1)"; then
 	exit 1
 fi
 q() { jq -c "$1" <<<"$exported"; }
-expect "issues version" "$(q '.extensions."issues.tartan.rawkode.academy".version')" '"0.6.0"'
+expect "issues version" "$(q '.extensions."issues.tartan.rawkode.academy".version')" '"0.7.0"'
 expect "issues id" "$(q '.extensions."issues.tartan.rawkode.academy".id')" '"issues.tartan.rawkode.academy"'
 expect "property name" "$(q '.extensions."issues.tartan.rawkode.academy".settings.properties.status.name')" '"status"'
 expect "kanban keys" "$(q '.extensions."kanban.tartan.rawkode.academy" | keys')" '["id","settings","version"]'
-expect "kanban version" "$(q '.extensions."kanban.tartan.rawkode.academy".version')" '"0.3.0"'
+expect "kanban version" "$(q '.extensions."kanban.tartan.rawkode.academy".version')" '"0.4.0"'
 expect "triage columns" "$(q '.extensions."kanban.tartan.rawkode.academy".settings.boards.triage.columns | [.name, .kind, .options, .labels]')" '["status","select",["todo","doing","done"],{"todo":"To do"}]'
 expect "triage lanes" "$(q '.extensions."kanban.tartan.rawkode.academy".settings.boards.triage.lanes.name')" '"priority"'
 expect "triage group" "$(q '.extensions."kanban.tartan.rawkode.academy".settings.boards.triage.group')" '"project"'

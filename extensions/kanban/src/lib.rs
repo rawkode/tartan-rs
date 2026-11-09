@@ -222,7 +222,11 @@ fn card_node(board: &Board, card: &Value, column: &str) -> ui::Node {
 
 /// The `board` slot: a section per lane, each a grid of the columns, each cell its groups.
 fn board_doc(board: &Board) -> Result<Value, Error> {
-    let view = board.view(&cards()?);
+    Ok(view_doc(board, &board.view(&cards()?)))
+}
+
+/// The `board` slot's document for a board's view.
+fn view_doc(board: &Board, view: &Value) -> Value {
     let width = u8::try_from(board.columns.len()).unwrap_or(u8::MAX);
     let titles: Vec<&str> = board.columns.iter().map(|c| c.title.as_str()).collect();
     let mut children = vec![ui::heading(&board.name, 2)];
@@ -237,7 +241,9 @@ fn board_doc(board: &Board) -> Result<Value, Error> {
                 let mut items = vec![ui::heading(title, 3)];
                 let mut empty = true;
                 for group in cell["groups"].as_array().into_iter().flatten() {
-                    if let Some(title) = group["title"].as_str().filter(|t| !t.is_empty()) {
+                    if let Some(did) = group["person"].as_str() {
+                        items.push(ui::person(did));
+                    } else if let Some(title) = group["title"].as_str().filter(|t| !t.is_empty()) {
                         items.push(ui::label(title));
                     }
                     for card in group["cards"].as_array().into_iter().flatten() {
@@ -252,9 +258,14 @@ fn board_doc(board: &Board) -> Result<Value, Error> {
             })
             .collect();
         let grid = ui::grid(cells, width);
-        match lane["title"].as_str().filter(|t| !t.is_empty()) {
-            Some(title) => children.push(ui::section(title, vec![grid])),
-            None => children.push(grid),
+        // A person lane is labelled by a person node, which the UI shows as `@handle`.
+        match (
+            lane["person"].as_str(),
+            lane["title"].as_str().filter(|t| !t.is_empty()),
+        ) {
+            (Some(did), _) => children.push(ui::stack(vec![ui::person(did), grid])),
+            (None, Some(title)) => children.push(ui::section(title, vec![grid])),
+            (None, None) => children.push(grid),
         }
     }
     let unplaced = view["unplaced"].as_array().cloned().unwrap_or_default();
@@ -272,7 +283,7 @@ fn board_doc(board: &Board) -> Result<Value, Error> {
                 .collect(),
         ));
     }
-    Ok(ui::doc(ui::stack(children)))
+    ui::doc(ui::stack(children))
 }
 
 struct Kanban;
@@ -335,3 +346,37 @@ impl Extension for Kanban {
 }
 
 export!(Kanban);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn person_lanes_and_groups_are_person_nodes() {
+        let alice = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa";
+        let assignee = json!({"kind": "person", "name": "assignee"});
+        let board = Board::from_definition(
+            "triage",
+            &json!({"name": "Triage", "columns": "state", "lanes": assignee, "group": assignee}),
+        )
+        .expect("board");
+        let card = Card {
+            repo_id: "repo".into(),
+            number: 1,
+            title: "One".into(),
+            state: "open".into(),
+            project: None,
+            properties: json!({"assignee": alice})
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            version: 1,
+        };
+        let doc = view_doc(&board, &board.view(&[card]));
+        let lane = &doc["root"]["children"][1];
+        assert_eq!(lane["t"], "stack");
+        assert_eq!(lane["children"][0], json!({"t": "person", "did": alice}));
+        let cell = &lane["children"][1]["children"][0]["children"];
+        assert_eq!(cell[1], json!({"t": "person", "did": alice}));
+    }
+}

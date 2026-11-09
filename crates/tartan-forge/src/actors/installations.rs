@@ -98,7 +98,11 @@ pub(crate) struct InstallTarget {
 /// returned: the repository actor applies the same configuration again later, and the
 /// extensions already initialised are then unchanged, so the repository converges on the
 /// configuration. Once every extension is initialised, `config.applied` is recorded in
-/// `source`'s log. Returns whether the configuration was applied.
+/// `source`'s log, in the transaction that also stores the configuration's signing rule as the
+/// rule in force (`signing_rule`; no rule deletes the row) and `sha` as the applied commit.
+/// `signing_rule.config_commit` becomes `sha` only when the rule changes. Returns whether the
+/// configuration was applied.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn reconcile<A>(
     ctx: &Ctx<A>,
     outbox: &Arc<Outbox>,
@@ -107,6 +111,7 @@ pub(crate) async fn reconcile<A>(
     sha: &str,
     wanted: BTreeMap<String, Wanted>,
     available: &BTreeSet<String>,
+    signing: Option<&tartan_config::signing::SigningRule>,
 ) -> Result<bool>
 where
     A: Actor + Handler<Flush>,
@@ -245,9 +250,33 @@ where
 
     let source = source.to_owned();
     let sha = sha.to_owned();
+    let rule = signing.map(|rule| rule.to_json());
     ctx.sql()
         .transaction(
             move |tx| async move {
+                match &rule {
+                    Some(rule) => {
+                        tx.execute(
+                            "INSERT INTO signing_rule (id, rule, config_commit) VALUES (1, ?, ?)
+                             ON CONFLICT (id) DO UPDATE SET
+                               config_commit = CASE WHEN signing_rule.rule = excluded.rule
+                                 THEN signing_rule.config_commit ELSE excluded.config_commit END,
+                               rule = excluded.rule",
+                            Some(vec![param_text(rule.as_str()), param_text(sha.as_str())]),
+                        )
+                        .await?;
+                    }
+                    None => {
+                        tx.execute("DELETE FROM signing_rule WHERE id = 1", None)
+                            .await?;
+                    }
+                }
+                tx.execute(
+                    "INSERT INTO config_applied (id, sha) VALUES (1, ?)
+                     ON CONFLICT (id) DO UPDATE SET sha = excluded.sha",
+                    Some(vec![param_text(sha.as_str())]),
+                )
+                .await?;
                 let mut summary = Vec::new();
                 for (change, extension_id, installation_id, version) in changes {
                     let data = json!({

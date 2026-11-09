@@ -20,16 +20,66 @@ modules: [
 	"tartan.rawkode.academy/issues@v0.6.0",
 	"tartan.rawkode.academy/kanban@v0.3.0",
 ]
+owners: ["did:plc:abcdefghijklmnopqrstuvwx"]
+readers: "owners"
 ```
 
 | Field | Meaning |
 | --- | --- |
 | `modules` | each module version the forge makes available, fully qualified as `path@vX.Y.Z` |
 | `sources` | module path prefixes and the OCI registry each is copied from, written as `CUE_REGISTRY` writes one: `host[:port][/repository-prefix]`, with `+insecure` for plain HTTP |
+| `owners` | the DIDs of the forge's administrators: at least one, each listed once |
+| `readers` | who else may read: `"owners"` (the default when left out), `"signed_in"` or a list of DIDs |
+
+### Owners and readers
+
+People are identified by their [ATProto](https://atproto.com) DID, never by a handle, because a handle can change hands. `owners` and a `readers` list accept `did:plc` DIDs (`did:plc:` and 24 characters from `a-z` and `2-7`) and hostname-level `did:web` DIDs (`did:web:rawkode.dev`); a `did:web` with a path, such as `did:web:example.com:alice`, is refused. Find a person's DID from their handle with `tt identity resolve <handle>`, or any ATProto tool.
+
+`readers` decides who other than the owners may read:
+
+| Value | Who may read |
+| --- | --- |
+| `"owners"` (the default) | only the owners: the forge stays private, and other people who sign in are told so |
+| `"signed_in"` | anyone who signs in with an ATProto account, which anyone can create: they may read every org, repository and issue |
+| a list of DIDs | the owners and the DIDs listed |
+
+Until org and repository membership exist, only owners may make changes; readers who are not owners may only read. Both settings change only when the forge restarts with a new configuration.
 
 A module comes from the source whose prefix matches the most whole elements of its path, and its repository there is the source's prefix followed by the module path. A registry on `localhost` or `127.0.0.1` is reached over plain HTTP unless it says `+secure`.
 
-The file is evaluated as `cue export` evaluates it, without a registry, and may import only CUE's standard library. It is the operator's file, so unlike a repository's configuration it needs no `cue.mod/module.cue`: the forge evaluates a file or directory without one in an empty module of its own, which changes nothing it exports. Values must be concrete. The forge does not start when it does not evaluate, has a field other than `modules` and `sources`, lists a module without a full version (`@v0` is not one) or lists a module no source serves; the log names the problem. Without `TARTAN_CONFIG` the forge starts with no modules.
+The file is evaluated as `cue export` evaluates it, without a registry, and may import only CUE's standard library. It is the operator's file, so unlike a repository's configuration it needs no `cue.mod/module.cue`: the forge evaluates a file or directory without one in an empty module of its own, which changes nothing it exports. Values must be concrete. The forge does not start when it does not evaluate, has a field other than `modules`, `sources`, `owners` and `readers`, lists a module without a full version (`@v0` is not one) or lists a module no source serves, lists no owner, lists a DID twice or lists anything that is not a DID (a handle such as `alice.bsky.social` is not one), or sets `readers` to anything else; the log names the problem and the entry. Without `TARTAN_CONFIG` the forge starts with no modules.
+
+## Identity and sign-in
+
+People sign in with their ATProto account; there is no admin token (`TARTAN_ADMIN_TOKEN` is gone, and a forge started with it set refuses to start, naming it). A forge needs these besides `TARTAN_CONFIG`:
+
+| Variable | Meaning |
+| --- | --- |
+| `TARTAN_PUBLIC_URL` | the browser-facing origin, `https` with no port or path. In production it serves the web interface and proxies `/-/` and `/v2/` to the gateway from that one origin; it is not the gateway's own address. Authorization servers fetch the forge's client metadata from it, so it must be reachable over public HTTPS by the authorization server of everyone who signs in or signs with `tt` |
+| `TARTAN_OAUTH_KEYS_FILE` | the forge's private ES256 JWKS (mode 0600 or narrower), made with `tt admin oauth keygen > keys.json`; the first key signs |
+| `TARTAN_TRUSTED_PROXIES` | comma-separated CIDRs of your reverse proxies, whose `X-Forwarded-For` gives the client's address for rate limits; list exactly the proxy's addresses (empty by default) |
+| `TARTAN_JETSTREAM_URL` | the Jetstream the forge follows to learn of deleted signature records and account changes; default `wss://jetstream2.us-east.bsky.network/subscribe`, empty to disable |
+| `TARTAN_STATE_DIR` | where the Git object cache lives (default `$XDG_STATE_HOME/tartan`, else `~/.local/state/tartan`); disposable |
+
+**Owners** are the DIDs in the configuration's `owners`; find yours from your handle with `tt identity resolve <handle>`. **Readers** default to `"owners"`, which keeps the forge private: other people who sign in see a private-forge page. A list of DIDs admits those people to read, and `"signed_in"` lets any ATProto account, which anyone can create, read every org, repository, issue and proof bundle. The forge logs the mode in force when it starts, for example `readers: owners (only owners can read; other people who sign in see a private-forge page)`.
+
+**The public URL is load-bearing for signing.** `tt`'s signing sessions use the forge's client metadata (`<TARTAN_PUBLIC_URL>/-/auth/tt/client-metadata.json`), and authorization servers fetch it again at each token refresh, caching it for only about 10 minutes. While the forge is down for longer, `tt` queues signatures and publishes them once it is back. A decommissioned forge, or a changed `TARTAN_PUBLIC_URL`, ends every signing session made through it: people run `tt sign --login --forge <new URL>`. A private forge that authorization servers cannot reach cannot offer ATProto sign-in at all; it is administered with operator tokens (below).
+
+**Operator tokens.** `tt admin token create --did <owner DID> --name <name> --scopes read,write,admin --expires-in-days <n>` creates an owner's access token without a browser, for scripts and seeding. It reaches the identity actor through Rivet with `RIVET_ENDPOINT`, `RIVET_TOKEN`, `RIVET_NAMESPACE` and `TARTAN_FORGE_ID`. The Rivet engine endpoint and `RIVET_TOKEN` are therefore admin credentials: anyone holding them can mint an owner's token, so keep them as private as the OAuth key file.
+
+**Jetstream and privacy.** To follow the signature records it relies on, the forge asks Jetstream for the DIDs it watches, so the Jetstream operator learns which DIDs use this forge. The default, `jetstream2.us-east.bsky.network`, is a third party. To keep that private, run your own Jetstream, or set `TARTAN_JETSTREAM_URL` empty: the identity actor's scheduled sweep still re-checks people's account status every 6 hours, but the forge then learns that a signature record was deleted only through `tt sign revoke` (which calls the forge's refresh route) or a later proof of that record, not as it happens.
+
+**Log lines to watch.**
+
+- `Jetstream: disconnected; reconnecting` and `Jetstream: connection failed; retrying`: the forge is not hearing about deleted records and account changes until it reconnects. `Jetstream is disabled (TARTAN_JETSTREAM_URL is empty)` is logged once at start when it is off.
+- `signature check failed; retrying later`, with the repository, ref, `attempts` and `reason`: signature checks are piling up, usually because a signer's PDS or the Git host cannot be reached. `a signature check attempt failed` names an error on the forge's own side (the object store, for example). `ref update judged` ends each check.
+- `could not schedule queued signature checks`: the repository's check schedule could not be registered; the next push or restart registers it.
+
+### Upgrading a forge that used the admin token
+
+1. Deploy the new binary with `owners` in the configuration, `TARTAN_PUBLIC_URL`, and `TARTAN_OAUTH_KEYS_FILE` from `tt admin oauth keygen`, and remove `TARTAN_ADMIN_TOKEN`. The forge refuses to start until all of this is done, so a half-migrated forge never starts. Leaving `readers` out keeps the forge as private as the admin token kept it; check the startup log for the mode in force.
+2. Replace scripts' admin token with an operator token from `tt admin token create`.
+3. List `tartan.rawkode.academy/types@v0.2.0` and the matching Issues and Kanban versions in `modules`, and bump repositories' dependencies when they want people stored as DIDs; repositories on `v0.1.0` keep working.
 
 ## The forge's registry
 

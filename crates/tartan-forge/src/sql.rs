@@ -44,10 +44,20 @@ pub(crate) fn param_integer(value: i64) -> BindParam {
     BindParam::Integer(value)
 }
 
-/// Milliseconds since the Unix epoch.
+/// A blob parameter.
+pub(crate) fn param_blob(value: impl Into<Vec<u8>>) -> BindParam {
+    BindParam::Blob(value.into())
+}
+
+/// Column `index` of `row` as an integer, or `None` for NULL.
+pub(crate) fn optional_integer(row: &[ColumnValue], index: usize) -> Result<Option<i64>> {
+    match row.get(index) {
+        Some(ColumnValue::Null) => Ok(None),
+        _ => integer(row, index).map(Some),
+    }
+}
+
+/// Milliseconds since the Unix epoch, from the installed clock ([`crate::clock`]).
 pub(crate) fn now_ms() -> i64 {
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
+    crate::clock::now_ms()
 }

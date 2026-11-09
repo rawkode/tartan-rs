@@ -39,6 +39,13 @@ use crate::GatewayState;
 
 /// The media type of a manifest that does not name its own.
 const OCI_MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
+/// The manifest media types the registry answers with.
+const MANIFEST_TYPES: [&str; 4] = [
+    OCI_MANIFEST,
+    "application/vnd.oci.image.index.v1+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+];
 /// The header that carries a manifest's or a blob's digest.
 const DIGEST_HEADER: &str = "docker-content-digest";
 
@@ -95,6 +102,12 @@ impl RegistryStore {
             listed: Arc::default(),
             index: Arc::default(),
         }
+    }
+
+    /// The object store the registry keeps its prefix in, which also holds the forge's proof
+    /// bundles under `proofs/`.
+    pub(crate) fn objects(&self) -> Arc<dyn ObjectStore> {
+        self.store.clone()
     }
 
     /// Serves `modules` (`(path, version)` pairs) and no others.
@@ -488,10 +501,13 @@ async fn manifest(
             format!("{reference:?} is neither a tag nor a digest"),
         ));
     };
-    // A manifest names its own media type; the response says the same.
+    // A manifest names its own media type, and the response says the same when it is an OCI or
+    // Docker manifest type. The registry is served from the forge's browser origin, so any
+    // other type (an upstream answering `text/html`, say) is served as an OCI manifest.
     let media_type = serde_json::from_slice::<serde_json::Value>(&bytes)
         .ok()
         .and_then(|value| value["mediaType"].as_str().map(str::to_owned))
+        .filter(|media_type| MANIFEST_TYPES.contains(&media_type.as_str()))
         .unwrap_or_else(|| OCI_MANIFEST.to_owned());
     let mut headers = HeaderMap::new();
     insert(&mut headers, header::CONTENT_TYPE.as_str(), &media_type);
@@ -639,6 +655,36 @@ mod tests {
         );
         assert_eq!(route("a/manifests"), None);
         assert_eq!(route("a/other/v1"), None);
+    }
+
+    #[tokio::test]
+    async fn manifests_are_served_only_as_manifest_types() {
+        let registry = RegistryStore::new(Arc::new(InMemory::new()));
+        for (tag, media_type, served) in [
+            ("v0.1.0", "text/html", OCI_MANIFEST),
+            (
+                "v0.2.0",
+                "application/vnd.docker.distribution.manifest.v2+json",
+                "application/vnd.docker.distribution.manifest.v2+json",
+            ),
+            ("v0.3.0", OCI_MANIFEST, OCI_MANIFEST),
+        ] {
+            let body = serde_json::to_vec(&json!({"schemaVersion": 2, "mediaType": media_type}))
+                .expect("encode");
+            registry
+                .put_manifest("example.com/a", tag, Bytes::from(body))
+                .await
+                .expect("put");
+            registry.list([("example.com/a", tag)]);
+            let response = manifest(&registry, "example.com/a", tag, false)
+                .await
+                .unwrap_or_else(|_| panic!("{tag} is served"));
+            assert_eq!(
+                response.headers()[header::CONTENT_TYPE],
+                served,
+                "{media_type}"
+            );
+        }
     }
 
     #[tokio::test]

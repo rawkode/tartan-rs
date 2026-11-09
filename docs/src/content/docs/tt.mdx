@@ -1,0 +1,172 @@
+---
+title: The tt command-line tool
+description: Installing tt, signing in to a forge from a terminal, access tokens, signing Git objects, the operator commands and troubleshooting.
+sidebar:
+  order: 6.7
+---
+
+`tt` is Tartan's only command-line tool. It signs you in to a forge from a terminal, manages your access tokens, resolves ATProto identities, signs and verifies Git commits and tags as Git's signing program, and holds the few operator commands that work without anyone signed in. The forge server itself (`tartan`) takes no commands: `tartan token create` exits naming `tt admin token create`.
+
+## Installing
+
+`tt` is a single binary built from the `crates/tt` crate:
+
+```sh
+cargo install --path crates/tt
+```
+
+Put it on your `PATH`. Git runs it by name when `gpg.x509.program` is `tt`, so a package upgrade or a profile switch keeps working; `tt sign --setup` writes the absolute path instead when the `tt` on your `PATH` is not the one you ran.
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `tt login [--forge <url>] [--set-default] [--no-open] [--port <n>] [--client localhost] [--no-signing]` | Sign in to a forge from this terminal, then (first run) set up signing for the same account. |
+| `tt login --with-token [--forge <url>] [--set-default]` | Act with an access token read from standard input, for CI and remote machines. |
+| `tt logout [--forge <url>] [--did <DID>]` | End the forge session (when a forge is configured or named), revoke every stored signing session at its authorization server (only that DID's with `--did`), and delete local credentials, even when the forge is down. No forge is needed to end signing sessions. |
+| `tt status [--json]` | The forge you are signed in to (handle, DID, rights), each signing session with its client and when it ends, queued signature records and paused windows, records reported by a drain, and the last signing failure. |
+| `tt token create --name <n> --scopes <list> [--repos <list>] --expires-in-days <d>` | Create an access token (see [Access tokens](/tokens/)); the secret is printed once. |
+| `tt token list`, `tt token revoke <id>` | List or revoke your access tokens. |
+| `tt identity resolve <handle-or-DID>` | Print the DID, the verified handle and the PDS, verified as the forge verifies them. Needs no forge. |
+| `tt sign --login [--handle <h>] [--forge <url>] [--client localhost \| --client-metadata-url <https URL>] [--no-open] [--port <n>] [--set-default]` | Sign in to your PDS for signing. |
+| `tt sign --setup [--global] [--did <DID>] [--program <path>] [--no-tags] [--verify-only] [--hook] [--hooks-path-ok]` | Configure Git to sign and verify with `tt`. |
+| `tt sign --setup --undo [--global]` | Remove what `--setup` wrote and restore your own `pre-push` hook. |
+| `tt sign --flush [--hook]` | Publish queued signature records. |
+| `tt sign revoke <commit-or-at-uri>` | Delete a signature record and withdraw it on the forge. |
+| `tt sign recheck <commit> --repo <org>/<repo>` | Ask the forge to re-check your commit's `unverifiable` signature after publishing its record late. |
+| `tt admin token create\|list\|revoke --did <owner>` | Operator tokens for an owner, through the Rivet engine. |
+| `tt admin oauth keygen` | Print a fresh ES256 private JWKS for `TARTAN_OAUTH_KEYS_FILE`. |
+
+Every error names the command that fixes it, such as "run `tt login`".
+
+## Signing in: the first run
+
+`tt login --forge https://forge.example` does two things the first time:
+
+1. **The forge sign-in.** `tt` listens on a loopback port and opens the forge's approval page in your browser. If you are not signed in to the forge there, it sends you to sign in first and brings you back. The page asks "Allow tt on *your machine* to act as @you?". Approve, and the forge hands `tt` a CLI session through the loopback port. `tt` shows who it is signed in as.
+2. **The signing consent.** Unless you pass `--no-signing`, or a signing session for that DID already exists, `tt` then runs `tt sign --login` for the same DID: your authorization server (your PDS, or its entryway) asks you to let `tt` create `academy.rawkode.tartan.signature` records in your repository. The consent screen names the forge whose `tt` client is asking, such as `tt (forge.example)`. The second step reuses `--port`, `--no-open` and `--client`.
+
+If you cancel the consent, or your server refuses it, the forge session is kept and `tt` exits non-zero with "signing is not set up: run `tt sign --login`" and the cause. Run `tt sign --login` when you are ready.
+
+`tt login --with-token` never starts a signing login.
+
+### Defaults
+
+`tt` keeps one default forge and one default signing DID in `$XDG_CONFIG_HOME/tt/config.toml`. They change only when you ask:
+
+- `tt login` makes its forge the default only when none is set, or with `--set-default`. Otherwise it keeps the default and says how to change it.
+- `tt sign --login` (and the first-run signing login) makes its DID the default signing DID only when none is set, or with `--set-default`. It never changes the default forge: its `--forge` only chooses whose client metadata the session uses.
+- Nothing else writes either default; `tt sign --setup` never does.
+
+`--forge` and `TT_FORGE` override the default forge for one command. `tt login` with no forge at all fails before contacting anything, naming `--forge`.
+
+`config.toml` also holds `sign.offline` (`"queue"` by default, or `"fail"`; see [Offline signing](#offline-signing-and-the-queue)). It never holds a secret.
+
+## Signing Git objects
+
+After `tt login`, the usual choice on a personal machine is:
+
+```sh
+tt sign --setup --global
+```
+
+It writes `gpg.format=x509`, `gpg.x509.program=tt`, `user.signingKey=<your DID>`, `commit.gpgSign=true` and `tag.gpgSign=true`, and adds your DID to `tt.trustedSigner`. Then, in each repository where you work offline and push:
+
+```sh
+tt sign --setup --hook
+```
+
+which installs a `pre-push` hook that publishes queued records first (or run `tt sign --flush` before pushing). [Signing commits](/signing/) explains how signatures work, what a record reveals, verification and trust in full.
+
+`tt sign --setup` writes as `user.signingKey` the DID given with `--did`, else the default signing DID, else the DID of your only signing session. With several sessions and no default it refuses and names `--did`; with none it runs `tt sign --login` first. `tt sign --setup --undo` removes what it wrote, leaving any value you changed since, and puts your own `pre-push` hook back.
+
+A signing session lasts about **two weeks**: ATProto asks authorization servers to limit a public client's session to that. `tt status`, `tt sign --flush` and the `pre-push` hook warn when fewer than two days remain; run `tt sign --login` again then.
+
+`tt` asks for exactly `atproto repo:academy.rawkode.tartan.signature?action=create`. A PDS or authorization server that does not support granular `repo:` scopes cannot be used with `tt`: `tt sign --login` fails, explaining that your server refused the scope (`invalid_scope`). `tt` never asks for `transition:generic` instead, which would let it write anything in your repository.
+
+## Offline signing and the queue
+
+A signature needs a PDS write. When your PDS cannot be reached, times out, answers 5xx or rate-limits you, `tt` queues the record and still returns the signature, so commits work on a train. The queue is published by the next online signing, `tt sign --flush`, or the `pre-push` hook. `tt status` counts what waits. With `sign.offline = "fail"`, signing fails instead.
+
+After a connection failure `tt` pauses contacting your PDS for two minutes, and after a rate limit until the PDS's reset time; meanwhile signing queues at once, so a large rebase is never slowed down. `tt sign --flush` exits 1 with the count, the reason and when to retry while records remain; `tt sign --flush --hook` reports the same but never blocks a push.
+
+## Troubleshooting
+
+Git hides what its signing program says unless signing fails, and before Git 2.40 even then. `tt status` names the last signing failure:
+
+| `tt status` says | Cause | Fix |
+| --- | --- | --- |
+| "the PDS … could not be reached" or "did not answer" | No network, or your PDS is down. Records are queued. | Nothing; they publish later. To publish now: `tt sign --flush`. |
+| "the PDS's rate limit" | Too many records in an hour (for example a huge rebase). Records are queued until the reset. | Wait for the time shown, then `tt sign --flush`. |
+| "the client metadata at …/-/auth/tt/client-metadata.json could not be loaded by your authorization server; is the forge down?" | Your authorization server loads `tt`'s client metadata from the forge on every token refresh. Records are queued. | Wait for the forge to be back, then `tt sign --flush`. `tt sign --login` cannot help, because it needs the same document. |
+| "invalid_grant", "can no longer be used" | The signing session ended (two weeks), was revoked at your PDS, or was refreshed by a copy on another machine. Signing sessions cannot be shared between machines. | `tt sign --login` |
+| "does not support the granular repo: scopes" (`invalid_scope`) | Your server does not offer the narrow permission `tt` needs. | Use an account whose server supports granular scopes. |
+| "has moved to another PDS" | Your account migrated; the session belongs to the old server. | `tt sign --login` |
+| "no signing session" | You have not signed in for signing on this machine. | `tt sign --login` |
+| "tt is Git's x509 program; set gpg.format=x509" | `tt` was configured as `gpg.program` (OpenPGP) instead of `gpg.x509.program`. | `tt sign --setup` |
+
+## Remote shells and port forwarding
+
+Both sign-ins end with a redirect to `http://127.0.0.1:<port>` on the machine running the browser. On a server, pass `--no-open --port <n>`, open the printed URL on your laptop and forward the port:
+
+```sh
+ssh -L 8765:127.0.0.1:8765 server
+tt login --no-open --port 8765
+```
+
+The signing consent that follows reuses port 8765 and prints its own URL. `tt sign --login` takes the same flags.
+
+## Forges not on public HTTPS
+
+Your authorization server loads `tt`'s client metadata from the forge (`<forge>/-/auth/tt/client-metadata.json`), so it must be reachable over public `https`. For a forge that is not (behind a VPN, or on your own machine), `tt sign --login --client localhost` uses ATProto's `http://localhost` development client instead. Authorization servers may refuse it: the reference implementation (bsky.social) accepts it, and some self-hosted servers refuse it with `invalid_client`. When an authorization server refuses the forge's loopback redirects (`invalid_redirect_uri` or `invalid_client_metadata`), `tt` suggests `--client localhost`.
+
+A forge on `http://127.0.0.1` (a forge on your own machine) is accepted for the forge commands (`tt login`, `tt token`, `tt status`); signing through it needs `--client localhost`, or, for authorization servers that refuse that client, `--client-metadata-url <https URL>` (also `TT_CLIENT_METADATA_URL`): a development option of `tt` builds made with `--features dev-identity`, naming a client metadata document you host. When `tt` cannot load the document there, it prints the exact JSON to publish (a public native client with both loopback redirects and `tt`'s declared scope). `tt sign revoke` and `tt login` accept the same options.
+
+## Credentials
+
+`tt` keeps three kinds of secret: the forge credential (`tartan_cli_` from `tt login`, or `tartan_pat_` from `--with-token`) per forge, and per signing DID the OAuth session (refresh and access tokens and the DPoP private key). They go to your operating system's credential store (macOS Keychain, Windows Credential Manager, or the Secret Service over D-Bus), service `tt`.
+
+When no credential store is reachable (a headless Linux machine, a container), or with `TT_CREDENTIAL_STORE=file`, they go to `$XDG_STATE_HOME/tt/credentials/` with mode 0600 in a 0700 directory, and `tt` says so. `tt` refuses a credential file or directory that group or others can read, naming it, as ssh does.
+
+Secrets never go to Git configuration, `config.toml`, logs or error messages; `tt status` shows expiries, never secrets. The signing queue holds records, not secrets, but is also mode 0600.
+
+## CI and automation
+
+For the forge API in CI, create a token with `tt token create` and pipe it in:
+
+```sh
+echo "$TARTAN_TOKEN" | tt login --with-token --forge https://forge.example
+```
+
+Access tokens are for the forge's API only and cannot sign. Signing by agents and automation:
+
+- An agent on your own machine, as your operating-system user, may use your `tt` signing session.
+- An agent anywhere else (a server, a shared runner) signs as its own ATProto account, a bot DID, which a repository lists in its signing rule if it should be allowed. Sign it in once, on a persistent host, with `TT_CREDENTIAL_STORE=file` and a persistent `XDG_STATE_HOME`: `tt sign --login --handle <bot> --no-open --port <p>`, approving in a browser through a forwarded port. Re-authorize about every two weeks.
+- Ephemeral CI runners without a persistent credential store cannot sign, and a signing session must never be copied between machines: refresh tokens are single-use, so the first copy to refresh breaks every other copy.
+
+## Revoking and re-checking
+
+`tt sign revoke <commit or at:// URI>` deletes the record at your PDS after a one-off authorization for `repo:academy.rawkode.tartan.signature?action=delete`, revokes that authorization again, and, when you are signed in to the forge with `tt login` as the record's DID, withdraws the signature there. Signed in only with an access token, the forge re-proves the record instead and `tt` says withdrawing needs `tt login`. A record still in your local queue is just removed from the queue. If a signing credential may be compromised, follow the procedure `tt sign revoke --help` prints, described in [Signing commits](/signing/).
+
+`tt sign recheck <commit> --repo <org>/<repo>` publishes the commit's record if it is still queued and asks the forge to re-check a result it gave up on as `unverifiable` after seven days.
+
+## Operator commands
+
+`tt admin` reads no deployment configuration. It reaches the forge's identity actor through the Rivet engine with `RIVET_ENDPOINT` (default `http://127.0.0.1:6420`), `RIVET_TOKEN`, `RIVET_NAMESPACE` and `RIVET_POOL`, keyed by `TARTAN_FORGE_ID` (default `forge`, as for the server). The running forge checks owners: `tt admin token create --did <DID>` for a DID that is not one of its `owners` fails, naming the DID, and creates nothing.
+
+```sh
+tt admin token create --did did:plc:… --name seed --scopes read,write,admin --expires-in-days 1
+tt admin oauth keygen > oauth-keys.json && chmod 600 oauth-keys.json
+```
+
+## Environment variables
+
+| Variable | Meaning |
+| --- | --- |
+| `TT_FORGE` | The forge URL, overriding `config.toml` |
+| `TT_CREDENTIAL_STORE` | `keyring` (default) or `file` |
+| `TT_NO_CACHE` | `1` skips the 24-hour local verification cache |
+| `TT_VERIFY_OFFLINE` | `1` verifies from the cache only, for reviewing untrusted clones without contacting their hosts |
+| `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, `HOME` | Where `config.toml`, credentials and the queue, and the verification cache live |
+| `RIVET_ENDPOINT`, `RIVET_TOKEN`, `RIVET_NAMESPACE`, `RIVET_POOL`, `TARTAN_FORGE_ID` | `tt admin` only |
+| `TARTAN_DEV_IDENTITY`, `TARTAN_PLC_URL`, `TARTAN_DEV_HANDLE_RESOLVER` | Development builds of `tt` only; a release `tt` refuses to run with `TARTAN_DEV_IDENTITY` set. Do not export it from a shell profile or `.envrc`: the refusal also stops `git commit` and `git log --show-signature` in that shell. |

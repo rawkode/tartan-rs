@@ -4,7 +4,7 @@
 //! repositories; there is no publish or install route.
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::routing::{get, post};
 use serde_json::Value;
 use tartan_forge::{
@@ -13,10 +13,8 @@ use tartan_forge::{
 };
 
 use crate::ApiError;
+use crate::access::{Principal, RequestPrincipal};
 use crate::gateway::{GatewayState, resolve_repo};
-
-/// The principal every API call acts as, until the gateway has identities.
-const VIEWER: &str = "admin";
 
 /// The extension routes, relative to `/-/api`.
 pub(crate) fn routes() -> axum::Router<GatewayState> {
@@ -51,11 +49,13 @@ async fn list_on_repo(
 
 async fn call_on_repo(
     State(state): State<GatewayState>,
+    Extension(caller): Extension<RequestPrincipal>,
     Path((org, repo, extension, call, name)): Path<(String, String, String, String, String)>,
     Json(input): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
+    let principal = caller.0.ok_or(ApiError::Unauthorized)?;
     let repo = resolve_repo(&state.client, &org, &repo).await?;
-    call_extension(&state, &repo, &extension, &call, name, input).await
+    call_extension(&state, &repo, &extension, &call, name, input, &principal).await
 }
 
 /// Calls an installation: `call` is `tools`, `render` or `actions`, and `name` the tool, slot
@@ -67,7 +67,12 @@ async fn call_extension(
     call: &str,
     name: String,
     input: Value,
+    principal: &Principal,
 ) -> Result<Json<Value>, ApiError> {
+    // Someone who may read but not write may call only the tools a manifest declares
+    // `access: "read"`, run read-only (design D4, *Rights*).
+    let read_only = !principal.rights.write;
+    let viewer = principal.caller();
     let installation = repo_handle(&state.client, &repo.id, repo.pool.clone())?
         .send(InstallationQuery {
             extension_id: extension.to_owned(),
@@ -84,7 +89,6 @@ async fn call_extension(
         &installation.installation_id,
         repo.pool.clone(),
     )?;
-    let viewer = VIEWER.to_owned();
     let reply = match call {
         "tools" => {
             handle
@@ -92,6 +96,7 @@ async fn call_extension(
                     tool: name,
                     args: input,
                     viewer,
+                    read_only,
                 })
                 .await?
         }

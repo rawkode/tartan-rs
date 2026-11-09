@@ -6,11 +6,28 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# Development identity switches (a local PLC directory and handle resolver, plain HTTP,
+# private addresses); they act only with TARTAN_DEV_IDENTITY=1 (design D12).
+dev-identity = ["tartan-atproto/dev-identity", "tartan-forge/dev-identity"]
+
 [dependencies]
 anyhow.workspace = true
 thiserror.workspace = true
 axum.workspace = true
+base64.workspace = true
+# Jetstream's WebSocket stream is split into a sink and a stream (design D10).
+futures-util = "=0.3.34"
+getrandom.workspace = true
 hex.workspace = true
+http = "=1.5.0"
+ipnet.workspace = true
+jacquard-common.workspace = true
+jacquard-identity.workspace = true
+jacquard-oauth.workspace = true
+jose-jwk.workspace = true
+p256.workspace = true
+reqwest.workspace = true
 object_store.workspace = true
 oci-client.workspace = true
 oci-spec.workspace = true
@@ -19,19 +36,26 @@ rivetkit.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tartan-atproto.workspace = true
 tartan-config.workspace = true
 tartan-extensions.workspace = true
 tartan-forge.workspace = true
+tartan-identity-api = { workspace = true, features = ["rivetkit"] }
 tokio.workspace = true
 tokio-util.workspace = true
+tokio-tungstenite.workspace = true
+tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zip.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+# The identity tests serve did:web documents from loopback hosts, which only the development
+# identity rules accept.
+tartan-atproto = { workspace = true, features = ["dev-identity"] }
 hmac.workspace = true
-reqwest.workspace = true
+tartan-devnet = { path = "../tartan-devnet" }
 tempfile = "3"
 
 [lints]

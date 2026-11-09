@@ -29,7 +29,13 @@ export type IconName =
 	| "terminal"
 	| "move"
 	| "inbox"
-	| "sandbox";
+	| "sandbox"
+	| "user"
+	| "key"
+	| "lock"
+	| "logout"
+	| "signature"
+	| "download";
 
 const props = defineProps<{ name: IconName; size?: number; label?: string }>();
 
@@ -81,6 +87,12 @@ const paths: Record<IconName, string[]> = {
 	move: ["M5 12h14", "M15 8l4 4-4 4"],
 	inbox: ["M3 13l3-8h12l3 8v6H3z", "M3 13h5l1.5 2.5h5L16 13h5"],
 	sandbox: ["M4 20h16", "M6 20l2-8h8l2 8", "M12 12V4", "M12 4l5 3-5 2"],
+	user: ["M12 4a4 4 0 1 0 0 8 4 4 0 0 0 0-8z", "M4 20a8 8 0 0 1 16 0"],
+	key: ["M8 11a4 4 0 1 0 0 8 4 4 0 0 0 0-8z", "M11 13l9-9", "M17 7l3 3"],
+	lock: ["M5 11h14v10H5z", "M8 11V7a4 4 0 0 1 8 0v4"],
+	logout: ["M15 4h4v16h-4", "M10 8l-4 4 4 4", "M6 12h10"],
+	signature: ["M4 17c3-6 5-9 6-7s-2 7 0 7 3-5 5-5 1 4 3 4 2-1 2-1", "M4 21h16"],
+	download: ["M12 4v11", "M7 10l5 5 5-5", "M5 20h14"],
 };
 
 const filled = (name: IconName) => name === "grip";

@@ -1,38 +1,27 @@
 <script setup lang="ts">
-/** This browser's settings: tokens, the gateway address for `cue`, theme, refresh and sandbox. */
+/**
+ * Settings: the person's access tokens, how to sign with `tt`, their sessions, and this
+ * browser's own preferences (the `cue` address, the Git host token, theme, refresh and
+ * sandbox). The forge knows the browser by its session cookie; no forge credential is kept
+ * here.
+ */
 import { computed, ref } from "vue";
 import { css } from "styled-system/css";
 import { badge, button, card, field } from "styled-system/recipes";
+import SessionSettings from "../components/settings/SessionSettings.vue";
+import SigningSettings from "../components/settings/SigningSettings.vue";
+import TokenSettings from "../components/settings/TokenSettings.vue";
 import Icon from "../components/ui/Icon.vue";
 import PageHeader from "../components/ui/PageHeader.vue";
-import ProblemAlert from "../components/ui/ProblemAlert.vue";
-import { client } from "../lib/client.ts";
 import {
 	cueRegistry,
 	DEV_GIT_TOKEN,
-	DEV_TOKEN,
 	gatewayOrigin,
 	settings,
 	type ThemePreference,
 } from "../lib/settings.ts";
 
-const showToken = ref(false);
 const showGitToken = ref(false);
-const testing = ref(false);
-const result = ref<{ ok: true; orgs: number } | { ok: false; error: unknown } | null>(null);
-
-const test = async () => {
-	testing.value = true;
-	result.value = null;
-	try {
-		const orgs = await client.listOrgs();
-		result.value = { ok: true, orgs: orgs.length };
-	} catch (error) {
-		result.value = { ok: false, error };
-	} finally {
-		testing.value = false;
-	}
-};
 
 const origin = computed(() => gatewayOrigin());
 const registry = computed(() => cueRegistry(origin.value));
@@ -72,48 +61,14 @@ const styles = {
 </script>
 
 <template>
-	<PageHeader title="Settings" description="Kept in this browser only." />
+	<PageHeader title="Settings" description="Your tokens, signing and sessions, and this browser's preferences." />
 	<div :class="styles.stack">
+		<TokenSettings />
+		<SigningSettings />
+		<SessionSettings />
 		<section :class="cardStyles.root" aria-labelledby="gw-title">
-			<div :class="cardStyles.header"><h2 id="gw-title" :class="cardStyles.title">Gateway</h2></div>
+			<div :class="cardStyles.header"><h2 id="gw-title" :class="cardStyles.title">This browser</h2></div>
 			<div :class="[cardStyles.body, styles.body]">
-				<div :class="styles.row">
-					<label for="token" :class="styles.label">Admin token</label>
-					<div :class="styles.inline">
-						<input
-							id="token"
-							v-model.trim="settings.token"
-							:type="showToken ? 'text' : 'password'"
-							:class="field({ mono: true })"
-							autocomplete="off"
-							spellcheck="false"
-							aria-describedby="token-help"
-						/>
-						<button
-							type="button"
-							:class="button({ variant: 'ghost', size: 'md' })"
-							:aria-label="showToken ? 'Hide the token' : 'Show the token'"
-							:aria-pressed="showToken"
-							@click="showToken = !showToken"
-						>
-							<Icon :name="showToken ? 'eye-off' : 'eye'" />
-						</button>
-					</div>
-					<p id="token-help" :class="styles.help">
-						Sent as <code>Authorization: Bearer …</code> on every API request. <code>scripts/dev.sh</code> uses
-						<code>{{ DEV_TOKEN }}</code>.
-						<button v-if="settings.token !== DEV_TOKEN" type="button" :class="button({ size: 'xs', variant: 'ghost' })" @click="settings.token = DEV_TOKEN">Use it</button>
-					</p>
-				</div>
-				<div :class="styles.inline">
-					<button type="button" :class="button({ variant: 'solid', size: 'sm' })" :disabled="testing" @click="test">
-						<Icon name="refresh" :size="14" /> {{ testing ? "Testing…" : "Test connection" }}
-					</button>
-					<span v-if="result?.ok" :class="styles.result" role="status">
-						<Icon name="check" /> Connected; {{ result.orgs }} org(s).
-					</span>
-				</div>
-				<ProblemAlert v-if="result && !result.ok" :error="result.error" compact no-retry />
 				<div :class="styles.row">
 					<label for="address" :class="styles.label">Gateway address for <code>cue</code></label>
 					<input

@@ -123,8 +123,33 @@ impl ExtensionComponent {
         args: &str,
         context: &types::SlotContext,
     ) -> Result<CallOutcome<String>> {
+        self.call_tool_as(env, name, args, context, CallKind::ReadWrite)
+            .await
+    }
+
+    /// Calls `call-tool` as a [`CallKind::ReadTool`] call: a tool the manifest declares
+    /// `access: "read"`, for someone who may only read.
+    pub async fn call_read_tool(
+        &self,
+        env: CallEnvironment,
+        name: &str,
+        args: &str,
+        context: &types::SlotContext,
+    ) -> Result<CallOutcome<String>> {
+        self.call_tool_as(env, name, args, context, CallKind::ReadTool)
+            .await
+    }
+
+    async fn call_tool_as(
+        &self,
+        env: CallEnvironment,
+        name: &str,
+        args: &str,
+        context: &types::SlotContext,
+        kind: CallKind,
+    ) -> Result<CallOutcome<String>> {
         let timeout = env.limits.timeout;
-        let (mut store, extension) = self.instantiate(env, CallKind::ReadWrite).await?;
+        let (mut store, extension) = self.instantiate(env, kind).await?;
         let (name, args) = (name.to_owned(), args.to_owned());
         let call = extension.call_call_tool(&mut store, &name, &args, context);
         let result = with_timeout(timeout, call).await?;

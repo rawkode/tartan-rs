@@ -1,0 +1,56 @@
+[package]
+name = "tt"
+description = "tt, the Tartan command-line interface: sign-in, access tokens and Git signing with ATProto identities."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# The crates.io name `tt` is not ours; this crate only builds the `tt` binary.
+publish = false
+
+[[bin]]
+name = "tt"
+path = "src/main.rs"
+
+[features]
+# Development switches; they act only with TARTAN_DEV_IDENTITY=1 (design D12).
+dev-identity = ["tartan-atproto/dev-identity"]
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+cid.workspace = true
+clap.workspace = true
+gethostname.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+hmac.workspace = true
+# jacquard-oauth's DPoP helpers take the `http` crate's request type; the version is the one
+# tartan-atproto pins.
+http = "=1.5.0"
+jacquard-common.workspace = true
+jacquard-oauth.workspace = true
+keyring.workspace = true
+# `tt admin oauth keygen` draws a P-256 key for the forge's private JWKS.
+p256.workspace = true
+reqwest.workspace = true
+rivetkit-client.workspace = true
+serde.workspace = true
+serde_ipld_dagcbor.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tartan-atproto.workspace = true
+tartan-identity-api.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+tracing.workspace = true
+webbrowser.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+tartan-devnet = { path = "../tartan-devnet" }
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,185 @@
+---
+title: Signing commits
+description: Signing Git commits and tags with your ATProto identity through tt, what a signature reveals, and how to withdraw one.
+sidebar:
+  order: 6.6
+---
+
+Tartan signs Git objects with your ATProto identity itself. There is no SSH or OpenPGP key to make, publish or rotate: your DID already has a key that the network binds to it, the `#atproto` key your PDS signs your repository with, and a Tartan signature is proved against that key.
+
+## How a Tartan signature works
+
+When Git signs a commit or a tag, it runs `tt`, Tartan's command-line tool, as its X.509 signing program. For each object `tt`:
+
+1. writes a small `academy.rawkode.tartan.signature` record to **your own ATProto repository**, saying "I sign the payload whose keyed digest is this". The record holds only that digest (HMAC-SHA256 of the exact bytes Git signs, keyed with a fresh random 32-byte salt), the algorithm, the namespace `git` and the time you signed;
+2. hands Git a six-line signature naming the record (its `at://` URI, which always names your DID, and its CID) and carrying the salt.
+
+Your PDS signs the repository commit that holds the record with your `#atproto` key. Anyone holding the object can then prove, with `com.atproto.sync.getRecord`, that your repository holds a record over exactly those bytes. A forge does this after every push; `git verify-commit` does it on your machine.
+
+A signature says that you vouched for the payload, not that you wrote it: the author and committer lines are whatever the object says.
+
+## Setting up
+
+1. **Install `tt`.** It is a single binary.
+2. **Sign in to the forge** with `tt login --forge https://forge.example`. It opens your browser to approve a CLI session for the forge, then, the first time, signs you in for signing too: your authorization server asks you to let `tt` create signature records in your repository. The consent screen names the forge whose `tt` client is asking (`tt (forge.example)`); check that it is the forge you meant.
+3. **Configure Git.** On a personal machine:
+
+   ```sh
+   tt sign --setup --global
+   ```
+
+   This writes `gpg.format=x509`, `gpg.x509.program=tt`, `user.signingKey=<your DID>`, `commit.gpgSign=true` and `tag.gpgSign=true`, and adds your DID to `tt.trustedSigner`. Without `--global` it writes the repository's configuration. It warns when it replaces an existing `gpg.x509.program`, `gpg.format` or `user.signingKey`, naming the old value.
+
+Variations:
+
+- `--no-tags` leaves `tag.gpgSign` unset. With it set, a plain `git tag <name>` creates a signed annotated tag, opens your editor, and costs a record.
+- `--verify-only` writes only `gpg.x509.program`, for reviewers who verify Tartan signatures but do not sign with them. It needs no signing session and leaves `gpg.format`, and any SSH or OpenPGP signing you use, as they were: Git picks the program that verifies a signature from the signature itself.
+- `--program <absolute path>` writes that path instead of `tt`. IDEs and GUI Git clients may run with another `PATH` than your shell; if signing works in a terminal and fails in your editor, this is the fix.
+- `tt sign --setup --undo [--global]` removes what `--setup` wrote, leaving any value you changed since.
+
+Signing works with Git 2.19 or later. Git before 2.40 shows only "gpg failed to sign the data" when signing fails; run `tt status`, which names the last signing failure, or upgrade Git to see `tt`'s own message.
+
+**A forge on your own machine.** `tt login` signs you in for signing through the forge's `tt` client, whose metadata your authorization server fetches from the forge over public HTTPS. A forge at `http://127.0.0.1` cannot serve it, so sign in for signing with ATProto's development client instead: `tt sign --login --client localhost --handle <your handle>`. Servers that follow the reference implementation, such as bsky.social, accept it; some self-hosted servers accept only `https` client ids and refuse it ("client_id must be a safe https metadata URL"), and then signing needs a forge on public HTTPS, such as one behind a tunnel, or, with a `tt` built with `--features dev-identity`, a client metadata document you host yourself: `tt sign --login --client-metadata-url <https URL> --handle <your handle>` prints the exact JSON to publish at that URL when it cannot load it there. Signing also needs your authorization server to grant the granular scope `repo:academy.rawkode.tartan.signature?action=create`; a server whose metadata lists only `atproto` and `transition:generic` refuses it, and `tt` never asks for broader access. The [demo](/demo/#with-your-own-identity) runs a local forge with you as its owner.
+
+Only Git is a supported caller. Other tools that speak the same program interface, such as Jujutsu's gpgsm backend, are refused. `git commit-tree` and `git stash` do not sign even with `commit.gpgSign` set. `git push --signed` is not supported: the Git host does not accept push certificates.
+
+## Signing offline
+
+A signature needs a write to your PDS, so signing needs the network. When the PDS cannot be reached, times out, or is rate-limiting you, `tt` queues the record and still returns the signature, whose CID it already knows, so commits on a train still work. The queue lives in `$XDG_STATE_HOME/tt/queue/`, readable only by you. Set `sign.offline = "fail"` in `$XDG_CONFIG_HOME/tt/config.toml` to make signing fail instead; the default is `"queue"`. An expired or revoked signing session always fails, since its queue could never be published.
+
+Queued records are published later:
+
+- after the next signature that reaches the PDS;
+- with `tt sign --flush`, which publishes what it can and exits non-zero, saying why and when to retry, if records remain;
+- from a `pre-push` hook, installed with `tt sign --setup --hook` in a repository. The hook flushes every queued record and never blocks the push itself (a hook it chains to still can). `--setup --global` cannot install it, because hooks are per repository: run `tt sign --setup --hook` in each repository where you push offline work, or `tt sign --flush` before pushing. If `core.hooksPath` points at a shared or tracked directory, `--hook` refuses unless you add `--hooks-path-ok`.
+
+`tt` never sends a queued record blindly: it first reads it back, since an earlier attempt may have reached the PDS without an answer. `tt status` shows what waits and why.
+
+**The forge waits for late records.** On a ref a signing rule covers, a commit whose record is not published yet stays *pending* for up to seven days, checked again at least hourly, so a record published the next morning verifies without anyone acting. After seven days the commit is *unverifiable*; once the record is published, run `tt sign recheck <commit> --repo <org>/<repo>`, or ask an owner to check it again.
+
+**Rate limits.** PDSes meter repository writes. The reference PDS currently allows 5,000 points an hour and 35,000 a day per account, a record costing 3 points: about 1,666 signatures an hour. `tt` follows the PDS's `ratelimit-reset` and never waits inside Git: while a limit or a two-minute back-off after a connection failure is in force, it queues new records at once. An online rebase makes one PDS round trip per commit it creates, so a rebase of 100 commits takes about as long as 100 small requests to your PDS, typically 10 to 30 seconds; a rebase of thousands of commits is queued and published as the limit allows.
+
+A repository with `extensions.compatObjectFormat` set (SHA-1 and SHA-256 together) makes Git sign each object once per hash algorithm, so each signed object costs two records.
+
+## Verifying on your machine
+
+With `gpg.x509.program=tt`, `git verify-commit`, `git verify-tag` and `git log --show-signature` prove Tartan signatures the way the forge does: the DID's evidence, the record proof under a commit signed by the DID's `#atproto` key, the record's CID and the keyed digest. A good signature reads "Good signature by @alice.example (did:plc:…)", showing a handle only when it verifies in both directions.
+
+In `git log --format`, `%GK` is the signer's DID, `%GF` the record's CID, and `%GT` is `undefined`, or `fully` for a DID in your trust list.
+
+**Proving a DID is not trusting it.** Any ATProto account can sign, so `git merge --verify-signatures`, `git pull --verify-signatures` and `gpg.minTrustLevel` accept only DIDs you list:
+
+```sh
+git config --global --add tt.trustedSigner did:plc:abcdefghijklmnopqrstuvwx
+```
+
+`tt sign --setup` adds your own DID. Whether a DID may sign for a project on the forge is that repository's signing rule, which `tt` does not know.
+
+Things to know:
+
+- Proved results are cached in `$XDG_CACHE_HOME/tt/verified/` for up to 24 hours, so a long `git log --show-signature` does not fetch again. A signature revoked within those 24 hours can still show as good locally; `TT_NO_CACHE=1` skips the cache.
+- Verifying fetches from the PDS and DID host that each signature names, which whoever wrote the signature chooses. Running `git log --show-signature` over a repository you do not trust tells those hosts your address and when you looked. `TT_VERIFY_OFFLINE=1` answers from the cache only and fetches nothing.
+- Other forges and tools show Tartan signatures as unverified, since they do not know the format. Where gpgsm is configured as the X.509 program, verify with `git -c gpg.x509.program=tt verify-commit <commit>`.
+
+## What a signature record reveals
+
+ATProto repositories are public, so **every signature record is public, whatever repository it signs**, private ones included.
+
+- **Not the content.** The record holds a digest keyed with a random salt that only the signature carries. Without the object's signature, nobody can recover anything about the payload or confirm a guess at it, even for a predictable payload such as a merge of two public commits. Someone who has the object and its signature can link it to the record; that is what a signature is for.
+- **When you sign.** The record key, `createdAt` and your repository's history show when you signed something, though not what or where. If that pattern matters to you, sign with a separate ATProto account that you use for nothing else.
+
+## Who can sign as you
+
+A verified signature means: this DID's repository, as signed by its current `#atproto` key, holds a record over exactly these bytes. That is broader than "the person used `tt`":
+
+- **Any credential that can write to your repository can sign as you**: an app password, any app you granted `transition:generic` or a `repo:` permission covering `academy.rawkode.tartan.signature` (including `repo:*`), `tt`'s own session, and your PDS's operator, who holds the `#atproto` key. Verification cannot tell which client wrote a record, so `tt`'s narrow permission limits what a stolen `tt` session exposes, not who else can sign. For narrower exposure, sign with a dedicated ATProto account that you give to no other app.
+- **A stolen `tt` signing session** can sign until it ends (sessions last at most two weeks), you revoke it at your authorization server, or `tt logout` revokes it.
+- **For a `did:web` signer, the domain is a signing credential.** Whoever controls the domain later can publish a new key and sign as the DID.
+- **The forge you use is trusted for `tt`'s client identity.** `tt`'s OAuth client metadata is served by your configured forge, so its operator could change it; you still approve every sign-in at your own authorization server, which is why the consent screen's forge name is worth checking.
+
+## Withdrawing a signature
+
+`tt sign revoke <commit|at-uri>` withdraws a signature: it deletes the record from your repository (asking your authorization server once for permission to delete signature records, then revoking that permission), and, when you are signed in to a forge, tells the forge.
+
+- **Signed in with `tt login`** (a CLI session) as the record's own DID, the forge marks the record withdrawn on your word, at once and without needing to see it deleted, **whatever your rights on that forge**: you can withdraw signatures on a forge you cannot read. An access token cannot withdraw (`tt login --with-token`); with one, `tt` says so and the forge only re-checks the record.
+- **A withdrawal is permanent on that forge.** A record re-created later with the same content stays withdrawn there, and the signature no longer counts toward any signing rule in any repository of the forge. The commit's history is annotated, not rewritten. If you withdrew by mistake, sign the object again.
+- **You can withdraw before the forge has seen a record**, and that withdrawal never expires: a commit signed by it that is pushed later, however much later, does not count. At most 1,000 such records per account can be withdrawn in advance on a forge, and 100,000 per forge, of which accounts the forge does not know may use only half. More forged records than that cannot all be withdrawn before they appear; the rest are withdrawn once they show up on a push.
+- **An account the forge sees as inactive** (taken down, suspended or deactivated) cannot withdraw until it is active again, because the forge refuses its sessions.
+- A record still in your local queue is simply removed from the queue.
+
+Deleting a record is visible to anyone who checks later, but **only forges that recorded the revocation keep it**. Another forge, or `git verify-commit` on someone's machine, proves whatever your repository holds now, so a revocation that someone still holding write access undoes by re-creating the record is invisible to them. That is why the procedure below revokes credentials first.
+
+## If a signing credential is compromised
+
+Do these in order:
+
+1. **Revoke every credential that can write to your repository**, because whoever forged signatures may not be using `tt` at all: every app password, and every app session with repository write access, in your account's settings at your PDS, `tt`'s own sessions there included (a thief may hold a session `tt` never saw). Change your account password if it may be known. Do not run `tt logout` first: it would end the forge CLI session the next step uses.
+2. **Run `tt sign revoke` for each forged signature**, signed in to each forge with `tt login` as the account (a CLI session, not an access token). The forge withdraws it on your word, even if you cannot read that forge.
+3. **Run `tt sign --login`** for a fresh signing session.
+
+## Signing rules
+
+A repository can require signed commits on chosen refs with the `signing` field of its root package; [Property types](/property-types/#the-signing-rule) has the syntax. A `require` entry without `signers` accepts a signature by **any** ATProto account; list DIDs in `signers` to say whose signatures count.
+
+walgit cannot refuse a push, so a push that breaks the rule is accepted, recorded as a `ref.signature.violation` event, shown on the repository page, and, on `main`, stops its configuration from being applied. How the forge judges a push:
+
+- **Each update is judged on its own.** A push that moves a covered ref complies when its walk lists no more than 1000 new commits, the commit the ref now points to (and the annotated tag, for a tag) and every commit the update adds are `verified`, and each signer is listed in `signers`. A slow check of an older update never delays or overrides a newer one.
+- **The tip is always judged**, even when the update adds nothing: rewinding `main` to an unsigned ancestor, such as a commit from before the rule, is a violation, and so is rewinding to a commit whose signature has since been revoked. Rewinding to a commit an allowed signer signed, whose signature still stands, complies.
+- **Commits arriving through other branches are judged.** Pushing an unsigned commit to an unprotected branch and fast-forwarding `main` to it is a violation on `main`; so is a commit verified as someone allowed on the other branch but not in `main`'s `signers`. A signature checked once is not checked again, but it counts on a later update only while it stands: its record not revoked, its signer's account active.
+- **Compliance is per update, not per history.** If an unsigned configuration commit A is refused and an allowed signer pushes B on top of it, the update judges B alone, so `main` complies and B's configuration, which includes A's change, is applied. B's signature covers B's whole tree.
+- **The rule itself changes only in a descendant of the commit that set it.** A configuration whose `signing` differs from the rule in force (removed, `main` no longer covered, another signer) is applied only when the commit that set the rule is the new head or one of its ancestors; otherwise it is refused with `signing: the signing rule can only change in a descendant of <commit>` and the rule stays. Rewinding to a signed commit from before the rule, force-pushing an unrelated history of signed commits, or deleting `main` and recreating it all keep the rule. To move `main` to an unrelated history with another rule, make the change in a signed commit that merges the commit that set the rule (for example `git merge -s ours <commit>`).
+- **Reverting restores the rest of the configuration.** A rewind to a signed head whose configuration has the same rule applies that configuration, older extension settings included.
+- **`signers` controls who signed, not what they meant to land.** Anyone who can push can push a commit an allowed signer signed for another purpose.
+- **A PDS restored from an old backup revokes the signatures it lost**, once the forge proves them absent.
+
+### Configuration on `main`
+
+When the rule covers `main`, a pushed configuration waits for its update's signature check; `GET /-/api/orgs/<org>/repos/<repo>/config/status` and the repository page show what it waits on. It is applied once the check completes, with no other push, or refused with `signing: <commit> is <status>` (for example `is unsigned`, `is unverifiable`, `signature was revoked`). The previous configuration stays applied meanwhile.
+
+## Verification on the forge
+
+After every push to a branch or tag the forge checks each new commit and annotated tag: it reads the signature, resolves the signer's DID (replaying a `did:plc` operation log rather than trusting it), fetches the record with `com.atproto.sync.getRecord`, proves it under the repository commit your PDS signed with your `#atproto` key, and checks the record's digest against the object with the salt from its signature. The result is stored once, at push time, with its proof.
+
+| Status | Shown as |
+| --- | --- |
+| `verified` | Signed by @handle |
+| `verified`, record withdrawn | Signed by @handle — withdrawn by the signer on *date*; no longer counts for signing rules |
+| `verified`, record deleted | Signed by @handle — signature record deleted on *date*; no longer counts for signing rules |
+| `verified`, record replaced | Signed by @handle — signature record replaced on *date*; no longer counts for signing rules |
+| `verified`, account deactivated | Signed by @handle, with the note "account deactivated on *date*" ("account deleted" for a deleted or tombstoned DID) |
+| `unsigned` | Not signed |
+| `signer_inactive` | Signer's account is not active |
+| `bad_signature` | Invalid signature, with the detail, such as "record does not sign this commit" or "record was replaced" |
+| `unsupported_format` | Signed with GPG, SSH or another X.509 tool; only Tartan signatures are checked |
+| `not_checked` | Not checked: too many commits in one push, more than 64 signers in one update, or not reached before the check gave up |
+| `unverifiable` | Could not verify, with the detail; when the record was never found, "Signature record was not published within seven days; @handle can publish it and run `tt sign recheck`" |
+| `pending` | Checking signatures… or Retrying: *reason*; "Waiting for @handle to publish the signature record (`tt sign --flush`); checked again hourly for up to seven days" when the record is not found yet |
+
+- **`verified` means** that the account named in the signature published a record whose keyed digest matches these exact bytes, proved against the key its DID names. It says the signer vouched for the object, not that they wrote it, and it says nothing about the author and committer lines.
+- **Results are final**, except `unverifiable`: an owner, or the signer whose DID is on the result, can check it again (`tt sign recheck <commit> --repo <org>/<repo>`, or "Check again" on the commit's page).
+- **A commit pushed before its record is published** shows as pending and verifies once the record appears, checked hourly for up to seven days on a ref whose rule allows its signer (an hour elsewhere), with nothing to push again.
+- **Revoking a signature leaves past results `verified`**, with a note, but they stop counting toward signing rules on later updates, in every repository of the forge. A revocation the forge has recorded is permanent there, even if the record is re-created.
+- **A malicious PDS can still prove a revoked record** to someone who has not seen the revocation; rotating your `#atproto` key stops it proving anything new.
+
+### Proof bundles
+
+Each `verified` result keeps a proof bundle (`tartan.signature-proof/2`): the DID evidence as fetched (the `did:plc` audit log, or the `did:web` document), the `#atproto` key, the record's key and CID, the repository commit that proved it, the `getRecord` answer, and the object's `payload_sha256` and salt. Download it from the commit's signature page or `GET /-/api/orgs/<org>/repos/<repo>/proofs/<sha256>`; like the rest of `/-/api` it needs a session or a token with `read`, and a repository serves only the bundles its own results reference.
+
+To check one offline against the commit: the SHA-256 of the commit without its `gpgsig` header is `payload_sha256`; the commit's `Salt` line is the bundle's `salt`; HMAC-SHA256 of the same bytes keyed with that salt is the record's `digest`; the CAR proves the record under a commit signed by `atproto_key`; and, for `did:plc`, replaying the audit log yields that key. For `did:web` the document is a record of what the host served when it was fetched, not an offline proof.
+
+## Agents and automation
+
+- An agent running on your own machine, as your operating-system user, may sign with your `tt` session.
+- An agent running anywhere else signs as **its own ATProto account**, which a repository lists in `signers` if it should be allowed. It never gets a copy of your session.
+- Give it a session once, on a persistent host: `TT_CREDENTIAL_STORE=file tt sign --login --handle <bot> --no-open --port <p>` with a persistent `XDG_STATE_HOME`, approving in a browser through a forwarded port (`ssh -L <p>:127.0.0.1:<p>`). The session must be renewed about every two weeks; `tt status` and `tt sign --flush` warn two days ahead.
+- Ephemeral CI runners cannot sign, and one session cannot be shared between machines or containers: refresh tokens rotate, so the first copy to refresh breaks the others. Access tokens are for the forge's API and cannot sign.
+- An agent that pushes unsigned commits to a covered ref breaks the rule like anyone else.
+
+## The forge's part
+
+Your signing session belongs to the forge whose client metadata it was made with, and your authorization server loads that document again at every token refresh. So:
+
+- while that forge is down for more than a few minutes, `tt` cannot refresh, and new signatures are queued; `tt status` names the cause;
+- if the forge moves to another address or is retired, run `tt sign --login --forge <new forge>`.
+
+`tt status` shows which forge each signing session uses and when it expires.

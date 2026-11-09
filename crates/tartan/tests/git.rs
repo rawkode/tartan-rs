@@ -21,13 +21,18 @@ use tartan_forge::{
 };
 use tokio::process::{Child, Command};
 
-const ADMIN_TOKEN: &str = "git-test-admin-token";
 const WEBHOOK_SECRET: &str = "git-test-webhook-secret";
 const GIT_HOST_TOKEN: &str = "git-test-host-token";
 const S3_ACCESS_KEY: &str = "tartantest";
 const S3_SECRET_KEY: &str = "tartantestsecret";
 const BUCKET: &str = "tartan-test";
 const DEADLINE: Duration = Duration::from_secs(60);
+/// The owner's access token, minted once the identity actor runs.
+static TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn token() -> &'static str {
+    TOKEN.get().expect("the token is minted before any request")
+}
 
 /// The configuration the test pushes: Issues, through its module, with typed properties.
 const ISSUES_CONFIG: &str = r#"package tartan
@@ -164,7 +169,7 @@ fn walgit(config: &Path, log: &Path) -> Child {
 async fn api(http: &reqwest::Client, base: &str, path: &str, body: Value) -> Value {
     let response = http
         .post(format!("{base}{path}"))
-        .bearer_auth(ADMIN_TOKEN)
+        .bearer_auth(token())
         .json(&body)
         .send()
         .await
@@ -230,37 +235,52 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
     let registry = RegistryStore::new(store.clone());
     let extensions = Arc::new(Extensions::new(
         tartan_extensions::ExtensionRuntime::new().expect("runtime"),
-        store,
+        store.clone(),
     ));
+    let identity = common::IdentityWorld::start().await;
+    let clock = Arc::new(common::TestClock::default());
     install_services(Services {
         extensions: extensions.clone(),
         forge_id: format!("git-test-{nanos}"),
-        git_host: Arc::new(WalgitClient::new(
-            &format!("http://127.0.0.1:{walgit_port}"),
-            Some(GIT_HOST_TOKEN.to_owned()),
-        )),
+        git_host: Arc::new(
+            WalgitClient::new(
+                &format!("http://127.0.0.1:{walgit_port}"),
+                Some(GIT_HOST_TOKEN.to_owned()),
+            )
+            .with_cache(tartan_forge::GitCache::new(
+                dir.join("state/git"),
+                tartan_forge::GIT_CACHE_MAX_BYTES,
+            )),
+        ),
+        clock: clock.clone(),
+        owners: vec![identity.owner.clone()],
+        readers: tartan_config::deployment::Readers::default(),
+        resolver: identity.resolver.clone(),
+        identity_limits: tartan_forge::IdentityLimits::default(),
+        objects: store,
+        state_dir: dir.join("state"),
     })
     .expect("installed once");
     // The deployment lists no modules until a test syncs some.
     extensions.set_available([]);
     let mut actor_registry = Registry::new();
     register_actors(&mut actor_registry);
-    let actors = rivetkit::test::setup(actor_registry)
-        .await
-        .expect("engine and registry");
+    let actors = common::Actors::start(actor_registry, "git").await;
     let client = actors.client().clone();
     let state = GatewayState {
         client: client.clone(),
-        admin_token: Arc::from(ADMIN_TOKEN),
+        access: identity.access(&base, tartan_config::deployment::Readers::default(), clock),
         webhook_secret: Arc::from(WEBHOOK_SECRET.as_bytes()),
         registry: registry.clone(),
     };
-    tokio::spawn(async move { axum::serve(listener, router(state)).await });
+    common::serve(listener, router(state));
+    let minted = common::admin_token(&client, &identity.owner, common::all_scopes()).await;
+    TOKEN.set(minted).expect("minted once");
 
     let http = reqwest::Client::new();
     let subscribed = http
         .put(format!("{base}/-/api/subscribers/refs"))
-        .bearer_auth(ADMIN_TOKEN)
+        .bearer_auth(token())
         .json(&json!({"pattern": "ref.>"}))
         .send()
         .await
@@ -352,12 +372,12 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
         second
     );
 
-    // The ref events, once each, in push order.
+    // The ref updates, once each, in push order.
     let start = Instant::now();
     let updates = loop {
         let events: Value = http
             .get(format!("{base}/-/api/subscribers/refs/events?limit=500"))
-            .bearer_auth(ADMIN_TOKEN)
+            .bearer_auth(token())
             .send()
             .await
             .expect("answers")
@@ -368,6 +388,8 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
             .as_array()
             .expect("a list")
             .iter()
+            // Signature checks of the same pushes are `ref.*` events too.
+            .filter(|received| received["event"]["type"] == "ref.updated")
             .map(|received| {
                 let data = &received["event"]["data"];
                 let text = |key: &str| data[key].as_str().unwrap_or_default().to_owned();
@@ -423,6 +445,28 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
         .expect("read a missing file");
     assert_eq!(missing, None);
 
+    // It reads the commits a push introduced through its object cache, fetching a commit by
+    // id, and tells an object walgit no longer serves from a failure.
+    let walgit_client = walgit_client.with_cache(tartan_forge::GitCache::new(
+        dir.join("state/probe-git"),
+        tartan_forge::GIT_CACHE_MAX_BYTES,
+    ));
+    let walk = walgit_client
+        .read_new_objects("acme", "api", &second, &[], 1000, &|_| false)
+        .await
+        .expect("read the pushed objects");
+    assert_eq!(walk.listed[0].0, second);
+    assert_eq!(walk.raw.len(), walk.listed.len());
+    let gone = walgit_client
+        .read_new_objects("acme", "api", &"1".repeat(40), &[], 1000, &|_| false)
+        .await
+        .expect_err("not served");
+    assert!(
+        gone.downcast_ref::<tartan_forge::ObjectNotServed>()
+            .is_some(),
+        "{gone:#}"
+    );
+
     // A configuration pushed to main installs Issues through the module the forge synced: the
     // repository's module depends on Issues' module, and its tartan.cue unifies the entry with
     // Issues' #Extension.
@@ -434,8 +478,8 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
     assert_eq!(
         registered,
         vec![
-            "issues.tartan.rawkode.academy@0.6.0",
-            "kanban.tartan.rawkode.academy@0.3.0"
+            "issues.tartan.rawkode.academy@0.7.0",
+            "kanban.tartan.rawkode.academy@0.4.0"
         ],
         "{report:?}"
     );
@@ -449,7 +493,7 @@ async fn git_round_trips_through_walgit_and_emits_ref_events() {
     loop {
         let listed: Value = http
             .get(format!("{base}/-/api/orgs/acme/repos/api/extensions"))
-            .bearer_auth(ADMIN_TOKEN)
+            .bearer_auth(token())
             .send()
             .await
             .expect("answers")

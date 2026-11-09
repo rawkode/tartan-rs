@@ -9,6 +9,8 @@
 //!     "tartan.rawkode.academy/types@v0.1.0",
 //!     "tartan.rawkode.academy/issues@v0.6.0",
 //! ]
+//! owners: ["did:plc:abcdefghijklmnopqrstuvwx"]
+//! readers: "owners"
 //! ```
 //!
 //! `modules` lists the CUE module versions the forge makes available, each a fully qualified
@@ -17,14 +19,21 @@
 //! optionally with `+insecure` (plain HTTP) or `+secure`. A module comes from the source with
 //! the longest prefix that matches whole path elements of its path.
 //!
+//! `owners` lists the DIDs of the forge's administrators: at least one, each a distinct
+//! `did:plc` or hostname-only `did:web` DID ([`Did`]). `readers` says who else may read:
+//! `"owners"` (the default when it is absent: nobody else), `"signed_in"` (any ATProto account
+//! that signs in) or a list of distinct DIDs. Both change only when the forge restarts with a new
+//! configuration.
+//!
 //! The package is evaluated natively, with no registry: it is the operator's file, not a
 //! repository's, and imports nothing but CUE's standard library. CUE's evaluator in the forge
 //! evaluates only inside a module, so a file or a directory without `cue.mod/module.cue` is
 //! evaluated in an otherwise empty module made for it (see [`OUTSIDE_MODULE`]); unlike a
 //! repository's configuration, the deployment's is never resolved through a registry, so that
-//! module changes nothing `cue export` of the file gives. A configuration that does not evaluate, has a key other than `modules` and
-//! `sources`, lists a module that is not fully qualified or names no source for it is refused,
-//! and the forge does not start.
+//! module changes nothing `cue export` of the file gives. A configuration that does not evaluate,
+//! has a key other than `modules`, `sources`, `owners` and `readers`, lists a module that is not
+//! fully qualified or names no source for it, lists no owner, or lists an invalid or repeated DID
+//! is refused, and the forge does not start.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -32,6 +41,8 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 use serde_json::Value;
+
+pub use crate::did::Did;
 
 /// The CUE package a deployment's configuration is.
 pub const PACKAGE: &str = "forge";
@@ -43,6 +54,33 @@ pub struct Deployment {
     pub modules: Vec<ModuleVersion>,
     /// The registries modules are copied from, by module path prefix.
     pub sources: BTreeMap<String, Source>,
+    /// The forge's administrators, in the order listed; [`parse`] refuses an empty list.
+    pub owners: Vec<Did>,
+    /// Who other than the owners may read.
+    pub readers: Readers,
+}
+
+/// Who other than the forge's owners may read.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Readers {
+    /// Nobody else: other people who sign in see that the forge is private (`"owners"`).
+    #[default]
+    Owners,
+    /// Any ATProto account that signs in (`"signed_in"`).
+    SignedIn,
+    /// These DIDs, in the order listed.
+    Dids(Vec<Did>),
+}
+
+impl Readers {
+    /// Whether `did` may read under this setting, owners aside.
+    pub fn admits(&self, did: &str) -> bool {
+        match self {
+            Self::Owners => false,
+            Self::SignedIn => true,
+            Self::Dids(dids) => dids.iter().any(|reader| reader.as_str() == did),
+        }
+    }
 }
 
 /// One version of a CUE module, such as `tartan.rawkode.academy/issues@v0.6.0`.
@@ -182,6 +220,11 @@ impl Source {
 }
 
 impl Deployment {
+    /// Whether `did` is one of the forge's owners.
+    pub fn is_owner(&self, did: &str) -> bool {
+        self.owners.iter().any(|owner| owner.as_str() == did)
+    }
+
     /// The source a module path is copied from: the one whose prefix matches the most whole
     /// path elements.
     pub fn source_for(&self, module_path: &str) -> Option<&Source> {
@@ -302,12 +345,55 @@ pub fn parse(value: Value) -> Result<Deployment, DeploymentError> {
         }
         Some(other) => return invalid(format!("modules is {other}, not a list")),
     }
+    deployment.owners = match root.remove("owners") {
+        None => return invalid(no_owners()),
+        Some(Value::Array(owners)) if owners.is_empty() => return invalid(no_owners()),
+        Some(Value::Array(owners)) => dids("owners", owners)?,
+        Some(other) => return invalid(format!("owners is {other}, not a list of DIDs")),
+    };
+    deployment.readers = match root.remove("readers") {
+        None => Readers::Owners,
+        Some(Value::String(mode)) if mode == "owners" => Readers::Owners,
+        Some(Value::String(mode)) if mode == "signed_in" => Readers::SignedIn,
+        Some(Value::Array(readers)) => Readers::Dids(dids("readers", readers)?),
+        Some(other) => {
+            return invalid(format!(
+                "readers is {other}: it is \"owners\" (the default), \"signed_in\" or a list of DIDs"
+            ));
+        }
+    };
     if let Some(key) = root.keys().next() {
         return invalid(format!(
-            "{key:?} is not a setting: the package {PACKAGE} has modules and sources"
+            "{key:?} is not a setting: the package {PACKAGE} has modules, sources, owners and readers"
         ));
     }
     Ok(deployment)
+}
+
+fn no_owners() -> String {
+    "owners must list at least one DID: the forge's administrators (find a DID from a handle with `tt identity resolve <handle>`)".into()
+}
+
+/// Reads a list of distinct DIDs, naming `setting` and the entry in any error.
+fn dids(setting: &str, values: Vec<Value>) -> Result<Vec<Did>, DeploymentError> {
+    let mut dids: Vec<Did> = Vec::with_capacity(values.len());
+    for (index, value) in values.into_iter().enumerate() {
+        let Value::String(text) = value else {
+            return Err(DeploymentError::Invalid(format!(
+                "{setting}[{index}] is {value}, not a DID"
+            )));
+        };
+        let did: Did = text
+            .parse()
+            .map_err(|e| DeploymentError::Invalid(format!("{setting}[{index}]: {e}")))?;
+        if dids.contains(&did) {
+            return Err(DeploymentError::Invalid(format!(
+                "{setting}[{index}]: {did} is listed twice"
+            )));
+        }
+        dids.push(did);
+    }
+    Ok(dids)
 }
 
 #[cfg(test)]
@@ -340,6 +426,7 @@ modules: [
 	"\(issues)@v0.6.0",
 	"github.com/rawkode/other@v1.2.3-rc.1",
 ]
+owners: ["did:web:rawkode.dev", "did:plc:abcdefghijklmnopqrstuvwx"]
 "#,
         );
         write(dir.path(), "notes.txt", "not CUE\n");
@@ -383,21 +470,142 @@ modules: [
             .expect("a source");
         assert!(types.insecure, "localhost defaults to plain HTTP");
         assert_eq!(deployment.modules[1].major(), "v0");
+        assert_eq!(
+            deployment
+                .owners
+                .iter()
+                .map(Did::as_str)
+                .collect::<Vec<_>>(),
+            vec!["did:web:rawkode.dev", "did:plc:abcdefghijklmnopqrstuvwx"]
+        );
+        assert!(deployment.is_owner("did:web:rawkode.dev"));
+        assert!(!deployment.is_owner("did:web:example.com"));
+        assert_eq!(deployment.readers, Readers::Owners, "the default");
 
         let file = load(&dir.path().join("forge.cue")).expect("valid");
         assert_eq!(file, deployment);
     }
 
+    const OWNER: &str = "did:plc:abcdefghijklmnopqrstuvwx";
+
     #[test]
-    fn an_empty_configuration_lists_nothing() {
+    fn owners_alone_make_a_configuration() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        write(
+            dir.path(),
+            "forge.cue",
+            &format!("package forge\nowners: [{OWNER:?}]\n"),
+        );
+        let deployment = load(dir.path()).expect("valid");
+        assert!(deployment.modules.is_empty() && deployment.sources.is_empty());
+        assert_eq!(
+            deployment.owners,
+            vec![OWNER.parse::<Did>().expect("a DID")]
+        );
+        assert_eq!(deployment.readers, Readers::Owners);
+    }
+
+    #[test]
+    fn refuses_missing_and_invalid_owners() {
+        let refused = |value: Value| parse(value).expect_err("refused").to_string();
         let dir = tempfile::tempdir().expect("temp dir");
         write(dir.path(), "forge.cue", "package forge\n");
-        assert_eq!(load(dir.path()).expect("valid"), Deployment::default());
+        assert!(
+            load(dir.path())
+                .expect_err("no owners")
+                .to_string()
+                .contains("owners must list at least one DID")
+        );
+        let sources = json!({"github.com/rawkode": "ghcr.io/rawkode"});
+        assert!(
+            refused(json!({"sources": sources, "modules": []}))
+                .contains("owners must list at least one DID")
+        );
+        assert!(refused(json!({"owners": []})).contains("owners must list at least one DID"));
+        assert!(refused(json!({"owners": OWNER})).contains("not a list of DIDs"));
+        assert!(refused(json!({"owners": [1]})).contains("owners[0] is 1, not a DID"));
+        let handle = refused(json!({"owners": ["alice.bsky.social"]}));
+        assert!(
+            handle.contains("owners[0]") && handle.contains("\"alice.bsky.social\" is not a DID"),
+            "{handle}"
+        );
+        let path = refused(json!({"owners": [OWNER, "did:web:example.com:alice"]}));
+        assert!(
+            path.contains("owners[1]") && path.contains("only hostname-level did:web"),
+            "{path}"
+        );
+        let twice = refused(json!({"owners": [OWNER, "did:web:rawkode.dev", OWNER]}));
+        assert!(
+            twice.contains(&format!("owners[2]: {OWNER} is listed twice")),
+            "{twice}"
+        );
+        assert!(refused(json!({"owners": ["did:web:example.com%3A443"]})).contains("port"));
+        // A localhost DID is syntactically valid; the forge refuses it outside dev-identity.
+        let local = parse(json!({"owners": ["did:web:localhost%3A9400"]})).expect("valid");
+        assert!(local.owners[0].is_localhost());
+    }
+
+    #[test]
+    fn reads_who_may_read() {
+        let readers = |value: Value| {
+            parse(json!({"owners": [OWNER], "readers": value}))
+                .map(|deployment| deployment.readers)
+                .map_err(|error| error.to_string())
+        };
+        assert_eq!(readers(json!("owners")), Ok(Readers::Owners));
+        assert_eq!(readers(json!("signed_in")), Ok(Readers::SignedIn));
+        let listed = readers(json!([
+            "did:web:rawkode.dev",
+            "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb"
+        ]))
+        .expect("valid");
+        assert_eq!(
+            listed,
+            Readers::Dids(vec![
+                "did:web:rawkode.dev".parse().expect("a DID"),
+                "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb".parse().expect("a DID"),
+            ])
+        );
+        assert!(listed.admits("did:web:rawkode.dev"));
+        assert!(!listed.admits("did:web:example.com"));
+        assert!(Readers::SignedIn.admits("did:web:example.com"));
+        assert!(!Readers::Owners.admits(OWNER));
+
+        let everyone = readers(json!("everyone")).expect_err("refused");
+        assert!(
+            everyone.contains("readers is \"everyone\"")
+                && everyone.contains("\"owners\" (the default), \"signed_in\" or a list of DIDs"),
+            "{everyone}"
+        );
+        assert!(readers(json!(true)).is_err());
+        assert!(readers(json!({"did": OWNER})).is_err());
+        let twice =
+            readers(json!(["did:web:rawkode.dev", "did:web:rawkode.dev"])).expect_err("refused");
+        assert!(
+            twice.contains("readers[1]: did:web:rawkode.dev is listed twice"),
+            "{twice}"
+        );
+        let invalid = readers(json!(["did:web:rawkode.dev", "bob.test"])).expect_err("refused");
+        assert!(
+            invalid.contains("readers[1]") && invalid.contains("not a DID"),
+            "{invalid}"
+        );
+        assert!(
+            readers(json!([2]))
+                .expect_err("refused")
+                .contains("readers[0] is 2, not a DID")
+        );
     }
 
     #[test]
     fn refuses_invalid_configurations() {
         let refused = |value: Value| parse(value).expect_err("refused").to_string();
+        let unknown = refused(json!({"owners": [OWNER], "registry": "ghcr.io"}));
+        assert!(
+            unknown.contains("\"registry\" is not a setting")
+                && unknown.contains("modules, sources, owners and readers"),
+            "{unknown}"
+        );
         let sources = json!({"github.com/rawkode": "ghcr.io/rawkode"});
         assert!(
             refused(json!({"sources": sources, "modules": ["example.com/x@v0.1.0"]}))

@@ -1,0 +1,73 @@
+---
+title: Access tokens
+description: Scoped, expiring tokens that let agents and automation act for you.
+sidebar:
+  order: 6.5
+---
+
+An access token lets a script, a CI job or an agent call the forge on your behalf. It acts as an agent for your DID, never with more rights than you have: a token's rights are its scopes intersected with the rights your DID has at the time of each request. If you stop being an owner, your `admin` tokens stop working for owner-only routes at once.
+
+A token's secret is `tartan_pat_` followed by 43 characters. The forge shows it once, when the token is created, and stores only its SHA-256, so it cannot show it again. Secret scanners recognise the prefix.
+
+## Creating a token
+
+Tokens are made from a session, never from another token.
+
+- **In the web UI**, open Settings, then *Access tokens*. Give the token a name, choose its scopes and how long it lasts, and copy the secret before you leave the page.
+- **With `tt`**, after `tt login`:
+
+  ```sh
+  tt token create --name ci --scopes read --expires-in-days 30
+  ```
+
+  `tt` prints the secret once. `tt token list` shows your tokens, with their names, scopes, expiry and when they were last used, but never their secrets.
+
+You can hold at most 50 tokens that have not expired or been revoked.
+
+## Scopes, repositories and expiry
+
+| Setting | Values |
+| --- | --- |
+| `scopes` | any of `read` (`GET` routes and extension renders), `write` (extension tool and act calls) and `admin` (orgs, repositories, placements and subscribers) |
+| `repos` | optional: `org/repo` or `org/*` entries |
+| `expires_in_days` | 1 to 365 |
+
+A token with `repos` works only on routes addressed to a listed repository, and for reads also on that repository's org. It is refused on every other route, including creating orgs, placements and the forge-wide event stream; `GET /-/api/me` and `GET /-/api/people` are the exceptions. `org/*` covers every repository of the org.
+
+The forge refuses an unknown scope, a malformed repository entry or an expiry outside 1 to 365 days with 400. Until the forge has org and repository membership, only owners can write, so a token made by someone who is not an owner gains nothing from `write` or `admin`; the web UI offers them only `read`.
+
+## Using a token
+
+Send it as a bearer token:
+
+```sh
+curl -H "Authorization: Bearer $TARTAN_TOKEN" https://forge.example/-/api/orgs
+```
+
+For CI and remote machines, `tt` can act with a token instead of a browser login:
+
+```sh
+echo "$TARTAN_TOKEN" | tt login --with-token --forge https://forge.example
+```
+
+A token cannot manage tokens, so `tt token` commands are refused while `tt` is signed in this way. A token also cannot withdraw signatures: that needs a session.
+
+## Revoking a token
+
+Revoke a token in the web UI, with `tt token revoke <id>`, or with `DELETE /-/api/tokens/<id>`. The token's own DID or any owner can revoke it. A revoked or expired token is refused with 401. A gateway process may keep accepting it from its cache for up to 30 seconds after the revocation.
+
+The forge records `token.created` and `token.revoked` events on the `identity` source. They name the token, its DID and who revoked it, never its secret.
+
+## Operator tokens
+
+An operator with access to the Rivet engine can mint a token for an owner without signing in, for example to seed a new forge or when an owner's PDS is down:
+
+```sh
+tt admin token create --did did:plc:abcdefghijklmnopqrstuvwx --name seed --scopes read,write,admin --expires-in-days 1
+```
+
+`tt admin` talks to the forge's identity actor through the Rivet engine, using `RIVET_ENDPOINT`, `RIVET_TOKEN`, `RIVET_NAMESPACE` and `TARTAN_FORGE_ID`. The forge refuses a DID that is not one of its `owners`. `tt admin token list --did <owner>` and `tt admin token revoke --did <owner> <id>` list and revoke an owner's tokens the same way.
+
+Because these commands need only the Rivet engine, whoever can reach the engine with `RIVET_TOKEN` holds owner rights. Keep the engine endpoint and `RIVET_TOKEN` private, as admin credentials.
+
+An operator token cannot help when the owner's account is inactive at its PDS (taken down, suspended, deactivated or deleted): the forge refuses every credential of an inactive DID. List another owner in the deployment configuration instead.

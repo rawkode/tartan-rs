@@ -5,14 +5,20 @@ use rivetkit::TypedActorHandle;
 use rivetkit::TypedClientExt;
 use rivetkit::client::{Client, GetOrCreateOptions};
 
-use crate::actors::{EXTENSION, FORGE, ORG, REPO, SUBSCRIBER};
+use crate::actors::{EXTENSION, FORGE, IDENTITY, ORG, REPO, SUBSCRIBER};
 use crate::services::services;
-use crate::{Extension, Forge, Org, Repo, Subscriber};
+use crate::{Extension, Forge, Identity, Org, Repo, Subscriber};
 
 /// The forge's single [`Forge`] actor.
 pub fn forge_handle(client: &Client) -> Result<TypedActorHandle<Forge>> {
     let forge_id = services()?.forge_id.as_str();
     client.get_or_create_typed::<Forge>(FORGE, [forge_id], GetOrCreateOptions::default())
+}
+
+/// The forge's single [`Identity`] actor. It always runs in the default pool.
+pub fn identity_handle(client: &Client) -> Result<TypedActorHandle<Identity>> {
+    let forge_id = services()?.forge_id.as_str();
+    client.get_or_create_typed::<Identity>(IDENTITY, [forge_id], GetOrCreateOptions::default())
 }
 
 /// The [`Org`] actor `org_id`, created in `pool` (the client's pool when `None`) if it does not

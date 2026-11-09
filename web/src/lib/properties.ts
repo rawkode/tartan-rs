@@ -5,6 +5,7 @@
  * extension stays the authority.
  */
 
+import { isDid } from "./did.ts";
 import type { PropertyDef, PropertyKind, PropertyValue } from "./types.ts";
 
 /** What a person reads for a property: its label, else its name. */
@@ -172,9 +173,9 @@ export const validateValue = (def: PropertyDef, value: PropertyValue | undefined
 			return new Set(value).size === value.length ? null : "Options may appear only once.";
 		}
 		case "person":
-			return typeof value === "string" && value.trim().length > 0 && !/\s/.test(value.trim())
+			return typeof value === "string" && isDid(value)
 				? null
-				: "Must be a principal id, such as admin.";
+				: "Must be a person's DID: enter their handle or DID.";
 		case "url":
 			return typeof value === "string" && isHttpUrl(value) ? null : "Must be an http(s) URL.";
 		case "money":

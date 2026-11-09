@@ -59,7 +59,7 @@ describe("PropertyEditor", () => {
 	test("date, url and person use fitting inputs", () => {
 		expect(editor({ name: "d", kind: "date" }).find("input").attributes("type")).toBe("date");
 		expect(editor({ name: "u", kind: "url" }).find("input").attributes("type")).toBe("url");
-		expect(editor({ name: "p", kind: "person" }).find("input").attributes("list")).toBeTruthy();
+		expect(editor({ name: "p", kind: "person" }).find("input").attributes("placeholder")).toBe("handle or DID");
 	});
 
 	test("long text is a Markdown editor with a preview", async () => {

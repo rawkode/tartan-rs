@@ -28,7 +28,7 @@ curl -X PUT -H "Authorization: Bearer $TOKEN" localhost:8080/-/api/subscribers/a
 curl -H "Authorization: Bearer $TOKEN" "localhost:8080/-/api/subscribers/audit/events?after=0"
 ```
 
-A pattern is dot-separated tokens: `*` matches one token and a final `>` matches one or more. `repo.*` matches `repo.ready`; `ref.>` matches `ref.updated`; `>` matches everything.
+A pattern is dot-separated tokens: `*` matches one token and a final `>` matches one or more. `repo.*` matches `repo.ready`; `ref.>` matches `ref.updated`; `>` matches everything. `ref.signatures.checked` and `ref.signature.violation` have three tokens, so `ref.*` does not match them: subscribe to `ref.>` for every ref event.
 
 Each source delivers matching events in order and retries until the subscriber has stored them, so delivery is at least once and the subscriber stores each `(source, seq)` once. A new subscriber receives the history it matches.
 
@@ -46,6 +46,8 @@ An extension installation receives the events matching its manifest's `subscribe
 | `repo.ready` | repo | the repository exists on the Git host |
 | `push.accepted` | repo | walgit committed a push |
 | `ref.updated` | repo | a ref changed in a push |
+| `ref.signatures.checked` | repo | a ref update's signatures were judged: every judged object with its status, whether the ref's signing rule covers it and whether it complies |
+| `ref.signature.violation` | repo | a ref update broke the signing rule covering it, with the problem (such as `<oid> is unsigned`) |
 | `placement.set` | forge | a placement changed |
 | `subscriber.registered` | forge | a subscriber was added or changed |
 | `package.published` | forge | an extension package was published |

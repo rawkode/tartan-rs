@@ -121,6 +121,64 @@ impl Action for Disable {
     const NAME: &'static str = "disable";
 }
 
+/// Who a call acts for (spec: extension-runtime): a person, or an agent acting on behalf of
+/// one. The gateway builds it from the request's principal; the extension sees it as the slot
+/// context's `viewer`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Caller {
+    /// A person, or an agent acting for one.
+    pub kind: CallerKind,
+    /// The person's DID, or `token:<id>` for an access token.
+    pub id: String,
+    /// The DID an agent acts for.
+    pub on_behalf_of: Option<String>,
+}
+
+/// The kinds of [`Caller`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallerKind {
+    /// A signed-in person.
+    User,
+    /// An access token acting for a person.
+    Agent,
+    /// The installation itself, for events and timers.
+    Ext,
+}
+
+impl Caller {
+    /// A signed-in person.
+    pub fn user(did: impl Into<String>) -> Self {
+        Self {
+            kind: CallerKind::User,
+            id: did.into(),
+            on_behalf_of: None,
+        }
+    }
+
+    /// An access token acting for `did`.
+    pub fn agent(token_id: &str, did: impl Into<String>) -> Self {
+        Self {
+            kind: CallerKind::Agent,
+            id: format!("token:{token_id}"),
+            on_behalf_of: Some(did.into()),
+        }
+    }
+
+    /// The caller as the extension world describes it.
+    fn to_extension(&self) -> ExtensionActor {
+        ExtensionActor {
+            kind: match self.kind {
+                CallerKind::User => ActorKind::User,
+                CallerKind::Agent => ActorKind::Agent,
+                CallerKind::Ext => ActorKind::Ext,
+            },
+            id: self.id.clone(),
+            on_behalf_of: self.on_behalf_of.clone(),
+        }
+    }
+}
+
 /// Calls one of the extension's tools.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CallTool {
@@ -129,7 +187,12 @@ pub struct CallTool {
     /// Its JSON arguments.
     pub args: Value,
     /// The principal calling it.
-    pub viewer: String,
+    pub viewer: Caller,
+    /// The principal may only read: the call is refused unless the manifest declares the tool
+    /// `access: "read"`, and then it runs as a read-only call (no writes or effects; calls to
+    /// other installations are read-only too).
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 impl Action for CallTool {
@@ -146,7 +209,7 @@ pub struct Render {
     /// Properties for the render.
     pub props: Value,
     /// The principal viewing it.
-    pub viewer: String,
+    pub viewer: Caller,
 }
 
 impl Action for Render {
@@ -163,7 +226,7 @@ pub struct Act {
     /// Its JSON payload.
     pub payload: Value,
     /// The principal acting.
-    pub viewer: String,
+    pub viewer: Caller,
 }
 
 impl Action for Act {
@@ -303,16 +366,9 @@ impl Extension {
         ctx: &Ctx<Self>,
         spec: &InstallationSpec,
         loaded: &Loaded,
-        viewer: &str,
+        viewer: &Caller,
     ) -> CallEnvironment {
-        let caller = ctx.client().ok().map(|client| {
-            Arc::new(InstallationCaller {
-                client,
-                repo_id: spec.repo_id.clone(),
-                allowed: loaded.package.manifest.raw["permissions"]["calls"].clone(),
-                viewer: viewer.to_owned(),
-            }) as Arc<dyn ToolCaller>
-        });
+        let caller = self.caller(ctx, spec, loaded, viewer, false);
         CallEnvironment {
             sql: Arc::new(ActorSql(ctx.sql().clone())),
             config: spec.config.clone(),
@@ -322,9 +378,34 @@ impl Extension {
         }
     }
 
+    /// The installation's `calls` import acting for `viewer`; with `read_only`, every tool it
+    /// calls must be a read tool and runs read-only.
+    fn caller(
+        &self,
+        ctx: &Ctx<Self>,
+        spec: &InstallationSpec,
+        loaded: &Loaded,
+        viewer: &Caller,
+        read_only: bool,
+    ) -> Option<Arc<dyn ToolCaller>> {
+        ctx.client().ok().map(|client| {
+            Arc::new(InstallationCaller {
+                client,
+                repo_id: spec.repo_id.clone(),
+                allowed: loaded.package.manifest.raw["permissions"]["calls"].clone(),
+                viewer: viewer.clone(),
+                read_only,
+            }) as Arc<dyn ToolCaller>
+        })
+    }
+
     /// The principal an installation acts as when no person does: for events and timers.
-    fn own_principal(&self) -> String {
-        format!("extension:{}", self.id)
+    fn own_principal(&self) -> Caller {
+        Caller {
+            kind: CallerKind::Ext,
+            id: format!("extension:{}", self.id),
+            on_behalf_of: None,
+        }
     }
 
     /// Applies a successful call's effects and turns its result into a reply.
@@ -484,20 +565,57 @@ impl Handler<Disable> for Extension {
     }
 }
 
+/// A `render` or `on-action` reply whose `tartan-ui@1` nodes the host accepts: a `person` node
+/// must name a valid DID (design D14), else the call fails as `internal`.
+fn checked_ui(reply: CallReply) -> CallReply {
+    let CallReply::Ok(mut value) = reply else {
+        return reply;
+    };
+    let mode = services()
+        .map(|services| services.resolver.mode())
+        .unwrap_or_default();
+    match crate::ui_check::check_person_nodes(&mut value, mode) {
+        Ok(()) => CallReply::Ok(value),
+        Err(message) => CallReply::Failed {
+            kind: "internal".to_owned(),
+            message: format!("the extension returned an invalid tartan-ui document: {message}"),
+        },
+    }
+}
+
 impl Handler<CallTool> for Extension {
     async fn handle(self: Arc<Self>, ctx: Ctx<Self>, action: CallTool) -> Result<CallReply> {
         let _call = self.calls.lock().await;
         let (spec, loaded) = self.installed(&ctx).await?;
         let context = slot_context(&spec, None, &action.viewer);
-        let outcome = loaded
-            .component
-            .call_tool(
-                self.environment(&ctx, &spec, &loaded, &action.viewer),
-                &action.tool,
-                &action.args.to_string(),
-                &context,
-            )
-            .await?;
+        let outcome = if action.read_only {
+            if !declares_read_tool(&loaded.package.manifest.raw, &action.tool) {
+                return Ok(CallReply::Failed {
+                    kind: "denied".to_owned(),
+                    message: format!(
+                        "read-only: {} {} changes data; only forge owners can make changes \
+                         until membership exists",
+                        spec.extension_id, action.tool
+                    ),
+                });
+            }
+            let mut env = self.environment(&ctx, &spec, &loaded, &action.viewer);
+            env.caller = self.caller(&ctx, &spec, &loaded, &action.viewer, true);
+            loaded
+                .component
+                .call_read_tool(env, &action.tool, &action.args.to_string(), &context)
+                .await?
+        } else {
+            loaded
+                .component
+                .call_tool(
+                    self.environment(&ctx, &spec, &loaded, &action.viewer),
+                    &action.tool,
+                    &action.args.to_string(),
+                    &context,
+                )
+                .await?
+        };
         self.reply(&ctx, &spec, outcome).await
     }
 }
@@ -516,7 +634,7 @@ impl Handler<Render> for Extension {
                 &action.props.to_string(),
             )
             .await?;
-        self.reply(&ctx, &spec, outcome).await
+        Ok(checked_ui(self.reply(&ctx, &spec, outcome).await?))
     }
 }
 
@@ -534,7 +652,7 @@ impl Handler<Act> for Extension {
                 &context,
             )
             .await?;
-        self.reply(&ctx, &spec, outcome).await
+        Ok(checked_ui(self.reply(&ctx, &spec, outcome).await?))
     }
 }
 
@@ -677,7 +795,7 @@ fn to_extension_event(envelope: &Envelope, spec: &InstallationSpec) -> tartan_ex
 }
 
 /// The context of a call: the installation's repository and the principal calling.
-fn slot_context(spec: &InstallationSpec, slot: Option<&str>, viewer: &str) -> SlotContext {
+fn slot_context(spec: &InstallationSpec, slot: Option<&str>, viewer: &Caller) -> SlotContext {
     SlotContext {
         slot: slot.map(str::to_owned),
         node: spec.repo_id.clone(),
@@ -685,11 +803,7 @@ fn slot_context(spec: &InstallationSpec, slot: Option<&str>, viewer: &str) -> Sl
         git_ref: None,
         path: None,
         entity: None,
-        viewer: Some(ExtensionActor {
-            kind: ActorKind::User,
-            id: viewer.to_owned(),
-            on_behalf_of: None,
-        }),
+        viewer: Some(viewer.to_extension()),
         mode: InstallMode::Enforce,
         extra: None,
     }
@@ -708,6 +822,17 @@ fn failed(error: ExtensionError) -> CallReply {
         kind: kind.to_owned(),
         message,
     }
+}
+
+/// Whether `manifest` declares `tool` with `access: "read"` (`contributes.tools`).
+fn declares_read_tool(manifest: &Value, tool: &str) -> bool {
+    manifest["contributes"]["tools"]
+        .as_array()
+        .is_some_and(|tools| {
+            tools
+                .iter()
+                .any(|t| t["name"] == tool && t["access"] == "read")
+        })
 }
 
 /// Whether an extension-emitted event type is dot-separated lowercase tokens.
@@ -731,7 +856,9 @@ struct InstallationCaller {
     repo_id: String,
     /// `permissions.calls`: extension id to the tools it may call.
     allowed: Value,
-    viewer: String,
+    viewer: Caller,
+    /// Whether the call it serves is a read-only tool call.
+    read_only: bool,
 }
 
 #[async_trait]
@@ -793,6 +920,7 @@ impl ToolCaller for InstallationCaller {
                 tool: tool.to_owned(),
                 args,
                 viewer: self.viewer.clone(),
+                read_only: self.read_only,
             })
             .await?;
         Ok(match reply {
@@ -812,40 +940,68 @@ impl ToolCaller for InstallationCaller {
 /// The installation's database, as the extension host sees it.
 struct ActorSql(SqliteDb);
 
+fn bind_params(params: Vec<SqlValue>) -> Vec<BindParam> {
+    params
+        .into_iter()
+        .map(|value| match value {
+            SqlValue::Null => BindParam::Null,
+            SqlValue::Integer(v) => BindParam::Integer(v),
+            SqlValue::Real(v) => BindParam::Float(v),
+            SqlValue::Text(v) => BindParam::Text(v),
+            SqlValue::Blob(v) => BindParam::Blob(v),
+        })
+        .collect()
+}
+
+fn sql_rows(
+    query: &str,
+    columns: Vec<String>,
+    rows: Vec<Vec<ColumnValue>>,
+    changes: i64,
+) -> SqlRows {
+    // SQLite's change count is the last write's, so a query reports none of its own.
+    let leading = query
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let reads_only = matches!(leading.as_str(), "select" | "with");
+    SqlRows {
+        columns,
+        values: rows
+            .into_iter()
+            .map(|row| row.into_iter().map(from_column).collect())
+            .collect(),
+        rows_written: if reads_only {
+            0
+        } else {
+            u64::try_from(changes).unwrap_or_default()
+        },
+    }
+}
+
 #[async_trait]
 impl SqlBackend for ActorSql {
     async fn exec(&self, query: &str, params: Vec<SqlValue>) -> Result<SqlRows> {
-        let params = params
-            .into_iter()
-            .map(|value| match value {
-                SqlValue::Null => BindParam::Null,
-                SqlValue::Integer(v) => BindParam::Integer(v),
-                SqlValue::Real(v) => BindParam::Float(v),
-                SqlValue::Text(v) => BindParam::Text(v),
-                SqlValue::Blob(v) => BindParam::Blob(v),
-            })
-            .collect();
-        let result = self.0.execute(query, Some(params)).await?;
-        // SQLite's change count is the last write's, so a query reports none of its own.
-        let leading = query
-            .split_whitespace()
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let reads_only = matches!(leading.as_str(), "select" | "with");
-        Ok(SqlRows {
-            columns: result.columns,
-            values: result
-                .rows
-                .into_iter()
-                .map(|row| row.into_iter().map(from_column).collect())
-                .collect(),
-            rows_written: if reads_only {
-                0
-            } else {
-                u64::try_from(result.changes).unwrap_or_default()
-            },
-        })
+        let result = self.0.execute(query, Some(bind_params(params))).await?;
+        Ok(sql_rows(query, result.columns, result.rows, result.changes))
+    }
+
+    async fn exec_read_only(&self, query: &str, params: Vec<SqlValue>) -> Result<SqlRows> {
+        // The transaction keeps the actor's other statements off the connection while
+        // `query_only` is on, and its rollback undoes anything that slipped through.
+        let transaction = self.0.begin_transaction(None).await?;
+        let outcome = match transaction.exec("PRAGMA query_only = ON").await {
+            Ok(_) => {
+                let result = transaction.execute(query, Some(bind_params(params))).await;
+                let reset = transaction.exec("PRAGMA query_only = OFF").await;
+                result.and_then(|result| reset.map(|_| result))
+            }
+            Err(error) => Err(error),
+        };
+        transaction.rollback().await?;
+        let result = outcome?;
+        Ok(sql_rows(query, result.columns, result.rows, result.changes))
     }
 
     async fn exec_script(&self, script: &str) -> Result<()> {

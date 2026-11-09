@@ -2,6 +2,11 @@
 //! in memory, and a Git host whose pushes are simulated: a pushed `tartan.cue` is stored per
 //! commit and announced with a signed ref event for `main`.
 //!
+//! Identity runs against an in-process `tartan-devnet` (PLC directory, PDS and authorization
+//! server). Its `alice.test` is the forge's owner, and the harness acts as her through an
+//! access token minted by the identity actor's operator path, as `tt admin token create` does.
+//! The gateway's public URL is its own origin, since no web server runs.
+//!
 //! Extension packages reach the forge as they do in a deployment: each is published as a CUE
 //! module (`cue mod publish`, with the `cue` in `CUE_BIN`) to the source registry at
 //! `TARTAN_MODULE_SOURCE` (a test-only CNCF distribution that `scripts/e2e.sh` starts), then the
@@ -14,36 +19,579 @@
 // Each test binary uses part of this module.
 #![allow(dead_code)]
 
+pub mod tt;
+
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
-use rivetkit::Registry;
-use rivetkit::client::Client;
+use rivetkit::client::{Client, ClientConfig};
 use rivetkit::test::TestHandle;
+use rivetkit::{EngineSpawnMode, Registry, ServeConfig};
 use serde_json::{Value, json};
 use sha2::Sha256;
-use tartan::{GatewayState, RegistryStore, SyncReport, SyncTargets, router, sync_modules};
+use tartan::settings::{PublicUrl, PublicUrlRules, WebClient};
+use tartan::{
+    Access, AccessConfig, GatewayState, RegistryStore, SyncReport, SyncTargets, router,
+    sync_modules,
+};
+use tartan_atproto::Mode;
+use tartan_atproto::fetch::{FetchClient, FetchConfig};
+use tartan_atproto::resolver::{ResolverConfig, VerifyingResolver};
 use tartan_config::DirEntry;
-use tartan_config::deployment::{Deployment, ModuleVersion};
+use tartan_config::deployment::{Deployment, ModuleVersion, Readers};
+use tartan_devnet::{Devnet, DevnetConfig};
 use tartan_extensions::{COMPONENT_FILE, ExtensionPackage, ExtensionRuntime};
-use tartan_forge::{Extensions, GitHost, Services, install_services, register_actors};
+use tartan_forge::{
+    Clock, Extensions, GitHost, Services, identity_handle, install_services, register_actors,
+};
+use tartan_identity_api::{AdminCreateToken, TokenRequest, TokenScope};
+use tokio_util::sync::CancellationToken;
 
-pub const ADMIN_TOKEN: &str = "test-admin-token";
 pub const WEBHOOK_SECRET: &[u8] = b"test-webhook-secret";
 pub const DEADLINE: Duration = Duration::from_secs(60);
 
-/// A Git host that keeps each pushed commit's files.
+/// The forge's actors served on the shared local engine in a pool of their own.
+///
+/// `rivetkit::test::setup` names its pool by a counter that restarts in every process, and the
+/// engine outlives each test binary. An actor an earlier binary left with a pending schedule
+/// would then wake on whichever later process serves that same pool, running against that
+/// process's services and fakes. A pool named after the run keeps every actor on the process
+/// that created it.
+pub struct Actors {
+    engine: TestHandle,
+    shutdown: CancellationToken,
+    serving: tokio::task::JoinHandle<anyhow::Result<()>>,
+    client: Client,
+}
+
+impl Actors {
+    /// Starts (or reuses) the engine and serves `registry` in a pool named `prefix` plus the
+    /// time, so no earlier run's pool is reused.
+    pub async fn start(registry: Registry, prefix: &str) -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after 1970")
+            .as_nanos();
+        // A pool name is a DNS label: at most 63 lowercase letters, digits and hyphens.
+        let mut pool = format!("{prefix}-{:x}-{nanos:x}", std::process::id());
+        pool.truncate(63);
+        let pool = pool.trim_end_matches('-');
+        // An empty registry only brings the engine up; its pool never hosts an actor.
+        let engine = rivetkit::test::setup(Registry::new())
+            .await
+            .expect("engine");
+        let shutdown = CancellationToken::new();
+        let config = ServeConfig {
+            endpoint: ENGINE.to_owned(),
+            token: Some("default".to_owned()),
+            namespace: "default".to_owned(),
+            pool_name: pool.to_owned(),
+            engine_spawn: EngineSpawnMode::Never,
+            ..ServeConfig::default()
+        };
+        let serving = tokio::spawn(registry.serve_with_config(config, shutdown.clone()));
+        let client = Client::new(
+            ClientConfig::new(ENGINE)
+                .token("default")
+                .namespace("default")
+                .pool_name(pool),
+        );
+        Self {
+            engine,
+            shutdown,
+            serving,
+            client,
+        }
+    }
+
+    pub fn client(&self) -> &Client {
+        &self.client
+    }
+
+    /// Stops serving the pool; the engine stays up for reuse.
+    pub async fn shutdown(self) {
+        self.shutdown.cancel();
+        let _ = self.serving.await;
+        self.engine.shutdown().await;
+    }
+}
+
+/// Where `rivetkit::test::setup` runs the engine.
+pub const ENGINE: &str = "http://127.0.0.1:6420";
+
+/// The forge's clock in tests (design D12, *Time in tests*): wall-clock time plus an offset the
+/// test advances. Only this harness has it; the `tartan` binary always runs on real time.
+#[derive(Debug, Default)]
+pub struct TestClock {
+    offset_ms: AtomicI64,
+}
+
+impl TestClock {
+    /// Moves the forge's time forward by `by`.
+    pub fn advance(&self, by: Duration) {
+        let by =
+            i64::try_from(by.as_millis()).expect("a test advances by less than 292 million years");
+        self.offset_ms.fetch_add(by, Ordering::SeqCst);
+    }
+}
+
+impl Clock for TestClock {
+    fn now_ms(&self) -> i64 {
+        let wall = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after 1970")
+            .as_millis();
+        i64::try_from(wall).expect("fits") + self.offset_ms()
+    }
+
+    fn offset_ms(&self) -> i64 {
+        self.offset_ms.load(Ordering::SeqCst)
+    }
+}
+
+/// An identity resolver with production rules (public HTTPS, `plc.directory`), for tests that
+/// reach no identity network.
+pub fn offline_resolver() -> VerifyingResolver {
+    let fetch = FetchClient::new(FetchConfig::new(Mode::Production)).expect("a fetch client");
+    let config = ResolverConfig::production().expect("the system DNS configuration");
+    VerifyingResolver::new(fetch, config)
+}
+
+/// The forge's identity side in tests: a devnet, a resolver over it, the web client's key and
+/// the owner's DID.
+pub struct IdentityWorld {
+    pub devnet: Arc<Devnet>,
+    pub resolver: VerifyingResolver,
+    pub keyset: jacquard_oauth::keyset::Keyset,
+    pub owner: String,
+}
+
+impl IdentityWorld {
+    /// Starts a devnet with the seed people; `alice.test` is the owner.
+    pub async fn start() -> Self {
+        let devnet = Devnet::start(DevnetConfig::default())
+            .await
+            .expect("the devnet starts");
+        let fetch = FetchClient::new(FetchConfig::new(Mode::Development)).expect("a fetch client");
+        let resolver = VerifyingResolver::new(
+            fetch,
+            ResolverConfig::development(devnet.url(), devnet.url()),
+        );
+        let keyset =
+            tartan::settings::parse_keyset(&test_jwks()).expect("the test client key is valid");
+        let owner = devnet.did("alice.test").await.expect("alice");
+        Self {
+            devnet: Arc::new(devnet),
+            resolver,
+            keyset,
+            owner,
+        }
+    }
+
+    /// The gateway's access state for a gateway at `base`.
+    pub fn access(&self, base: &str, readers: Readers, clock: Arc<dyn Clock>) -> Arc<Access> {
+        self.access_with(base, readers, clock, Vec::new())
+    }
+
+    /// The gateway's access state, trusting `proxies`' `X-Forwarded-For`.
+    pub fn access_with(
+        &self,
+        base: &str,
+        readers: Readers,
+        clock: Arc<dyn Clock>,
+        proxies: Vec<ipnet::IpNet>,
+    ) -> Arc<Access> {
+        self.access_client(
+            base,
+            readers,
+            clock,
+            proxies,
+            WebClient::Confidential(self.keyset.clone()),
+        )
+    }
+
+    /// The gateway's access state with `client` as its web sign-in client.
+    pub fn access_client(
+        &self,
+        base: &str,
+        readers: Readers,
+        clock: Arc<dyn Clock>,
+        proxies: Vec<ipnet::IpNet>,
+        client: WebClient,
+    ) -> Arc<Access> {
+        Arc::new(Access::new(AccessConfig {
+            public_url: PublicUrl::parse(base, PublicUrlRules::Development).expect("public url"),
+            client,
+            resolver: self.resolver.clone(),
+            owners: vec![self.owner.clone()],
+            readers,
+            trusted_proxies: proxies,
+            clock,
+        }))
+    }
+}
+
+/// A private ES256 JWKS for the test forge's web client.
+pub fn test_jwks() -> String {
+    let secret = p256::SecretKey::from_slice(&[42_u8; 32]).expect("a key");
+    let mut jwk = serde_json::to_value(jose_jwk::Jwk {
+        key: jose_jwk::Key::from(&jose_jwk::crypto::Key::from(secret)),
+        prm: Default::default(),
+    })
+    .expect("jwk");
+    jwk["kid"] = json!("test-1");
+    json!({ "keys": [jwk] }).to_string()
+}
+
+/// Mints an access token for `did` through the identity actor's operator path.
+pub async fn admin_token(client: &Client, did: &str, scopes: Vec<TokenScope>) -> String {
+    identity_handle(client)
+        .expect("the identity actor")
+        .send(AdminCreateToken {
+            did: did.to_owned(),
+            request: TokenRequest {
+                name: "tests".to_owned(),
+                scopes,
+                repos: None,
+                expires_in_days: 30,
+            },
+        })
+        .await
+        .expect("the identity actor answers")
+        .expect("an owner's token")
+        .secret
+}
+
+/// Every token scope.
+pub fn all_scopes() -> Vec<TokenScope> {
+    vec![TokenScope::Read, TokenScope::Write, TokenScope::Admin]
+}
+
+/// Serves `router` on `listener` with each request's peer address, as the binary does.
+pub fn serve(listener: tokio::net::TcpListener, router: axum::Router) {
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+    });
+}
+
+/// The `name=value` pairs of a response's `Set-Cookie` headers.
+pub fn set_cookies(response: &reqwest::Response) -> HashMap<String, String> {
+    response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .filter_map(|value| value.split(';').next())
+        .filter_map(|pair| pair.split_once('='))
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        .collect()
+}
+
+/// A browser for sign-in tests: no redirects followed, no proxy, cookies kept by hand.
+pub fn browser() -> reqwest::Client {
+    reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("a client")
+}
+
+/// The first half of a sign-in: the login answer.
+#[derive(Debug)]
+pub struct Started {
+    pub status: u16,
+    pub location: String,
+    pub cookies: HashMap<String, String>,
+    pub retry_after: Option<String>,
+}
+
+/// Posts the sign-in form for `handle` as a browser at `base` would.
+pub async fn start_sign_in(
+    base: &str,
+    handle: &str,
+    return_to: &str,
+    forwarded_for: Option<&str>,
+) -> Started {
+    let mut request = browser()
+        .post(format!("{base}/-/auth/login"))
+        .header("origin", base)
+        .form(&[("handle", handle), ("return_to", return_to)]);
+    if let Some(forwarded) = forwarded_for {
+        request = request.header("x-forwarded-for", forwarded);
+    }
+    let response = request.send().await.expect("login answers");
+    Started {
+        status: response.status().as_u16(),
+        location: response
+            .headers()
+            .get("location")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned(),
+        cookies: set_cookies(&response),
+        retry_after: response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned),
+    }
+}
+
+/// Follows the devnet's auto-approving authorize page and answers the callback URL.
+pub async fn approve(location: &str) -> String {
+    let approved = browser()
+        .get(location)
+        .send()
+        .await
+        .expect("authorize answers");
+    assert_eq!(
+        approved.status(),
+        303,
+        "authorize: {:?}",
+        approved.text().await
+    );
+    approved.headers()["location"]
+        .to_str()
+        .expect("location")
+        .to_owned()
+}
+
+/// What a callback answered.
+#[derive(Debug)]
+pub struct Finished {
+    /// The callback's status.
+    pub status: u16,
+    /// Where it sent the browser.
+    pub location: String,
+    /// The cookies it set (an empty value clears a cookie).
+    pub cookies: HashMap<String, String>,
+}
+
+impl Finished {
+    /// The session cookie's value.
+    pub fn session(&self) -> String {
+        self.cookies
+            .get("tartan_session")
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| panic!("no session: {self:?}"))
+            .clone()
+    }
+
+    /// The query of the sign-in page the browser was sent to, decoded.
+    pub fn problem(&self) -> HashMap<String, String> {
+        problem_query(&self.location)
+    }
+}
+
+/// The decoded query of a `/#/-/sign-in?…` location.
+pub fn problem_query(location: &str) -> HashMap<String, String> {
+    let query = location
+        .split_once("/#/-/sign-in?")
+        .map(|(_, q)| q)
+        .unwrap_or_default();
+    reqwest::Url::parse(&format!("http://x/?{query}"))
+        .expect("a query")
+        .query_pairs()
+        .into_owned()
+        .collect()
+}
+
+/// Calls the callback URL with `cookie` as the `Cookie` header.
+pub async fn finish(callback: &str, cookie: &str) -> Finished {
+    let response = browser()
+        .get(callback)
+        .header("cookie", cookie)
+        .send()
+        .await
+        .expect("callback answers");
+    Finished {
+        status: response.status().as_u16(),
+        location: response
+            .headers()
+            .get("location")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned(),
+        cookies: set_cookies(&response),
+    }
+}
+
+/// Signs `handle` in through the whole OAuth flow; `cookie` is anything else the browser holds.
+pub async fn sign_in(base: &str, handle: &str, return_to: &str, cookie: Option<&str>) -> Finished {
+    let started = start_sign_in(base, handle, return_to, None).await;
+    assert_eq!(started.status, 303, "login: {started:?}");
+    let pre_auth = started
+        .cookies
+        .get("tartan_oauth")
+        .unwrap_or_else(|| panic!("no pre-auth cookie: {started:?}"))
+        .clone();
+    let callback = approve(&started.location).await;
+    let mut cookies = format!("tartan_oauth={pre_auth}");
+    if let Some(cookie) = cookie {
+        cookies.push_str("; ");
+        cookies.push_str(cookie);
+    }
+    finish(&callback, &cookies).await
+}
+
+/// `text` percent-encoded as the devnet and the forge write query values.
+pub fn percent(text: &str) -> String {
+    tartan::auth::percent_encode(text)
+}
+
+/// The `host:port` of a URL, as outcome details name a server.
+pub fn host(url: &str) -> String {
+    let url = reqwest::Url::parse(url).expect("a URL");
+    match url.port() {
+        Some(port) => format!("{}:{port}", url.host_str().unwrap_or_default()),
+        None => url.host_str().unwrap_or_default().to_owned(),
+    }
+}
+
+/// Git's empty tree.
+pub const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// The content of a commit with `parents`, made at `time` (Unix seconds), unsigned.
+pub fn commit_bytes(parents: &[&str], message: &str, time: i64) -> Vec<u8> {
+    let mut text = format!("tree {EMPTY_TREE}\n");
+    for parent in parents {
+        text.push_str(&format!("parent {parent}\n"));
+    }
+    text.push_str(&format!(
+        "author Tests <tests@example.com> {time} +0000\ncommitter Tests <tests@example.com> {time} +0000\n\n{message}\n"
+    ));
+    text.into_bytes()
+}
+
+/// An in-memory object store whose writes of proof bundles fail while `failing` is set, as
+/// an unreachable store's would.
+#[derive(Debug, Default)]
+pub struct ProofStore {
+    inner: object_store::memory::InMemory,
+    pub failing: std::sync::atomic::AtomicBool,
+}
+
+impl std::fmt::Display for ProofStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ProofStore({})", self.inner)
+    }
+}
+
+#[async_trait]
+impl object_store::ObjectStore for ProofStore {
+    async fn put_opts(
+        &self,
+        location: &object_store::path::Path,
+        payload: object_store::PutPayload,
+        opts: object_store::PutOptions,
+    ) -> object_store::Result<object_store::PutResult> {
+        if self.failing.load(Ordering::SeqCst) && location.as_ref().starts_with("proofs/") {
+            return Err(object_store::Error::Generic {
+                store: "ProofStore",
+                source: "the store is unreachable".into(),
+            });
+        }
+        self.inner.put_opts(location, payload, opts).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &object_store::path::Path,
+        opts: object_store::PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &object_store::path::Path,
+        options: object_store::GetOptions,
+    ) -> object_store::Result<object_store::GetResult> {
+        self.inner.get_opts(location, options).await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: futures_util::stream::BoxStream<
+            'static,
+            object_store::Result<object_store::path::Path>,
+        >,
+    ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::path::Path>>
+    {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&object_store::path::Path>,
+    ) -> futures_util::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+    {
+        self.inner.list(prefix)
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&object_store::path::Path>,
+    ) -> object_store::Result<object_store::ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &object_store::path::Path,
+        to: &object_store::path::Path,
+        options: object_store::CopyOptions,
+    ) -> object_store::Result<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
+}
+
+/// A Git host that keeps each pushed commit's files and every object pushed, per repository.
 #[derive(Default)]
 pub struct FakeGitHost {
     pub created: Mutex<Vec<String>>,
     /// `(owner/name, sha)` to the commit's files, by path.
     files: Mutex<HashMap<(String, String), BTreeMap<String, String>>>,
+    objects: Mutex<HashMap<String, Arc<tartan_forge::MemoryObjects>>>,
+    /// While set, reading objects fails as an unreachable host does.
+    pub failing: std::sync::atomic::AtomicBool,
+    /// How many times objects were read.
+    pub reads: AtomicU64,
+}
+
+impl FakeGitHost {
+    /// The objects of `repo` (`owner/name`).
+    pub fn objects(&self, repo: &str) -> Arc<tartan_forge::MemoryObjects> {
+        self.objects
+            .lock()
+            .expect("never poisoned")
+            .entry(repo.to_owned())
+            .or_default()
+            .clone()
+    }
+
+    /// Stores an object in `repo` and returns its id.
+    pub fn insert(&self, repo: &str, kind: &str, bytes: Vec<u8>) -> String {
+        self.objects(repo).insert(kind, bytes)
+    }
+
+    /// Stores `files` as the files of commit `sha` in `repo`.
+    pub fn set_files(&self, repo: &str, sha: &str, files: BTreeMap<String, String>) {
+        self.files
+            .lock()
+            .expect("never poisoned")
+            .insert((repo.to_owned(), sha.to_owned()), files);
+    }
 }
 
 #[async_trait]
@@ -108,6 +656,37 @@ impl GitHost for FakeGitHost {
             .get(&(format!("{owner}/{name}"), rev.to_owned()))
             .and_then(|commit| commit.get(path))
             .map(|contents| contents.clone().into_bytes()))
+    }
+
+    async fn read_new_objects(
+        &self,
+        owner: &str,
+        name: &str,
+        new: &str,
+        hidden: &[String],
+        limit: usize,
+        skip: &(dyn for<'s> Fn(&'s str) -> bool + Send + Sync),
+    ) -> Result<tartan_forge::Walk> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        if self.failing.load(Ordering::SeqCst) {
+            anyhow::bail!("git.test: connection refused");
+        }
+        self.objects(&format!("{owner}/{name}"))
+            .read_new_objects(new, hidden, limit, skip)
+    }
+
+    async fn is_ancestor(
+        &self,
+        owner: &str,
+        name: &str,
+        ancestor: &str,
+        head: &str,
+    ) -> Result<bool> {
+        if self.failing.load(Ordering::SeqCst) {
+            anyhow::bail!("git.test: connection refused");
+        }
+        self.objects(&format!("{owner}/{name}"))
+            .is_ancestor(ancestor, head)
     }
 }
 
@@ -225,6 +804,7 @@ impl ModuleSource {
                 .into_iter()
                 .map(|prefix| (prefix.to_owned(), source.parse().expect("a source")))
                 .collect(),
+            ..Deployment::default()
         }
     }
 }
@@ -326,8 +906,16 @@ pub struct Forge {
     pub registry: RegistryStore,
     pub extensions: Arc<Extensions>,
     pub modules: ModuleSource,
-    client: Client,
-    actors: Option<TestHandle>,
+    pub clock: Arc<TestClock>,
+    /// The object store, whose proof writes can be made to fail.
+    pub proofs: Arc<ProofStore>,
+    pub identity: IdentityWorld,
+    /// The owner's access token, with every scope.
+    pub token: String,
+    pub client: Client,
+    /// The forge id the identity actor is keyed by (`TARTAN_FORGE_ID`).
+    pub forge_id: String,
+    actors: Option<Actors>,
     seq: AtomicU64,
     heads: Mutex<HashMap<String, String>>,
 }
@@ -336,6 +924,21 @@ impl Forge {
     /// Starts the engine, the actors and the gateway; `name` keeps this run's forge apart from
     /// earlier runs on the same engine.
     pub async fn start(name: &str) -> Self {
+        Self::start_with(
+            name,
+            Readers::default(),
+            tartan_forge::IdentityLimits::default(),
+        )
+        .await
+    }
+
+    /// Starts a forge whose deployment admits `readers` and whose identity actor enforces
+    /// `identity_limits` (tests lower caps so they can be reached).
+    pub async fn start_with(
+        name: &str,
+        readers: Readers,
+        identity_limits: tartan_forge::IdentityLimits,
+    ) -> Self {
         // Warnings show with a failing test's output.
         let _ = tracing_subscriber::fmt()
             .with_env_filter("warn")
@@ -345,35 +948,44 @@ impl Forge {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("after 1970")
             .as_nanos();
+        let forge_id = format!("{name}-{nanos}");
         let git = Arc::new(FakeGitHost::default());
-        let store: Arc<dyn object_store::ObjectStore> =
-            Arc::new(object_store::memory::InMemory::new());
+        let proofs = Arc::new(ProofStore::default());
+        let store: Arc<dyn object_store::ObjectStore> = proofs.clone();
         let registry = RegistryStore::new(store.clone());
         let extensions = Arc::new(Extensions::new(
             ExtensionRuntime::new().expect("runtime"),
-            store,
+            store.clone(),
         ));
+        let clock = Arc::new(TestClock::default());
+        let identity = IdentityWorld::start().await;
         install_services(Services {
-            forge_id: format!("{name}-{nanos}"),
+            forge_id: forge_id.clone(),
             git_host: git.clone(),
             extensions: extensions.clone(),
+            clock: clock.clone(),
+            owners: vec![identity.owner.clone()],
+            readers: readers.clone(),
+            resolver: identity.resolver.clone(),
+            identity_limits,
+            objects: store.clone(),
+            state_dir: std::env::temp_dir().join(format!("tartan-test-{name}-{nanos}")),
         })
         .expect("installed once");
         let mut actor_registry = Registry::new();
         register_actors(&mut actor_registry);
-        let actors = rivetkit::test::setup(actor_registry)
-            .await
-            .expect("engine and registry");
+        let actors = Actors::start(actor_registry, "forge").await;
         let client = actors.client().clone();
+        let listener = gateway_listener().await;
+        let base = format!("http://{}", listener.local_addr().expect("address"));
         let state = GatewayState {
             client: client.clone(),
-            admin_token: Arc::from(ADMIN_TOKEN),
+            access: identity.access(&base, readers, clock.clone()),
             webhook_secret: Arc::from(WEBHOOK_SECRET),
             registry: registry.clone(),
         };
-        let listener = gateway_listener().await;
-        let base = format!("http://{}", listener.local_addr().expect("address"));
-        tokio::spawn(async move { axum::serve(listener, router(state)).await });
+        serve(listener, router(state));
+        let token = admin_token(&client, &identity.owner, all_scopes()).await;
         // A forge starts with its deployment's modules synced; this one lists none yet.
         sync(&Deployment::default(), &registry, &client, &extensions).await;
         Self {
@@ -383,11 +995,52 @@ impl Forge {
             registry,
             extensions,
             modules: ModuleSource::default(),
+            clock,
+            proofs,
+            identity,
+            token,
             client,
+            forge_id,
             actors: Some(actors),
             seq: AtomicU64::new(1),
             heads: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Starts another gateway over the same actors, with its own `readers` and trusted proxies,
+    /// and answers its origin. Rights are computed in the gateway, so each gateway shows the
+    /// forge as its read mode would.
+    pub async fn gateway(&self, readers: Readers, proxies: Vec<ipnet::IpNet>) -> String {
+        let keyset = self.identity.keyset.clone();
+        self.gateway_with(readers, proxies, move |_| WebClient::Confidential(keyset))
+            .await
+    }
+
+    /// Starts another gateway whose web sign-in client `client` builds from its origin.
+    pub async fn gateway_with(
+        &self,
+        readers: Readers,
+        proxies: Vec<ipnet::IpNet>,
+        client: impl FnOnce(&str) -> WebClient,
+    ) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind a gateway");
+        let base = format!("http://{}", listener.local_addr().expect("address"));
+        let state = GatewayState {
+            client: self.client.clone(),
+            access: self.identity.access_client(
+                &base,
+                readers,
+                self.clock.clone(),
+                proxies,
+                client(&base),
+            ),
+            webhook_secret: Arc::from(WEBHOOK_SECRET),
+            registry: self.registry.clone(),
+        };
+        serve(listener, router(state));
+        base
     }
 
     pub async fn stop(mut self) {
@@ -405,7 +1058,7 @@ impl Forge {
         let mut request = self
             .http
             .request(method, format!("{}{path}", self.base))
-            .bearer_auth(ADMIN_TOKEN);
+            .bearer_auth(&self.token);
         if let Some(body) = body {
             request = request.json(&body);
         }
@@ -491,33 +1144,48 @@ impl Forge {
     /// Pushes a commit to `repo`'s `main` holding exactly `files`, and returns the commit.
     pub async fn push_files(&self, repo: &str, files: &[(&str, &str)]) -> String {
         let seq = self.seq.fetch_add(1, Ordering::SeqCst);
-        let sha = format!("{seq:040x}");
-        let commit = files
-            .iter()
-            .map(|(path, contents)| ((*path).to_owned(), (*contents).to_owned()))
-            .collect();
-        self.git
-            .files
-            .lock()
-            .expect("never poisoned")
-            .insert((repo.to_owned(), sha.clone()), commit);
         let old = self
             .heads
             .lock()
             .expect("never poisoned")
-            .insert(repo.to_owned(), sha.clone())
-            .unwrap_or_else(|| "0".repeat(40));
+            .get(repo)
+            .cloned();
+        let parents: Vec<&str> = old.iter().map(String::as_str).collect();
+        let sha = self.git.insert(
+            repo,
+            "commit",
+            commit_bytes(&parents, &format!("push {seq}"), commit_time(seq)),
+        );
+        self.git.set_files(
+            repo,
+            &sha,
+            files
+                .iter()
+                .map(|(path, contents)| ((*path).to_owned(), (*contents).to_owned()))
+                .collect(),
+        );
+        self.heads
+            .lock()
+            .expect("never poisoned")
+            .insert(repo.to_owned(), sha.clone());
+        let old = old.unwrap_or_else(|| "0".repeat(40));
         let event = json!([ref_event(repo, seq, "refs/heads/main", &old, &sha)]);
         assert_eq!(self.hook(&event).await, 204, "the push is recorded");
         sha
     }
 
-    /// Pushes a commit to another branch of `repo`.
+    /// Pushes a new branch `branch` of `repo` at a root commit holding `config` as its
+    /// `tartan.cue`.
     pub async fn push_branch(&self, repo: &str, branch: &str, config: &str) {
         let seq = self.seq.fetch_add(1, Ordering::SeqCst);
-        let sha = format!("{seq:040x}");
-        self.git.files.lock().expect("never poisoned").insert(
-            (repo.to_owned(), sha.clone()),
+        let sha = self.git.insert(
+            repo,
+            "commit",
+            commit_bytes(&[], &format!("push {seq}"), commit_time(seq)),
+        );
+        self.git.set_files(
+            repo,
+            &sha,
             BTreeMap::from([
                 ("cue.mod/module.cue".to_owned(), PLAIN_MODULE.to_owned()),
                 ("tartan.cue".to_owned(), config.to_owned()),
@@ -525,6 +1193,29 @@ impl Forge {
         );
         let event = json!([ref_event(repo, seq, branch, &"0".repeat(40), &sha)]);
         assert_eq!(self.hook(&event).await, 204);
+    }
+
+    /// Records a push of `ref_name` in `repo` from `old` to `new`, objects already stored, and
+    /// makes `new` `main`'s head when `ref_name` is `main`.
+    pub async fn push_ref(&self, repo: &str, ref_name: &str, old: &str, new: &str) {
+        let seq = self.seq.fetch_add(1, Ordering::SeqCst);
+        if ref_name == "refs/heads/main" {
+            self.heads
+                .lock()
+                .expect("never poisoned")
+                .insert(repo.to_owned(), new.to_owned());
+        }
+        let event = json!([ref_event(repo, seq, ref_name, old, new)]);
+        assert_eq!(self.hook(&event).await, 204, "the push is recorded");
+    }
+
+    /// `main`'s head in `repo`, if pushed.
+    pub fn head(&self, repo: &str) -> Option<String> {
+        self.heads
+            .lock()
+            .expect("never poisoned")
+            .get(repo)
+            .cloned()
     }
 
     /// A walgit log sequence number not used before in this forge.
@@ -609,6 +1300,11 @@ impl Forge {
             .map(|list| list.iter().map(|r| r["event"].clone()).collect())
             .unwrap_or_default()
     }
+}
+
+/// The commit time of the commit made for push `seq`, increasing with it.
+pub fn commit_time(seq: u64) -> i64 {
+    1_700_000_000 + i64::try_from(seq).expect("small")
 }
 
 /// One walgit ref event.

@@ -21,7 +21,8 @@ const heading = computed(() => {
 	const e = apiError.value;
 	if (!e) return "Something went wrong";
 	if (e.status === 0) return "The gateway is unreachable";
-	if (e.status === 401) return "The gateway refused the token";
+	if (e.status === 401) return "You are signed out";
+	if (e.status === 403) return "Not allowed";
 	if (e.status === 404) return "Not found";
 	if (e.status === 409) return "Conflict";
 	if (e.kind === "invalid" || e.status === 400) return "The request was refused";
@@ -97,11 +98,11 @@ const styles = {
 					<Icon name="refresh" :size="14" /> Try again
 				</button>
 				<RouterLink
-					v-if="apiError && (apiError.status === 401 || apiError.status === 0) && !settings.sandbox"
-					:to="{ name: 'settings' }"
+					v-if="apiError && apiError.status === 401 && !settings.sandbox"
+					:to="{ name: 'sign-in' }"
 					:class="button({ size: 'sm', variant: 'ghost' })"
 				>
-					<Icon name="settings" :size="14" /> Open settings
+					<Icon name="user" :size="14" /> Sign in
 				</RouterLink>
 			</div>
 		</div>

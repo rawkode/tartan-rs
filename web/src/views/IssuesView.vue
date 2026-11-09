@@ -4,11 +4,13 @@ import { computed, ref, watch } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import { css } from "styled-system/css";
 import { badge, button, field } from "styled-system/recipes";
+import AuthorDisplay from "../components/AuthorDisplay.vue";
 import PropertyChips from "../components/issues/PropertyChips.vue";
 import EmptyState from "../components/ui/EmptyState.vue";
 import Icon from "../components/ui/Icon.vue";
 import ProblemAlert from "../components/ui/ProblemAlert.vue";
 import Skeleton from "../components/ui/Skeleton.vue";
+import { hasRight } from "../lib/account.ts";
 import { client } from "../lib/client.ts";
 import { useRepo } from "../lib/repo-context.ts";
 import { useResource } from "../lib/resource.ts";
@@ -204,7 +206,7 @@ const styles = {
 		<button type="button" :class="button({ variant: 'ghost', size: 'md' })" aria-label="Refresh" @click="list.reload()">
 			<Icon name="refresh" />
 		</button>
-		<RouterLink :to="{ name: 'issue-new', params: { org, repo } }" :class="button({ variant: 'solid' })">
+		<RouterLink v-if="hasRight('write')" :to="{ name: 'issue-new', params: { org, repo } }" :class="button({ variant: 'solid' })">
 			<Icon name="plus" /> New issue
 		</RouterLink>
 	</div>
@@ -218,7 +220,7 @@ const styles = {
 			:title="filter === 'open' ? 'No open issues' : filter === 'closed' ? 'No closed issues' : 'No issues yet'"
 			:description="filter === 'open' && list.data.value.closed > 0 ? `${list.data.value.closed} closed issue(s) are hidden by the filter.` : 'Issues track work with the typed properties this repository configures.'"
 		>
-			<RouterLink :to="{ name: 'issue-new', params: { org, repo } }" :class="button({ variant: 'solid' })">
+			<RouterLink v-if="hasRight('write')" :to="{ name: 'issue-new', params: { org, repo } }" :class="button({ variant: 'solid' })">
 				<Icon name="plus" /> New issue
 			</RouterLink>
 		</EmptyState>
@@ -237,7 +239,7 @@ const styles = {
 						<div :class="styles.meta">
 							<span>#{{ issue.number }}</span>
 							<span v-if="issue.project" :class="badge()">{{ issue.project }}</span>
-							<span>by {{ issue.author.id }}</span>
+							<span>by <AuthorDisplay :principal="issue.author" /></span>
 						</div>
 						<PropertyChips v-if="defs.data.value" :defs="defs.data.value" :values="issue.properties" :limit="6" />
 					</div>

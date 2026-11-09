@@ -11,8 +11,12 @@ use crate::{SqlBackend, SqlRows, SqlValue, check_statement};
 /// Whether a call may change the installation's data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CallKind {
-    /// `render` and `provide-context`: SQL may only read, and effects are refused.
+    /// `render` and `provide-context`: SQL may only read, and effects and calls are refused.
     ReadOnly,
+    /// A tool the manifest declares `access: "read"`, called for someone who may only read:
+    /// SQL may only read and effects are refused, but it may call other installations' tools,
+    /// which the caller in its environment runs the same way.
+    ReadTool,
     /// Every other export.
     ReadWrite,
 }
@@ -79,7 +83,7 @@ impl HostState {
     }
 
     fn read_only(&self) -> bool {
-        self.kind == CallKind::ReadOnly
+        matches!(self.kind, CallKind::ReadOnly | CallKind::ReadTool)
     }
 
     /// Runs a host statement, which the guard does not apply to.
@@ -121,7 +125,12 @@ impl sql::Host for HostState {
             return Ok(Err(types::Error::Denied(reason.to_owned())));
         }
         let params = params.into_iter().map(from_wit).collect();
-        match self.sql.exec(&query, params).await {
+        let result = if self.read_only() {
+            self.sql.exec_read_only(&query, params).await
+        } else {
+            self.sql.exec(&query, params).await
+        };
+        match result {
             Ok(rows) => Ok(Ok(sql::Rows {
                 columns: rows.columns,
                 values: rows
@@ -316,7 +325,7 @@ impl calls::Host for HostState {
         tool: String,
         args: String,
     ) -> wasmtime::Result<Result<String, types::Error>> {
-        if self.read_only() {
+        if self.kind == CallKind::ReadOnly {
             return Ok(Err(types::Error::Denied("read-only".to_owned())));
         }
         let Some(caller) = self.caller.clone() else {
@@ -328,5 +337,125 @@ impl calls::Host for HostState {
             Ok(result) => Ok(result),
             Err(error) => Ok(Err(types::Error::Unavailable(format!("{error:#}")))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use wasmtime::StoreLimitsBuilder;
+
+    use super::{CallKind, HostState};
+    use crate::bindings::{sql::Host as _, types};
+    use crate::{SqlBackend, SqlRows, SqlValue};
+
+    /// An in-memory database whose read-only statements run with `query_only`, as the actor's do.
+    struct Memory(Mutex<rusqlite::Connection>);
+
+    impl Memory {
+        fn count(&self) -> i64 {
+            let connection = self.0.lock().expect("never poisoned");
+            connection
+                .query_row("SELECT count(*) FROM t", [], |row| row.get(0))
+                .expect("count rows")
+        }
+    }
+
+    #[async_trait]
+    impl SqlBackend for Memory {
+        async fn exec(&self, query: &str, _params: Vec<SqlValue>) -> Result<SqlRows> {
+            let connection = self.0.lock().expect("never poisoned");
+            let mut statement = connection.prepare(query)?;
+            let width = statement.column_count();
+            let mut rows = statement.query([])?;
+            let mut values = Vec::new();
+            while let Some(row) = rows.next()? {
+                let mut out = Vec::with_capacity(width);
+                for index in 0..width {
+                    out.push(SqlValue::Integer(row.get(index)?));
+                }
+                values.push(out);
+            }
+            Ok(SqlRows {
+                columns: Vec::new(),
+                values,
+                rows_written: 0,
+            })
+        }
+
+        async fn exec_read_only(&self, query: &str, params: Vec<SqlValue>) -> Result<SqlRows> {
+            let set = |on: bool| {
+                self.0
+                    .lock()
+                    .expect("never poisoned")
+                    .pragma_update(None, "query_only", on)
+            };
+            set(true)?;
+            let result = self.exec(query, params).await;
+            set(false)?;
+            result
+        }
+
+        async fn exec_script(&self, script: &str) -> Result<()> {
+            self.0
+                .lock()
+                .expect("never poisoned")
+                .execute_batch(script)?;
+            Ok(())
+        }
+    }
+
+    fn state(memory: &Arc<Memory>, kind: CallKind) -> HostState {
+        let sql: Arc<dyn SqlBackend> = memory.clone();
+        HostState::new(
+            sql,
+            String::new(),
+            kind,
+            StoreLimitsBuilder::new().build(),
+            "test".to_owned(),
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn read_only_calls_cannot_write_behind_a_with_clause() {
+        let connection = rusqlite::Connection::open_in_memory().expect("open SQLite");
+        connection
+            .execute_batch("CREATE TABLE t (x INTEGER); INSERT INTO t VALUES (1);")
+            .expect("seed");
+        let memory = Arc::new(Memory(Mutex::new(connection)));
+        for kind in [CallKind::ReadOnly, CallKind::ReadTool] {
+            let mut host = state(&memory, kind);
+            for query in [
+                "WITH a AS (SELECT 1) DELETE FROM t",
+                "WITH a AS (SELECT 1) UPDATE t SET x = 9",
+                "WITH a AS (SELECT 1) INSERT INTO t SELECT * FROM a",
+            ] {
+                let answer = host
+                    .exec(query.to_owned(), Vec::new())
+                    .await
+                    .expect("no trap");
+                assert!(
+                    matches!(answer, Err(types::Error::Invalid(_))),
+                    "{kind:?} ran {query}"
+                );
+            }
+            let answer = host
+                .exec("SELECT x FROM t".to_owned(), Vec::new())
+                .await
+                .expect("no trap");
+            assert!(answer.is_ok(), "{kind:?} could not read");
+        }
+        assert_eq!(memory.count(), 1);
+        let mut host = state(&memory, CallKind::ReadWrite);
+        let answer = host
+            .exec("WITH a AS (SELECT 1) DELETE FROM t".to_owned(), Vec::new())
+            .await
+            .expect("no trap");
+        assert!(answer.is_ok());
+        assert_eq!(memory.count(), 0);
     }
 }

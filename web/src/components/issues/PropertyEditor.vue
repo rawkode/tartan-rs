@@ -16,6 +16,7 @@ import {
 	toMinorUnits,
 } from "../../lib/properties.ts";
 import type { PropertyDef, PropertyValue } from "../../lib/types.ts";
+import PersonInput from "../PersonInput.vue";
 import Icon from "../ui/Icon.vue";
 import MarkdownEditor from "./MarkdownEditor.vue";
 
@@ -23,7 +24,7 @@ const props = defineProps<{
 	def: PropertyDef;
 	modelValue: PropertyValue | undefined;
 	error?: string | null;
-	/** People the person field suggests. */
+	/** DIDs the person field suggests, such as the viewer and the issue's author. */
 	people?: string[];
 }>();
 const emit = defineEmits<{ "update:modelValue": [value: PropertyValue] }>();
@@ -89,7 +90,7 @@ const hint = computed(() => {
 		case "money":
 			return `In ${currency.value}; stored in minor units`;
 		case "person":
-			return "A principal id, such as admin";
+			return "A handle or DID; stored as the DID";
 		case "shorttext":
 			return d.maxLength ? `Up to ${d.maxLength} characters` : undefined;
 		default:
@@ -272,24 +273,15 @@ const styles = {
 			</button>
 		</div>
 
-		<template v-else-if="props.def.kind === 'person'">
-			<input
-				:id="id"
-				:class="field({ mono: true })"
-				type="text"
-				:value="text"
-				:list="`${id}-people`"
-				placeholder="admin"
-				autocomplete="off"
-				spellcheck="false"
-				:aria-invalid="!!props.error"
-				:aria-describedby="describedBy"
-				@input="setText(($event.target as HTMLInputElement).value.trim())"
-			/>
-			<datalist :id="`${id}-people`">
-				<option v-for="p in props.people ?? []" :key="p" :value="p" />
-			</datalist>
-		</template>
+		<PersonInput
+			v-else-if="props.def.kind === 'person'"
+			:model-value="text || null"
+			:input-id="id"
+			:suggestions="props.people ?? []"
+			:invalid="!!props.error"
+			:described-by="describedBy"
+			@update:model-value="set"
+		/>
 
 		<div v-else-if="props.def.kind === 'url'" :class="styles.inline">
 			<input

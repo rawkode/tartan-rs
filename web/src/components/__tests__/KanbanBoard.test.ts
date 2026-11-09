@@ -11,7 +11,7 @@ const router = createRouter({
 });
 
 const triage = async () => {
-	const client = createClient({ token: () => "dev-admin-token", fetch: createSandboxFetch() });
+	const client = createClient({ fetch: createSandboxFetch() });
 	const api = client.kanban("acme", "api");
 	return { view: await api.board("triage"), defs: await client.issues("acme", "api").properties() };
 };

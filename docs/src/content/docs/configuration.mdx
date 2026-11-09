@@ -116,12 +116,14 @@ Then each extension is installed, upgraded or reconfigured in turn, the extensio
 
 Every extension installs on the repository whose configuration names it.
 
+A configuration may also set `signing`, the repository's signing rule (`types.#Signing` from `tartan.rawkode.academy/types@v0.2.0`): which refs must be signed, and by which DIDs. With a rule in force, a configuration pushed to `main` applies only once the commit it is in has a verified signature by a DID the rule allows, and the rule itself changes only in a descendant of the commit that set it. See [Signing rules](/signing/#signing-rules). Who may sign in and read the forge is not a repository's choice: it is the deployment's `owners` and `readers` (see [Deploying](/deploying/#identity-and-sign-in)).
+
 ## Events
 
 | Event | Source | When |
 | --- | --- | --- |
 | `config.applied` | repo | a configuration was applied; `data.changes` lists what changed |
-| `config.refused` | repo | a configuration was refused; `data.problems` says why |
+| `config.refused` | repo | a configuration was refused; `data.problems` says why (for example `signing: <oid> is unsigned`) |
 | `extension.installed` | repo | an extension was installed or re-enabled |
 | `extension.upgraded` | repo | an installation moved to a new version |
 | `extension.configured` | repo | an installation's configuration changed |

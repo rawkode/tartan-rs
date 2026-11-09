@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
-import { ApiError, createClient } from "./api.ts";
-import { createSandboxFetch } from "./sandbox.ts";
+import { ApiError, createClient, READ_ONLY_MESSAGE } from "./api.ts";
+import { createSandboxFetch, SAMPLE_PEOPLE, sampleReader, sampleState } from "./sandbox.ts";
 
 /** A fetch stub that records requests and answers with the given response. */
 const stub = (status: number, body?: unknown, raw?: string) => {
@@ -16,29 +16,70 @@ const stub = (status: number, body?: unknown, raw?: string) => {
 };
 
 describe("requests", () => {
-	test("sends the bearer token and JSON body to the contract's paths", async () => {
+	test("sends the session cookie, never a bearer token, and a JSON body", async () => {
 		const { calls, fetch } = stub(201, { id: "o1", slug: "acme", pool: null });
-		const client = createClient({ token: () => "secret", fetch, baseUrl: "http://gw/" });
+		const client = createClient({ fetch, baseUrl: "http://gw/" });
 		await client.createOrg("acme");
 		expect(calls[0]!.url).toBe("http://gw/-/api/orgs");
 		expect(calls[0]!.init.method).toBe("POST");
+		expect(calls[0]!.init.credentials).toBe("same-origin");
 		const headers = calls[0]!.init.headers as Record<string, string>;
-		expect(headers.authorization).toBe("Bearer secret");
+		expect(headers.authorization).toBeUndefined();
 		expect(headers["content-type"]).toBe("application/json");
 		expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ slug: "acme" });
 	});
 
-	test("reads the token on every request", async () => {
-		const { calls, fetch } = stub(200, []);
-		let token = "one";
-		const client = createClient({ token: () => token, fetch });
-		await client.listOrgs();
-		token = "two";
-		await client.listOrgs();
-		expect(calls.map((c) => (c.init.headers as Record<string, string>).authorization)).toEqual([
-			"Bearer one",
-			"Bearer two",
-		]);
+	test("asks for many people in one request", async () => {
+		const { calls, fetch } = stub(200, {});
+		await createClient({ fetch }).people(["did:plc:a7lic3a7lic3a7lic3a7lic3", "did:web:rawkode.dev"]);
+		expect(calls[0]!.url).toBe(
+			"/-/api/people?did=did%3Aplc%3Aa7lic3a7lic3a7lic3a7lic3&did=did%3Aweb%3Arawkode.dev",
+		);
+	});
+
+	test.each([
+		["me", (c: ReturnType<typeof createClient>) => c.me(), "GET", "/-/api/me"],
+		["sessions", (c: ReturnType<typeof createClient>) => c.sessions(), "GET", "/-/api/sessions"],
+		["endSession", (c: ReturnType<typeof createClient>) => c.endSession("s 1"), "DELETE", "/-/api/sessions/s%201"],
+		["tokens", (c: ReturnType<typeof createClient>) => c.tokens(), "GET", "/-/api/tokens"],
+		["revokeToken", (c: ReturnType<typeof createClient>) => c.revokeToken("t1"), "DELETE", "/-/api/tokens/t1"],
+		["signOut", (c: ReturnType<typeof createClient>) => c.signOut(), "POST", "/-/auth/logout"],
+		["outcome", (c: ReturnType<typeof createClient>) => c.outcome("o1", "denied"), "POST", "/-/auth/outcome"],
+		[
+			"approveCli",
+			(c: ReturnType<typeof createClient>) => c.approveCli({ port: 4000, state: "s", challenge: "c", device: "d" }),
+			"POST",
+			"/-/auth/cli/approve",
+		],
+		[
+			"commitSignature",
+			(c: ReturnType<typeof createClient>) => c.commitSignature("acme", "api", "abc"),
+			"GET",
+			"/-/api/orgs/acme/repos/api/commits/abc/signature",
+		],
+		[
+			"recheckSignature",
+			(c: ReturnType<typeof createClient>) => c.recheckSignature("acme", "api", "abc"),
+			"POST",
+			"/-/api/orgs/acme/repos/api/commits/abc/signature/recheck",
+		],
+		[
+			"branchSignatures",
+			(c: ReturnType<typeof createClient>) => c.branchSignatures("acme", "api"),
+			"GET",
+			"/-/api/orgs/acme/repos/api/signatures",
+		],
+		[
+			"configStatus",
+			(c: ReturnType<typeof createClient>) => c.configStatus("acme", "api"),
+			"GET",
+			"/-/api/orgs/acme/repos/api/config/status",
+		],
+	])("%s", async (_name, call, method, path) => {
+		const { calls, fetch } = stub(200, {});
+		await call(createClient({ fetch }));
+		expect(calls[0]!.init.method).toBe(method);
+		expect(calls[0]!.url).toBe(path);
 	});
 
 	test.each([
@@ -55,14 +96,14 @@ describe("requests", () => {
 		],
 	])("%s", async (_name, call, method, path) => {
 		const { calls, fetch } = stub(200, {});
-		await call(createClient({ token: () => "t", fetch }));
+		await call(createClient({ fetch }));
 		expect(calls[0]!.init.method).toBe(method);
 		expect(calls[0]!.url).toBe(path);
 	});
 
 	test("calls extension tools through the repository call route", async () => {
 		const { calls, fetch } = stub(200, { card: { number: 3 } });
-		const client = createClient({ token: () => "t", fetch });
+		const client = createClient({ fetch });
 		const card = await client.kanban("acme", "api").move("triage", 3, "done");
 		expect(card).toEqual({ number: 3 });
 		expect(calls[0]!.url).toBe("/-/api/orgs/acme/repos/api/extensions/kanban.tartan.rawkode.academy/tools/move");
@@ -71,7 +112,7 @@ describe("requests", () => {
 
 	test("issues tools use properties, not fields", async () => {
 		const { calls, fetch } = stub(200, { issue: { number: 1 } });
-		const client = createClient({ token: () => "t", fetch });
+		const client = createClient({ fetch });
 		await client.issues("acme", "api").create({ title: "x", properties: { status: "todo" } });
 		expect(calls[0]!.url).toBe("/-/api/orgs/acme/repos/api/extensions/issues.tartan.rawkode.academy/tools/create");
 		expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ title: "x", properties: { status: "todo" } });
@@ -79,7 +120,7 @@ describe("requests", () => {
 
 	test("encodes path segments", async () => {
 		const { calls, fetch } = stub(200, {});
-		await createClient({ token: () => "t", fetch }).call("a b", "c/d", "x.y", "tools", "n?", {});
+		await createClient({ fetch }).call("a b", "c/d", "x.y", "tools", "n?", {});
 		expect(calls[0]!.url).toBe("/-/api/orgs/a%20b/repos/c%2Fd/extensions/x.y/tools/n%3F");
 	});
 });
@@ -87,7 +128,7 @@ describe("requests", () => {
 describe("errors", () => {
 	test("keep the gateway's problem body and extension kind", async () => {
 		const { fetch } = stub(400, { error: "status: Must be one of the options.", kind: "invalid" });
-		const client = createClient({ token: () => "t", fetch });
+		const client = createClient({ fetch });
 		const error = await client.issues("acme", "api").update({ number: 1 }).catch((e: unknown) => e);
 		expect(error).toBeInstanceOf(ApiError);
 		const e = error as ApiError;
@@ -97,18 +138,50 @@ describe("errors", () => {
 		expect(e.method).toBe("POST");
 	});
 
+	test("call onUnauthorized on a 401", async () => {
+		const { fetch } = stub(401, { error: "unauthorized" });
+		const onUnauthorized = vi.fn();
+		await createClient({ fetch, onUnauthorized }).listOrgs().catch(() => undefined);
+		expect(onUnauthorized).toHaveBeenCalledOnce();
+	});
+
+	test("explain a forced write refused for lack of the right", async () => {
+		const { fetch } = stub(403, { error: "forbidden: this route needs write" });
+		const client = createClient({ fetch, rights: () => ["read"] });
+		const error = (await client.issues("acme", "api").create({ title: "x" }).catch((e: unknown) => e)) as ApiError;
+		expect(error.status).toBe(403);
+		expect(error.message).toBe(READ_ONLY_MESSAGE);
+		const admin = (await client.createOrg("acme").catch((e: unknown) => e)) as ApiError;
+		expect(admin.message).toBe(READ_ONLY_MESSAGE);
+	});
+
+	test("keep the server's text for an Origin mismatch refused for an owner", async () => {
+		const text = "the Origin header must be http://127.0.0.1:4321";
+		const { fetch } = stub(403, undefined, text);
+		const client = createClient({ fetch, rights: () => ["read", "write", "admin"] });
+		const error = (await client.issues("acme", "api").create({ title: "x" }).catch((e: unknown) => e)) as ApiError;
+		expect(error.status).toBe(403);
+		expect(error.message).toBe(text);
+	});
+
+	test("keep the server's text for a 403 on a read", async () => {
+		const { fetch } = stub(403, { error: "this token is limited to other repositories" });
+		const error = (await createClient({ fetch, rights: () => ["read"] }).listOrgs().catch((e: unknown) => e)) as ApiError;
+		expect(error.message).toBe("this token is limited to other repositories");
+	});
+
 	test("explain an unreachable gateway", async () => {
 		const fetch = vi.fn(async () => {
 			throw new TypeError("fetch failed");
 		}) as unknown as typeof globalThis.fetch;
-		const error = (await createClient({ token: () => "t", fetch }).listOrgs().catch((e: unknown) => e)) as ApiError;
+		const error = (await createClient({ fetch }).listOrgs().catch((e: unknown) => e)) as ApiError;
 		expect(error.status).toBe(0);
 		expect(error.message).toMatch(/Could not reach the gateway/);
 	});
 
 	test("explain an empty 5xx from the dev proxy", async () => {
 		const { fetch } = stub(502, undefined, "");
-		const error = (await createClient({ token: () => "t", fetch }).listOrgs().catch((e: unknown) => e)) as ApiError;
+		const error = (await createClient({ fetch }).listOrgs().catch((e: unknown) => e)) as ApiError;
 		expect(error.status).toBe(502);
 		expect(error.problem).toBeNull();
 		expect(error.message).toMatch(/did not answer/);
@@ -118,16 +191,36 @@ describe("errors", () => {
 		const fetch = vi.fn(async () => {
 			throw new DOMException("aborted", "AbortError");
 		}) as unknown as typeof globalThis.fetch;
-		await expect(createClient({ token: () => "t", fetch }).listOrgs()).rejects.toMatchObject({ name: "AbortError" });
+		await expect(createClient({ fetch }).listOrgs()).rejects.toMatchObject({ name: "AbortError" });
 	});
 });
 
 describe("against the sandbox gateway", () => {
-	const client = () => createClient({ token: () => "dev-admin-token", fetch: createSandboxFetch() });
+	const client = () => createClient({ fetch: createSandboxFetch() });
 
-	test("refuses a wrong token with 401", async () => {
-		const c = createClient({ token: () => "nope", fetch: createSandboxFetch() });
+	test("answers an anonymous caller 401 and me as anonymous", async () => {
+		const state = sampleState();
+		state.me = { anonymous: true, dev_identity: true };
+		const c = createClient({ fetch: createSandboxFetch({ state }) });
+		expect(await c.me()).toEqual({ anonymous: true, dev_identity: true });
 		await expect(c.listOrgs()).rejects.toMatchObject({ status: 401, message: "unauthorized" });
+	});
+
+	test("refuses a reader's write with the explained message", async () => {
+		const state = sampleState();
+		state.me = sampleReader();
+		const c = createClient({ fetch: createSandboxFetch({ state }), rights: () => ["read"] });
+		expect((await c.listOrgs()).map((o) => o.slug)).toEqual(["acme"]);
+		await expect(c.createOrg("globex")).rejects.toMatchObject({ status: 403, message: READ_ONLY_MESSAGE });
+		await expect(c.issues("acme", "api").create({ title: "x" })).rejects.toMatchObject({
+			status: 403,
+			message: READ_ONLY_MESSAGE,
+		});
+	});
+
+	test("records the caller's DID as an issue's author", async () => {
+		const issue = await client().issues("acme", "api").create({ title: "Mine" });
+		expect(issue.author).toEqual({ kind: "user", id: SAMPLE_PEOPLE.alice });
 	});
 
 	test("creates and lists orgs and repositories", async () => {
@@ -179,7 +272,7 @@ describe("against the sandbox gateway", () => {
 		const c = client();
 		const kanban = c.kanban("acme", "api");
 		const { boards } = await kanban.listBoards();
-		expect(boards.map((b) => b.id)).toEqual(["triage", "gateway", "open-closed"]);
+		expect(boards.map((b) => b.id)).toEqual(["triage", "gateway", "open-closed", "people"]);
 		const view = await kanban.board("triage");
 		expect(view.board.columns.map((col) => col.title)).toEqual(["To do", "In progress", "In review", "Done"]);
 		expect(view.board.lanes).toEqual({ by: "priority" });

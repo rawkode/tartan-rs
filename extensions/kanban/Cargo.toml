@@ -1,6 +1,6 @@
 [package]
 name = "kanban"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 description = "kanban.tartan.rawkode.academy: boards over a repository's issues, with columns, lanes and groups from Issues properties"

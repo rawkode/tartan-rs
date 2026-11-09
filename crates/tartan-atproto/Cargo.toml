@@ -1,0 +1,50 @@
+[package]
+name = "tartan-atproto"
+description = "ATProto identity for Tartan: DID and handle resolution, PLC verification, record proofs and signature formats."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# Development switches (plain HTTP, private addresses, a local PLC directory and
+# handle resolver); they act only with TARTAN_DEV_IDENTITY=1 (design D12).
+dev-identity = []
+
+[dependencies]
+anyhow.workspace = true
+atrium-crypto.workspace = true
+base64.workspace = true
+cid.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+# DNS TXT lookups for handles. jacquard-identity resolves TXT records itself but
+# stops at the first `did=` value, so it cannot refuse conflicting records, and it
+# offers no way to substitute a resolver in tests (design D9, *Handles*). The
+# version is the one jacquard-identity already resolves to.
+hickory-resolver = { version = "=0.26.3", default-features = false, features = ["system-config", "tokio"] }
+hmac.workspace = true
+# jacquard's `HttpClient` trait is written against the `http` crate's request and
+# response types; the version is the one reqwest and jacquard already resolve to.
+http = "=1.5.0"
+ipnet.workspace = true
+jacquard-common.workspace = true
+jacquard-identity.workspace = true
+jacquard-oauth.workspace = true
+jacquard-repo.workspace = true
+k256.workspace = true
+p256.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_ipld_dagcbor.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

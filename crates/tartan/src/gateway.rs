@@ -2,10 +2,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Path, Query, Request, State};
-use axum::http::{HeaderMap, StatusCode, header};
-use axum::middleware::{self, Next};
-use axum::response::Response;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::middleware;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use rivetkit::client::Client;
@@ -17,6 +16,7 @@ use tartan_forge::{
     org_handle, repo_handle, subscriber_handle, valid_placement_target, verify_signature,
 };
 
+use crate::access::{Access, authenticate, security_headers};
 use crate::{ApiError, RegistryStore};
 
 /// The header carrying the Git host's webhook signature.
@@ -27,8 +27,8 @@ const SIGNATURE_HEADER: &str = "x-walgit-signature";
 pub struct GatewayState {
     /// The actor client.
     pub client: Client,
-    /// The bearer token the forge API requires.
-    pub admin_token: Arc<str>,
+    /// Sign-in and access: who is calling and what they may do.
+    pub access: Arc<Access>,
     /// The key the Git host signs webhook bodies with.
     pub webhook_secret: Arc<[u8]>,
     /// The forge's CUE registry, served read only at `/v2/`.
@@ -47,31 +47,23 @@ pub fn router(state: GatewayState) -> Router {
         .route("/subscribers/{name}", put(register_subscriber))
         .route("/subscribers/{name}/events", get(received))
         .merge(crate::extension_routes::routes())
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
+        .merge(crate::account_routes::routes())
+        .merge(crate::people_routes::routes())
+        .merge(crate::signature_routes::routes())
+        .route_layer(middleware::from_fn_with_state(state.clone(), authenticate))
+        .layer(middleware::from_fn(security_headers));
+    let registry = crate::registry::routes().layer(middleware::from_fn(security_headers));
+    // Webhooks and the CUE registry stay outside `authenticate`: walgit signs its webhooks, and
+    // the registry is public and read only, so `CUE_REGISTRY` evaluation needs no credential.
     Router::new()
         .nest("/-/api", api)
+        .merge(crate::auth::routes())
+        .merge(crate::cli_auth::routes())
         .route("/-/hooks/git-host", post(git_host_events))
         .route("/-/health", get(|| async { "ok" }))
-        .merge(crate::registry::routes())
+        .merge(registry)
+        .layer(tower_http::catch_panic::CatchPanicLayer::new())
         .with_state(state)
-}
-
-async fn require_admin(
-    State(state): State<GatewayState>,
-    request: Request,
-    next: Next,
-) -> Result<Response, ApiError> {
-    let presented = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    match presented {
-        Some(token) if constant_time_eq(token.as_bytes(), state.admin_token.as_bytes()) => {
-            Ok(next.run(request).await)
-        }
-        _ => Err(ApiError::Unauthorized),
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -338,9 +330,4 @@ fn check_target(target: &str) -> Result<(), ApiError> {
 fn parse_slug(text: &str) -> Result<Slug, ApiError> {
     text.parse()
         .map_err(|error| ApiError::BadRequest(format!("{error}")))
-}
-
-/// Compares two byte strings in time that depends only on their lengths.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0_u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }

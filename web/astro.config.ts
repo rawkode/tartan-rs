@@ -13,7 +13,10 @@ const gateway = process.env.TARTAN_GATEWAY ?? "http://127.0.0.1:8080";
 // directly rather than through this server.
 process.env.PUBLIC_TARTAN_GATEWAY ??= gateway;
 
-const forward = { target: gateway, changeOrigin: true, ws: false } as const;
+// `changeOrigin` rewrites only `Host`, so the browser's `Origin` reaches the gateway unchanged
+// for its CSRF check; `xfwd` adds `X-Forwarded-For`, which the gateway trusts from this proxy
+// (`TARTAN_TRUSTED_PROXIES`) to rate-limit sign-in per client address.
+const forward = { target: gateway, changeOrigin: true, ws: false, xfwd: true } as const;
 
 export default defineConfig({
 	output: "static",
@@ -27,6 +30,9 @@ export default defineConfig({
 			},
 		},
 		server: {
+			// The forge's `TARTAN_PUBLIC_URL` names this exact origin, so a server that cannot get
+			// its port fails instead of moving to another, where sign-in would not work.
+			strictPort: true,
 			proxy: {
 				"/-/": forward,
 				"/v2/": forward,

@@ -40,12 +40,14 @@ such as Kanban's boards, can refer to the property itself.
 | `boolean`     | true or false                               | checkbox                      |
 | `select`      | one of `options`                            | dropdown, titles from labels  |
 | `multiselect` | distinct `options`                          | multi-select                  |
-| `person`      | a principal id, such as `usr_dev`           | text                          |
+| `person`      | a DID, such as `did:web:rawkode.dev`        | handle or DID; shown `@handle` |
 | `url`         | an `http` or `https` URL (≤ 2048)           | URL                           |
 | `money`       | whole minor units: `1250` is GBP 12.50      | decimal text, in its currency |
 
 A value is checked when it is written; a default fills in when an issue is read. Changing the configuration never
-rewrites stored values: a removed property or option stays on the issues that have it. `testdata/property-values.json`
+rewrites stored values: a removed property or option stays on the issues that have it. A `person` value stored
+before persons were DIDs (such as `admin`) stays and shows as plain text; the next edit of that property must set a DID.
+Authors are the caller: a person's DID, or an agent with the DID it acts for, shown as `@handle (agent)`. `testdata/property-values.json`
 holds the values each kind accepts and refuses; `cue/types/test.sh` checks the same vectors as CUE defaults, so the
 module and the extension agree.
 

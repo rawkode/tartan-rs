@@ -33,10 +33,13 @@
 //! After evaluation, the exported value must have the shape the forge applies: `extensions` maps
 //! an extension id to an entry with a semver `version`, optional object `settings`, and
 //! optionally `id` repeating the key. Any other key in an entry is refused, which keeps typos
-//! from being silently ignored.
+//! from being silently ignored. An optional top-level `signing` is the repository's signing rule
+//! ([`signing`]); it is checked whether or not `extensions` is present.
 
 pub mod deployment;
+pub mod did;
 mod files;
+pub mod signing;
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -60,6 +63,9 @@ pub struct Config {
     /// Each extension the configuration installs, by id.
     #[serde(default)]
     pub extensions: BTreeMap<String, ExtensionEntry>,
+    /// The signing rule, when the configuration sets `signing`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing: Option<signing::SigningRule>,
 }
 
 /// One extension's entry.
@@ -241,12 +247,15 @@ pub fn check(value: Value) -> Result<Config, ConfigError> {
     let Value::Object(mut root) = value else {
         return invalid("the package tartan is not a struct".into());
     };
+    let mut config = Config::default();
+    if let Some(signing) = root.remove("signing") {
+        config.signing = Some(signing::check(signing)?);
+    }
     let extensions = match root.remove("extensions") {
-        None => return Ok(Config::default()),
+        None => return Ok(config),
         Some(Value::Object(extensions)) => extensions,
         Some(_) => return invalid("extensions is not a struct".into()),
     };
-    let mut config = Config::default();
     for (id, entry) in extensions {
         if !EXTENSION_ID.is_match(&id) {
             return invalid(format!("{id:?} is not an extension id"));
@@ -544,5 +553,50 @@ extensions: "kanban.tartan.rawkode.academy": version: "0.2.0"
         assert!(check(json!({"extensions": {"a": {"version": null}}})).is_err());
         assert!(check(json!({"helpers": [1, null]})).is_err());
         assert!(check(json!({"extensions": {"a": {"version": "1.0.0+build.1"}}})).is_ok());
+    }
+
+    #[test]
+    fn checks_signing_without_extensions() {
+        let rule = json!({"require": [{"refs": ["refs/heads/main"], "signers": ["did:plc:abcdefghijklmnopqrstuvwx"]}]});
+        let config = check(json!({"signing": rule})).expect("valid");
+        assert!(config.extensions.is_empty());
+        let signing = config.signing.expect("a rule");
+        assert!(signing.coverage("refs/heads/main").is_covered());
+        let typo = check(json!({"signing": {"requires": []}})).expect_err("a typo");
+        assert!(typo.to_string().contains("signing.requires"), "{typo}");
+        let with_extensions = check(json!({
+            "signing": {"require": [{"refs": ["refs/heads/main"]}]},
+            "extensions": {"issues.tartan.rawkode.academy": {"version": "0.6.0"}},
+        }))
+        .expect("valid");
+        assert!(with_extensions.signing.is_some());
+        assert_eq!(with_extensions.extensions.len(), 1);
+        assert!(
+            check(json!({"extensions": {}}))
+                .expect("valid")
+                .signing
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn evaluates_a_root_with_signing_but_no_extensions() {
+        let config = evaluate(one(
+            "package tartan\nsigning: require: [{refs: [\"refs/heads/main\", \"refs/tags/**\"], signers: [\"did:plc:abcdefghijklmnopqrstuvwx\"]}]\n",
+        ))
+        .await
+        .expect("valid");
+        assert!(config.extensions.is_empty());
+        assert!(
+            config
+                .signing
+                .expect("a rule")
+                .coverage("refs/tags/v1")
+                .is_covered()
+        );
+        let typo = evaluate(one("package tartan\nsigning: requires: []\n"))
+            .await
+            .expect_err("a typo");
+        assert!(typo.to_string().contains("signing.requires"), "{typo}");
     }
 }

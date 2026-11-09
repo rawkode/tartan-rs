@@ -28,8 +28,11 @@ browser ──► tartan gateway ──► actors on Rivet, each with its own SQ
 - **Extensions.** Packages arrive as CUE modules that the deployment configuration lists and the forge syncs into its
   own registry. Extensions are installed and configured only by the CUE package `tartan` committed at a repository's
   root, applied on each push to `main`; `…/extensions/<id>/tools/<tool>`,
-  `…/render/<slot>` and `…/actions/<action>` call an installation. Every API call acts as `admin` until the
-  gateway has identities.
+  `…/render/<slot>` and `…/actions/<action>` call an installation, as the signed-in person or token.
+- **Identity.** People sign in with ATProto OAuth and are identified by DID; the deployment configuration's
+  `owners` administer the forge and `readers` decides who else may read. Scripts use access tokens
+  (`tt token create`, or `tt admin token create` for an owner). Commits are signed with `tt` as records in the
+  signer's own ATProto repository, and the forge verifies them against a repository's signing rule.
 - **Docs and specs.** `docs/` is the Nimbus documentation site; `openspec/` holds the specs and changes.
 - **Placement.** The forge actor maps `org/<org>` or `repo/<org>/<repo>` to a Rivet pool. New actors for that target
   are created in the pool, so a large org or repository runs on its own machines while staying part of the forge.
@@ -69,7 +72,7 @@ such as Issues run unchanged.
    `permissions.calls` names it. A manifest's `requires` names extensions the same configuration must install.
 
 Not yet: gates (walgit has no pre-receive hook to call them from), `notify` and why-notes (refused as
-`unavailable`), and identities beyond `admin`.
+`unavailable`), and org and repository membership (until then only owners make changes).
 
 ### First-party extensions
 
@@ -93,6 +96,10 @@ drop.
 | `tartan-extensions` | the wasmtime host of the `tartan:ext` world, packages and migrations |
 | `tartan` | the binary: the HTTP gateway, the forge's CUE registry and the actor host |
 | `tartan-config` | repository and deployment configuration, evaluated natively as CUE |
+| `tartan-atproto` | DID, handle and record-proof verification, and the Tartan signature formats |
+| `tartan-identity-api` | the identity actor's name and action types, shared by the forge and `tt` |
+| `tartan-devnet` | a local ATProto network (PLC directory, PDS, OAuth server, Jetstream) for development and tests |
+| `tt` | the command-line interface: sign-in, access tokens, and signing and verifying Git objects |
 
 ## Demo
 
@@ -100,11 +107,14 @@ drop.
 WALGIT_BIN=/path/to/walgit REGISTRY_BIN=/path/to/registry CUE_BIN=/path/to/cue scripts/demo.sh
 ```
 
-Starts RustFS, walgit, a source CUE registry with the types, Issues and Kanban modules, the Rivet engine, the gateway
-and the web interface, then seeds org `acme` and repository `acme/api`: a configuration pushed with `git` that
-installs Issues with typed properties and Kanban with two boards, and a dozen issues. Open
-`http://127.0.0.1:4321/#/acme/api/boards/triage`; the admin token is `dev-admin-token`. Ctrl-C stops everything.
-State lives in `.dev/demo`; each run starts fresh, and `--keep` reuses the previous one. See `docs/` (Demo).
+Starts RustFS, walgit, a source CUE registry with the types, Issues and Kanban modules, tartan-devnet (a local
+ATProto network), the Rivet engine, the gateway and the web interface, then seeds org `acme` and repository
+`acme/api`: a configuration pushed with `git` that installs Issues with typed properties, Kanban with two boards and a
+signing rule, commits signed with `tt` by the devnet's `@alice.test` (the owner) and `@bob.test`, and a dozen issues.
+Open the printed address (`http://127.0.0.1:4321/#/acme/api` when that port is free) and sign in as `@alice.test`,
+or as `@bob.test` for read-only access; the devnet approves at once. Nothing leaves the machine. Ctrl-C stops
+everything. State lives in `.dev/demo`; each run starts fresh, and `--keep` reuses the previous one.
+`scripts/demo.sh --owner <your DID>` runs against the real ATProto network with you as the owner. See `docs/` (Demo).
 
 ## Running
 
@@ -114,8 +124,12 @@ Needs Rust 1.98, `git`, `rustfs` and `rclone` on `PATH`, and a walgit binary bui
 
 ```sh
 WALGIT_BIN=/path/to/walgit scripts/e2e.sh   # fmt, clippy and every test, git included
-WALGIT_BIN=/path/to/walgit scripts/dev.sh   # RustFS, the Rivet engine, walgit and the gateway
+WALGIT_BIN=/path/to/walgit scripts/dev.sh   # RustFS, the Rivet engine, walgit, tartan-devnet and the gateway
 ```
+
+A deployed forge needs `TARTAN_CONFIG` with at least one owner DID (`tt identity resolve <handle>` finds yours),
+`TARTAN_PUBLIC_URL` (its public `https` origin) and `TARTAN_OAUTH_KEYS_FILE` (from `tt admin oauth keygen`); there is
+no admin token. See `docs/` (Deploying) for every setting, Jetstream's privacy trade-off and the upgrade steps.
 
 Both also need `REGISTRY_BIN` (a CNCF distribution `registry` binary), `cue` (or `CUE_BIN`), `jq`, `wasm-tools` and
 the `wasm32-unknown-unknown` target: `scripts/build-extension.sh` builds an extension crate (`extensions/*`, built on

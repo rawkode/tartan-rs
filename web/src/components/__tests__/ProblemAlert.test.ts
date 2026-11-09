@@ -6,7 +6,7 @@ import ProblemAlert from "../ui/ProblemAlert.vue";
 
 const router = createRouter({
 	history: createMemoryHistory(),
-	routes: [{ path: "/-/settings", name: "settings", component: { template: "<div />" } }],
+	routes: [{ path: "/-/sign-in", name: "sign-in", component: { template: "<div />" } }],
 });
 
 test("shows the gateway's problem, its kind and the request", () => {
@@ -26,11 +26,11 @@ test("shows the gateway's problem, its kind and the request", () => {
 	expect(w.find("pre").text()).toContain('"kind": "conflict"');
 });
 
-test("points at the settings when the token is refused", async () => {
+test("offers to sign in again after a 401", async () => {
 	const error = new ApiError(401, { error: "unauthorized" }, "unauthorized", "GET", "/-/api/orgs");
 	const w = mount(ProblemAlert, { props: { error }, global: { plugins: [router] } });
-	expect(w.text()).toContain("The gateway refused the token");
-	expect(w.find("a[href='/-/settings']").exists()).toBe(true);
+	expect(w.text()).toContain("You are signed out");
+	expect(w.find("a[href='/-/sign-in']").exists()).toBe(true);
 	await w.find("button").trigger("click");
 	expect(w.emitted("retry")).toHaveLength(1);
 });

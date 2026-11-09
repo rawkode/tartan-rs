@@ -12,6 +12,7 @@ import ProblemAlert from "../components/ui/ProblemAlert.vue";
 import Skeleton from "../components/ui/Skeleton.vue";
 import { client } from "../lib/client.ts";
 import { useResource } from "../lib/resource.ts";
+import { hasRight } from "../lib/account.ts";
 import { settings } from "../lib/settings.ts";
 import { notify } from "../lib/toast.ts";
 
@@ -99,6 +100,7 @@ const styles = {
 	>
 		<template #actions>
 			<button
+				v-if="hasRight('admin')"
 				type="button"
 				:class="button({ variant: 'solid' })"
 				:aria-expanded="creating"
@@ -109,7 +111,7 @@ const styles = {
 		</template>
 	</PageHeader>
 
-	<div v-if="creating" :class="styles.create">
+	<div v-if="creating && hasRight('admin')" :class="styles.create">
 		<CreateSlugForm
 			label="Org name"
 			placeholder="acme"
@@ -128,7 +130,7 @@ const styles = {
 				title="No orgs yet"
 				description="Create an org, add a repository to it, then push a tartan.cue that installs Issues and Kanban."
 			>
-				<button type="button" :class="button({ variant: 'solid' })" @click="creating = true">
+				<button v-if="hasRight('admin')" type="button" :class="button({ variant: 'solid' })" @click="creating = true">
 					<Icon name="plus" /> Create your first org
 				</button>
 			</EmptyState>

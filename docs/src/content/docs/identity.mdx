@@ -1,0 +1,101 @@
+---
+title: Identity and sign-in
+description: Signing in with an ATProto identity, owners and readers, and who may do what.
+sidebar:
+  order: 6.4
+---
+
+Tartan has no accounts of its own. People sign in with their ATProto identity, the same one they use for Bluesky or any other ATProto service, and the forge knows them by their DID.
+
+## Handles and DIDs
+
+A **DID** is a permanent identifier such as `did:plc:ewvi7nxzyoun6zhxrhs64oiz` or `did:web:example.com`. A **handle** such as `alice.example.com` is a name for a DID that its owner can change. The forge stores DIDs everywhere (owners, readers, issue authors, signers) and shows handles in the web UI.
+
+The forge trusts a DID only on evidence it checks itself: a `did:plc` DID's operation log is fetched from the PLC directory and replayed, and a `did:web` DID's document is fetched from its host over TLS. A handle is shown only when it resolves to the DID and the DID's document names the handle back.
+
+To find a DID from a handle, run `tt identity resolve alice.example.com`.
+
+## Signing in
+
+On the sign-in page, enter your handle or DID. A pasted `@Alice.Example.com ` works too: the forge trims it, removes one leading `@` or `at://`, and lowercases a handle. The forge finds your PDS and its authorization server and sends you there to approve the sign-in. The forge asks only for `atproto`, which proves who you are. It cannot read or write anything in your account, and it keeps no OAuth tokens: it revokes them as soon as the sign-in is done and gives your browser its own session cookie instead.
+
+Sessions last 30 days, or 7 days without use. Signing out ends the session. Settings lists your browser and `tt` sessions with their device names, and you can end any of them there.
+
+Revoking the forge in your PDS's settings does not end your forge session, because the forge holds no OAuth session. Sign out, or end the session in Settings.
+
+### Reachability
+
+Your authorization server fetches the forge's client metadata and keys from `TARTAN_PUBLIC_URL` itself. That URL must therefore be reachable over public HTTPS by the authorization servers of everyone who signs in. A forge on a private network cannot offer ATProto sign-in; its operator administers it with tokens from `tt admin token create`.
+
+### When sign-in fails
+
+The sign-in page explains each problem and offers to try again, returning you to the page you started from.
+
+| Problem | Meaning |
+| --- | --- |
+| `handle_not_found` | The handle or DID does not resolve. Check the spelling. |
+| `server_unreachable` | The PLC directory, your PDS or its authorization server could not be reached, or answered with something that is not a valid OAuth or ATProto document. Your handle may be fine; try again later. |
+| `client_rejected` | Your authorization server refused this forge's configuration, for example because it could not fetch the forge's client metadata over public HTTPS. Tell the forge's operator, and pass on the server's message the page shows. |
+| `denied` | Sign-in was cancelled or refused at your authorization server. |
+| `expired` | Sign-in took longer than 10 minutes, or the link was already used. |
+| `browser_mismatch` | The sign-in finished in a different browser from the one that started it. |
+| `wrong_issuer`, `wrong_subject`, `missing_scope` | The authorization server's answer did not match the sign-in, for example because the account moved to another PDS while you were signing in. Try again. |
+| `account_inactive` | Your account is not active at its PDS. A `deactivated` account can be reactivated at its PDS; sign in again afterwards. A `takendown` or `suspended` account means contacting your hosting provider. A `deleted` account no longer exists. `throttled` and `desynchronized` accounts are not blocked. |
+| `rate_limited` | Too many sign-ins from your address. Try again in a few minutes. |
+| `busy` | The forge has too many sign-ins in progress. Try again shortly. |
+
+Hosts and server messages, such as which server could not be reached or what the authorization server said, are shown only in the browser that ran the sign-in, once, and for at most 10 minutes. The link to the sign-in page never carries them, so a shared problem link shows only the generic text for its problem.
+
+## Owners and readers
+
+The deployment configuration (package `forge`, read from `TARTAN_CONFIG`) lists the forge's **owners** by DID, and says who else may read with **readers**:
+
+```cue
+package forge
+
+owners: ["did:plc:abcdefghijklmnopqrstuvwx"]
+readers: "owners"          // the default: only owners read
+// readers: "signed_in"    // any ATProto account that signs in reads everything
+// readers: ["did:plc:…"]  // owners and these DIDs read
+```
+
+- With the default `"owners"`, the forge is private: other people can sign in, but they see a page saying the forge is private and are asked to contact an owner.
+- `"signed_in"` lets any ATProto account read every org, repository, issue and proof bundle. Membership of orgs and repositories does not exist yet, so this is all or nothing.
+- A list admits the DIDs named.
+
+Owners and readers change only when the forge restarts with a new configuration. At startup the forge logs the read mode in force and each owner's DID with its handle.
+
+## Who may do what
+
+| Caller | May |
+| --- | --- |
+| Anonymous | Nothing: every `/-/api` route but `GET /-/api/me` answers 401, and the web UI sends you to sign in. There is no public read-only view yet. |
+| An owner | Read, write (extension tools and actions) and administer (orgs, repositories, placements, subscribers). |
+| A reader | Read only. The web UI hides its write controls and says so. |
+| Anyone else signed in | Nothing but `GET /-/api/me`, their own sessions, and their own signature records. |
+| An access token | Its scopes, within the rights its DID has now, and only on its repositories when it is limited to some (see [Access tokens](/tokens/)). |
+
+Writes from a browser must come from the forge's own pages: the forge refuses a cookie-authenticated request whose `Origin` is not `TARTAN_PUBLIC_URL`, naming the origin it expected. Bearer credentials (access tokens and `tt` sessions) need no `Origin`.
+
+### Accounts that are not active
+
+The forge learns an account's status from the DID's PLC log and from `com.atproto.sync.getRepoStatus` on its PDS, at sign-in, on Jetstream identity and account events, and at least every 6 hours. A Jetstream event never sets the status by itself. While an account is inactive (anything but `active`, `throttled` and `desynchronized`), its sessions and tokens are refused; once its PDS reports it active again, they work again.
+
+### How quickly changes take effect
+
+Each gateway process caches the answer for a session or token for 30 seconds. Signing out, ending a session, revoking a token, removing an owner and an account becoming inactive take effect at once in the process that handled them, and within 30 seconds in the others.
+
+## Operators
+
+- `tt admin token create --did <owner>` makes an access token for an owner without the owner's PDS, through the Rivet engine. It is the way in when an owner's PDS is down. It cannot help when that owner's account is verified inactive, since the token would be refused: list another owner and restart.
+- Anyone who can reach the Rivet engine with `RIVET_TOKEN` can create tokens for owners. The engine endpoint and `RIVET_TOKEN` are admin credentials: keep them private.
+- Holders of the Git host token can push to every repository. Pushes are not attributed to a person; signatures are what tell who vouched for a commit.
+
+## Development sign-in
+
+Development builds (`--features dev-identity`) sign in against the local `tartan-devnet` when started with `TARTAN_DEV_IDENTITY=1`. For a forge on your own machine that should sign in against real PDSes, which cannot reach it, two switches replace the confidential client. Both need `TARTAN_PUBLIC_URL=http://127.0.0.1:<port>` and no key file, and a release build refuses to start with either set:
+
+- `TARTAN_DEV_LOCALHOST_CLIENT=1` signs in as ATProto's `http://localhost` development client, which authorization servers that follow the reference implementation, such as bsky.social, accept without fetching anything.
+- `TARTAN_DEV_CLIENT_METADATA_URL=https://…/tartan-dev.json` signs in as a public native client whose metadata you host at that `https` URL. Copy the document the forge serves at `/-/auth/client-metadata.json` to it. Use this for authorization servers that accept only `https` client ids.
+
+Alternatively, put the forge behind a tunnel that gives it a public `https` origin and run the normal confidential client with that origin as `TARTAN_PUBLIC_URL`.

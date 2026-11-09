@@ -152,8 +152,8 @@ async fn boards_from_a_repository_configuration_importing_the_modules() {
     assert_eq!(
         registered,
         vec![
-            "issues.tartan.rawkode.academy@0.6.0",
-            "kanban.tartan.rawkode.academy@0.3.0"
+            "issues.tartan.rawkode.academy@0.7.0",
+            "kanban.tartan.rawkode.academy@0.4.0"
         ],
         "{report:?}"
     );
@@ -177,7 +177,7 @@ async fn boards_from_a_repository_configuration_importing_the_modules() {
     // Issues alone first: an issue filed before Kanban is installed still reaches its boards.
     push(&forge, "acme/api", &config(ISSUES)).await;
     forge
-        .until_installed("acme/api", &["issues.tartan.rawkode.academy@0.6.0"])
+        .until_installed("acme/api", &["issues.tartan.rawkode.academy@0.7.0"])
         .await;
     let issues_tool = |tool: &str| {
         format!("/-/api/orgs/acme/repos/api/extensions/issues.tartan.rawkode.academy/tools/{tool}")
@@ -188,12 +188,26 @@ async fn boards_from_a_repository_configuration_importing_the_modules() {
             json!({
                 "title": "LSP crash",
                 "project": "crates/lsp",
-                "properties": {"priority": "p1", "labels": ["bug"], "owner": "alice"}
+                "properties": {"priority": "p1", "labels": ["bug"], "owner": forge.identity.owner}
             }),
         )
         .await;
     assert_eq!(
         created["issue"]["properties"]["status"], "todo",
+        "{created}"
+    );
+    // The owner's token is an agent acting for her DID (spec: extension-runtime).
+    let author = &created["issue"]["author"];
+    assert_eq!(author["kind"], "agent", "{created}");
+    assert!(
+        author["id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("token:")),
+        "{created}"
+    );
+    assert_eq!(
+        author["onBehalfOf"],
+        json!(forge.identity.owner),
         "{created}"
     );
 
@@ -202,8 +216,8 @@ async fn boards_from_a_repository_configuration_importing_the_modules() {
         .until_installed(
             "acme/api",
             &[
-                "issues.tartan.rawkode.academy@0.6.0",
-                "kanban.tartan.rawkode.academy@0.3.0",
+                "issues.tartan.rawkode.academy@0.7.0",
+                "kanban.tartan.rawkode.academy@0.4.0",
             ],
         )
         .await;
@@ -292,7 +306,14 @@ async fn boards_from_a_repository_configuration_importing_the_modules() {
         lsp["board"]["columns"],
         json!([{"value": "todo", "title": "To do"}, {"value": "done", "title": "Done"}])
     );
-    assert_eq!(layout(&lsp), vec!["bug / todo / alice: #1"]);
+    // A person group is keyed by the DID and names it, so the web UI labels it by handle.
+    let alice = &forge.identity.owner;
+    assert_eq!(layout(&lsp), vec![format!("bug / todo / {alice}: #1")]);
+    assert_eq!(
+        lsp["lanes"][0]["cells"][0]["groups"][0]["person"],
+        json!(alice),
+        "{lsp}"
+    );
 
     // A state board with lanes by project.
     let open = board_until("open", &|view| card_count(view) == 3).await;
@@ -424,5 +445,66 @@ extensions: "kanban.tartan.rawkode.academy": kanban.#Extension & {
         .await;
     assert_eq!(status, 400, "{body}");
 
+    // Signed in, she is herself.
+    let session = common::sign_in(&forge.base, "alice.test", "/", None)
+        .await
+        .session();
+    let by_person: serde_json::Value = common::browser()
+        .post(format!(
+            "{}{}",
+            forge.base,
+            "/-/api/orgs/acme/repos/api/extensions/issues.tartan.rawkode.academy/tools/create"
+        ))
+        .header("cookie", format!("tartan_session={session}"))
+        .header("origin", &forge.base)
+        .json(&json!({"title": "Filed in the browser", "properties": {"status": "done"}}))
+        .send()
+        .await
+        .expect("answers")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(
+        by_person["issue"]["author"],
+        json!({"kind": "user", "id": forge.identity.owner}),
+        "{by_person}"
+    );
+
+    // A reader (readers: "signed_in") calls the tools the manifests declare `access: "read"`,
+    // read-only, including Kanban's board, which calls Issues; tools that write are refused
+    // with the read-only explanation.
+    let open = forge
+        .gateway(tartan_config::deployment::Readers::SignedIn, Vec::new())
+        .await;
+    let bob = common::sign_in(&open, "bob.test", "/", None)
+        .await
+        .session();
+    let as_bob = async |path: String, body: Value| {
+        let response = common::browser()
+            .post(format!("{open}{path}"))
+            .header("cookie", format!("tartan_session={bob}"))
+            .header("origin", &open)
+            .json(&body)
+            .send()
+            .await
+            .expect("answers");
+        let status = response.status().as_u16();
+        (status, response.json::<Value>().await.unwrap_or_default())
+    };
+    let (status, listed) = as_bob(issues_tool("list"), json!({})).await;
+    assert_eq!(status, 200, "{listed}");
+    let (status, board) = as_bob(kanban("board"), json!({"board": "open"})).await;
+    assert_eq!(status, 200, "{board}");
+    for (path, body) in [
+        (issues_tool("create"), json!({"title": "By a reader"})),
+        (
+            kanban("move"),
+            json!({"board": "open", "number": 1, "column": "done"}),
+        ),
+    ] {
+        let (status, refusal) = as_bob(path, body).await;
+        assert_eq!(status, 403, "{refusal}");
+        assert!(refusal.to_string().contains("read-only"), "{refusal}");
+    }
     forge.stop().await;
 }

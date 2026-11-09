@@ -226,21 +226,26 @@
 			"kind": "person"
 		},
 		"valid": [
-			"usr_dev",
-			"admin",
-			"agt_1",
-			"user@example.com",
-			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+			"did:plc:ewvi7nxzyoun6zhxrhs64oiz",
+			"did:web:rawkode.dev",
+			"did:web:localhost",
+			"did:web:localhost%3A9400"
 		],
 		"invalid": [
 			"",
-			"usr dev",
-			" usr",
-			"-usr",
-			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"admin",
+			"usr_dev",
+			"alice.bsky.social",
+			"@alice.bsky.social",
+			"did:plc:ewvi7nxzyoun6zhxrhs64oi",
+			"did:plc:EWVI7NXZYOUN6ZHXRHS64OIZ",
+			"did:web:rawkode.dev:path",
+			"did:web:rawkode.dev%3A443",
+			"did:web:Rawkode.dev",
+			"did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
 			1,
 			[
-				"usr_dev"
+				"did:web:rawkode.dev"
 			]
 		]
 	},
